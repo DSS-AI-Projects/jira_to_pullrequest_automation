@@ -10,6 +10,8 @@ dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
     "python-dotenv>=1.0",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-language-pack>=1.12.5",
 ]
 
 [dependency-groups]

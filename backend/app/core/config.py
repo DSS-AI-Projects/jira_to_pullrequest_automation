@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # Clone
     clone_timeout_seconds: int = 300
 
+    # Repo map caps (keeps the agent's starting context bounded)
+    repo_map_max_files: int = 4000
+    repo_map_max_file_bytes: int = 262_144
+    repo_map_max_chars: int = 60_000
+
     # Planning agent budget (recorded per job; enforced in the agent step)
     agent_model: str | None = None  # None = harness default; override via env
     agent_max_turns: int = 40
