@@ -12,6 +12,7 @@ OAuth, only steps/jira_auth.py and this module change.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -19,6 +20,32 @@ from dotenv import dotenv_values
 _ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
 
 _registered: set[str] = set()
+
+# Token-shaped string patterns, shared by the log redactor (invariant 2) and
+# form-input validation (invariant 1).
+TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Atlassian API token
+    re.compile(r"ATATT[0-9A-Za-z_\-=+/]{10,}"),
+    # Anthropic API key
+    re.compile(r"sk-ant-[0-9A-Za-z_\-]{10,}"),
+    # GitHub tokens (classic + fine-grained)
+    re.compile(r"gh[pousr]_[0-9A-Za-z]{20,}"),
+    re.compile(r"github_pat_[0-9A-Za-z_]{20,}"),
+    # GitLab / Bitbucket tokens
+    re.compile(r"glpat-[0-9A-Za-z_\-]{15,}"),
+    re.compile(r"BBDC-[0-9A-Za-z_\-]{10,}"),
+    # HTTP auth headers
+    re.compile(r"(?i)\b(?:basic|bearer)\s+[0-9A-Za-z+/_\-.=]{16,}"),
+    # userinfo credentials embedded in URLs (https://user:pass@host)
+    re.compile(r"://[^/\s:@]+:[^/\s@]+@"),
+    # private key blocks
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+)
+
+
+def looks_token_shaped(text: str) -> bool:
+    """True if the text contains anything resembling a credential."""
+    return any(pattern.search(text) for pattern in TOKEN_PATTERNS)
 
 
 def register_secret(value: str) -> None:

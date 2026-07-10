@@ -55,6 +55,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
 
 HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.INPUT_INVALID: 400,
+    ErrorCode.REPO_HOST_NOT_ALLOWED: 400,
     ErrorCode.JOB_NOT_FOUND: 404,
     ErrorCode.INTERNAL: 500,
 }

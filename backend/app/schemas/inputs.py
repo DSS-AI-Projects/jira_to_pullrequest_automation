@@ -1,0 +1,142 @@
+"""Form input validation — security invariants 1 and 5.
+
+The submit payload has exactly two non-secret fields; anything extra is
+rejected by extra="forbid" before it reaches application code. Field values
+that look like credentials are rejected without ever being logged or stored.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.core.config import Settings
+from app.core.errors import AppError, ErrorCode
+from app.core.secrets import looks_token_shaped
+
+TICKET_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}-\d{1,10}$")
+_BROWSE_PATH_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9_]{1,63}-\d{1,10})(?:$|/)")
+_SELECTED_ISSUE_RE = re.compile(r"selectedIssue=([A-Za-z][A-Za-z0-9_]{1,63}-\d{1,10})")
+_SCP_LIKE_RE = re.compile(r"^git@([A-Za-z0-9.-]+):([A-Za-z0-9._/~-]+?)(?:\.git)?/?$")
+
+
+class JobCreateRequest(BaseModel):
+    # extra="forbid": a request smuggling any additional field (a token, a
+    # password, anything) fails validation and is never processed (invariant 1).
+    model_config = ConfigDict(extra="forbid")
+
+    ticket: str = Field(min_length=1, max_length=2000, description="Jira ticket key or URL")
+    repo: str = Field(
+        min_length=1, max_length=2000, description="Repo URL or pre-configured repo name"
+    )
+
+
+class RepoChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    url: str
+
+
+def _reject_credential_shaped(value: str, field: str) -> None:
+    if looks_token_shaped(value):
+        # Do not log or echo the value anywhere.
+        raise AppError(
+            ErrorCode.INPUT_INVALID,
+            user_message=(
+                f"The {field} field looks like it contains a credential. "
+                "This app never accepts secrets; submit only an identifier."
+            ),
+        )
+
+
+def normalize_ticket(raw: str, settings: Settings) -> str:
+    """Return the canonical ticket key (e.g. PROJ-123) or raise INPUT_INVALID."""
+    value = raw.strip()
+    _reject_credential_shaped(value, "ticket")
+
+    if TICKET_KEY_RE.match(value.upper()):
+        return value.upper()
+
+    parsed = urlparse(value)
+    if parsed.scheme in ("http", "https") and parsed.hostname:
+        if settings.jira_base_url:
+            configured_host = urlparse(settings.jira_base_url).hostname
+            if configured_host and parsed.hostname.lower() != configured_host.lower():
+                raise AppError(
+                    ErrorCode.INPUT_INVALID,
+                    user_message="That ticket URL does not match the configured Jira host.",
+                )
+        match = _BROWSE_PATH_RE.search(parsed.path) or _SELECTED_ISSUE_RE.search(parsed.query or "")
+        if match:
+            return match.group(1).upper()
+
+    raise AppError(
+        ErrorCode.INPUT_INVALID,
+        user_message="Enter a Jira ticket key like PROJ-123, or a ticket URL from your Jira.",
+    )
+
+
+def load_preconfigured_repos(settings: Settings) -> list[RepoChoice]:
+    path = settings.preconfigured_repos_file
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [RepoChoice.model_validate(entry) for entry in data.get("repos", [])]
+
+
+def _validate_repo_url(value: str, settings: Settings) -> str:
+    """Validate shape + host allowlist. Never accepts embedded credentials."""
+    scp = _SCP_LIKE_RE.match(value)
+    if scp:
+        host = scp.group(1).lower()
+        _require_allowed_host(host, settings)
+        return value
+
+    parsed = urlparse(value)
+    if parsed.scheme not in ("https", "ssh") or not parsed.hostname:
+        raise AppError(
+            ErrorCode.INPUT_INVALID,
+            user_message=(
+                "Enter an https:// or ssh:// repository URL, git@host:owner/repo, "
+                "or the name of a pre-configured repo."
+            ),
+        )
+    if parsed.password or (parsed.username and parsed.username != "git"):
+        # Credentials embedded in a URL are never accepted (invariant 4).
+        raise AppError(
+            ErrorCode.INPUT_INVALID,
+            user_message=(
+                "Repository URLs must not contain credentials. "
+                "Cloning uses your machine's own git auth."
+            ),
+        )
+    _require_allowed_host(parsed.hostname.lower(), settings)
+    return value
+
+
+def _require_allowed_host(host: str, settings: Settings) -> None:
+    if host not in {h.lower() for h in settings.allowed_git_hosts}:
+        raise AppError(
+            ErrorCode.REPO_HOST_NOT_ALLOWED,
+            user_message=(
+                f"Host '{host}' is not on the allowed list "
+                f"({', '.join(settings.allowed_git_hosts)}). "
+                "Add it via ALLOWED_GIT_HOSTS if intended."
+            ),
+        )
+
+
+def normalize_repo(raw: str, settings: Settings) -> str:
+    """Resolve a pre-configured repo name or validate a repo URL."""
+    value = raw.strip()
+    _reject_credential_shaped(value, "repo")
+
+    for choice in load_preconfigured_repos(settings):
+        if value == choice.name:
+            return _validate_repo_url(choice.url, settings)
+
+    return _validate_repo_url(value, settings)

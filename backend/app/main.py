@@ -16,9 +16,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.routes import router as api_router
 from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import configure_logging, get_logger
+from app.jobs.runner import JobSteps
+from app.jobs.store import JobStore
+from app.steps import default_steps
 
 logger = get_logger(__name__)
 
@@ -30,10 +34,13 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     yield
 
 
-def create_app() -> FastAPI:
+def create_app(store: JobStore | None = None, steps: JobSteps | None = None) -> FastAPI:
     configure_logging()
     settings = get_settings()
     app = FastAPI(title="jira2pullreq", lifespan=_lifespan)
+    app.state.job_store = store if store is not None else JobStore(settings.db_path)
+    app.state.job_steps = steps if steps is not None else default_steps()
+    app.include_router(api_router)
 
     app.add_middleware(
         CORSMiddleware,

@@ -1,0 +1,119 @@
+"""Input validation — security invariants 1 and 5 (backend half)."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from app.core.config import Settings
+from app.core.errors import AppError, ErrorCode
+from app.schemas.inputs import normalize_repo, normalize_ticket
+
+FAKE_TOKEN = "ATATT" + "3xF" + "a" * 27
+
+
+def make_settings(tmp_path: Path, **overrides: object) -> Settings:
+    repos_file = tmp_path / "repos.config.json"
+    if not repos_file.exists():
+        repos_file.write_text(
+            json.dumps(
+                {"repos": [{"name": "my-service", "url": "https://github.com/acme/my-service"}]}
+            ),
+            encoding="utf-8",
+        )
+    defaults: dict[str, object] = {"preconfigured_repos_file": repos_file}
+    return Settings(_env_file=None, **{**defaults, **overrides})  # type: ignore[arg-type]
+
+
+# --- ticket ---
+
+
+def test_plain_key_is_accepted_and_uppercased(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    assert normalize_ticket("proj-123", settings) == "PROJ-123"
+    assert normalize_ticket("  ABC2-9  ", settings) == "ABC2-9"
+
+
+def test_browse_url_is_accepted(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, jira_base_url="https://acme.atlassian.net")
+    key = normalize_ticket("https://acme.atlassian.net/browse/PROJ-123", settings)
+    assert key == "PROJ-123"
+
+
+def test_board_url_with_selected_issue_is_accepted(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, jira_base_url="https://acme.atlassian.net")
+    url = "https://acme.atlassian.net/jira/software/c/projects/P/boards/1?selectedIssue=PROJ-7"
+    assert normalize_ticket(url, settings) == "PROJ-7"
+
+
+def test_ticket_url_on_wrong_host_is_rejected(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, jira_base_url="https://acme.atlassian.net")
+    with pytest.raises(AppError) as excinfo:
+        normalize_ticket("https://evil.example.com/browse/PROJ-1", settings)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+def test_garbage_ticket_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_ticket("not a ticket", make_settings(tmp_path))
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+def test_token_shaped_ticket_is_rejected_without_echoing_value(tmp_path: Path) -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_ticket(FAKE_TOKEN, make_settings(tmp_path))
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    assert FAKE_TOKEN not in excinfo.value.user_message
+
+
+# --- repo ---
+
+
+def test_preconfigured_name_resolves_to_url(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    assert normalize_repo("my-service", settings) == "https://github.com/acme/my-service"
+
+
+def test_https_url_on_allowed_host_is_accepted(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    url = "https://github.com/acme/other-repo.git"
+    assert normalize_repo(url, settings) == url
+
+
+def test_scp_like_ssh_url_is_accepted(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    assert (
+        normalize_repo("git@github.com:acme/repo.git", settings) == "git@github.com:acme/repo.git"
+    )
+
+
+def test_disallowed_host_is_rejected(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    with pytest.raises(AppError) as excinfo:
+        normalize_repo("https://gitlab.com/acme/repo", settings)
+    assert excinfo.value.code == ErrorCode.REPO_HOST_NOT_ALLOWED
+
+
+def test_extra_allowed_host_can_be_configured(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, allowed_git_hosts=["github.com", "gitlab.com"])
+    assert normalize_repo("https://gitlab.com/acme/repo", settings)
+
+
+def test_url_with_embedded_password_is_rejected(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    with pytest.raises(AppError) as excinfo:
+        normalize_repo("https://user:sekretpass@github.com/acme/repo", settings)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    assert "sekretpass" not in excinfo.value.user_message
+
+
+def test_token_shaped_repo_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_repo("ghp_" + "A" * 36, make_settings(tmp_path))
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+def test_non_url_garbage_repo_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_repo("ftp://github.com/x", make_settings(tmp_path))
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
