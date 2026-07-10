@@ -1,0 +1,10 @@
+# Secret scanning on every commit (security invariant 4).
+# Requires the gitleaks binary on PATH: https://github.com/gitleaks/gitleaks
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (staged secrets scan)
+        entry: gitleaks git --pre-commit --staged --redact --verbose
+        language: system
+        pass_filenames: false

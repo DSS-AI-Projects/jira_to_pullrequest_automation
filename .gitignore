@@ -1,0 +1,28 @@
+# Secrets — never commit; .env.example (names only) is the committed template
+.env
+*.env.local
+
+# App runtime data (SQLite DB, repo clones)
+var/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+npm-debug.log*
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
