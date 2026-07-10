@@ -1,0 +1,139 @@
+{
+  "$defs": {
+    "ChangeAction": {
+      "enum": [
+        "create",
+        "modify",
+        "delete"
+      ],
+      "title": "ChangeAction",
+      "type": "string"
+    },
+    "ImpactedFile": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Repo-relative path",
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why this file is impacted",
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "reason"
+      ],
+      "title": "ImpactedFile",
+      "type": "object"
+    },
+    "ProposedChange": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ChangeAction"
+        },
+        "description": {
+          "description": "What to change and why, specific enough to implement",
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "file": {
+          "description": "Repo-relative path (may be a new file)",
+          "minLength": 1,
+          "title": "File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "action",
+        "description"
+      ],
+      "title": "ProposedChange",
+      "type": "object"
+    },
+    "TicketType": {
+      "enum": [
+        "feature",
+        "bug",
+        "refactor",
+        "chore",
+        "unknown"
+      ],
+      "title": "TicketType",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "impacted_files": {
+      "items": {
+        "$ref": "#/$defs/ImpactedFile"
+      },
+      "title": "Impacted Files",
+      "type": "array"
+    },
+    "open_questions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Open Questions",
+      "type": "array"
+    },
+    "proposed_changes": {
+      "description": "A plan must propose at least one concrete change",
+      "items": {
+        "$ref": "#/$defs/ProposedChange"
+      },
+      "minItems": 1,
+      "title": "Proposed Changes",
+      "type": "array"
+    },
+    "risks": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Risks",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "summary": {
+      "description": "One-paragraph plan summary",
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    },
+    "test_strategy": {
+      "minLength": 1,
+      "title": "Test Strategy",
+      "type": "string"
+    },
+    "ticket_type": {
+      "$ref": "#/$defs/TicketType"
+    }
+  },
+  "required": [
+    "summary",
+    "ticket_type",
+    "impacted_files",
+    "proposed_changes",
+    "test_strategy",
+    "risks",
+    "open_questions"
+  ],
+  "title": "Plan",
+  "type": "object"
+}
