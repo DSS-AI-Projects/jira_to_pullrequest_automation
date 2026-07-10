@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Frontend origin for CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    # Clone
+    clone_timeout_seconds: int = 300
+
     # Planning agent budget (recorded per job; enforced in the agent step)
     agent_model: str | None = None  # None = harness default; override via env
     agent_max_turns: int = 40

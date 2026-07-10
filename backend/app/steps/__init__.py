@@ -13,14 +13,11 @@ from app.jobs.runner import JobSteps, PlanResult
 from app.schemas.repomap import RepoMap
 from app.schemas.ticket import TicketData
 from app.steps.jira_fetch import fetch_ticket
+from app.steps.repo_clone import clone_repo
 
 
 def _not_implemented(step: str) -> AppError:
     return AppError(ErrorCode.INTERNAL, internal_detail=f"step '{step}' not implemented yet")
-
-
-async def _clone_repo(job_id: str, repo_url: str, workdir: Path) -> Path:
-    raise _not_implemented("clone_repo")
 
 
 async def _build_repo_map(clone_path: Path) -> RepoMap:
@@ -34,7 +31,7 @@ async def _generate_plan(ticket: TicketData, repo_map: RepoMap, clone_path: Path
 def default_steps() -> JobSteps:
     return JobSteps(
         fetch_ticket=fetch_ticket,
-        clone_repo=_clone_repo,
+        clone_repo=clone_repo,
         build_repo_map=_build_repo_map,
         generate_plan=_generate_plan,
     )
