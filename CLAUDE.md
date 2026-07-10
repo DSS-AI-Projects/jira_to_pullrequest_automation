@@ -83,7 +83,8 @@ a `schema_version` bump.
 ## Failure behavior
 
 Every job step fails with a typed, user-safe error the status screen can display:
-`JIRA_CONFIG_MISSING`, `JIRA_AUTH_FAILED`, `TICKET_NOT_FOUND`, `TICKET_EMPTY`,
+`JIRA_CONFIG_MISSING`, `JIRA_AUTH_FAILED`, `JIRA_UNREACHABLE`, `TICKET_NOT_FOUND`,
+`TICKET_EMPTY`,
 `INPUT_INVALID`, `REPO_HOST_NOT_ALLOWED`, `CLONE_FAILED`, `REPO_MAP_FAILED`,
 `PLAN_INVALID`, `BUDGET_EXCEEDED`, `INTERNAL`. Raw stack traces never reach the
 client. Every job ends in a terminal state — `PLAN_READY` or `FAILED` with a reason.

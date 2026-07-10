@@ -15,6 +15,7 @@ class ErrorCode(StrEnum):
     JOB_NOT_FOUND = "JOB_NOT_FOUND"
     JIRA_CONFIG_MISSING = "JIRA_CONFIG_MISSING"
     JIRA_AUTH_FAILED = "JIRA_AUTH_FAILED"
+    JIRA_UNREACHABLE = "JIRA_UNREACHABLE"
     TICKET_NOT_FOUND = "TICKET_NOT_FOUND"
     TICKET_EMPTY = "TICKET_EMPTY"
     REPO_HOST_NOT_ALLOWED = "REPO_HOST_NOT_ALLOWED"
@@ -35,6 +36,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.JIRA_AUTH_FAILED: (
         "Jira rejected the server's credentials. Check JIRA_EMAIL and JIRA_API_TOKEN."
     ),
+    ErrorCode.JIRA_UNREACHABLE: "Could not reach Jira. Check JIRA_BASE_URL and your network.",
     ErrorCode.TICKET_NOT_FOUND: "That Jira ticket could not be found (or is not visible).",
     ErrorCode.TICKET_EMPTY: "The ticket has no usable content (empty summary and description).",
     ErrorCode.REPO_HOST_NOT_ALLOWED: "That repository host is not on the allowed list.",
