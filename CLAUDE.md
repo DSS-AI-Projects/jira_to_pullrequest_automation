@@ -63,9 +63,9 @@ for the plan; the SDK validates and re-prompts, and surfaces
 `error_max_structured_output_retries` on failure. Agent config:
 
 - Tools: read/grep/glob only, cwd = the clone dir; no Bash, no network tools.
-- Budget: `max_turns` cap, wall-clock timeout via `asyncio.wait_for`, and a max
-  file-read count enforced in tool permission hooks. Budget exhaustion is the typed
-  error `BUDGET_EXCEEDED`.
+- Budget: `max_turns` cap (bounds tool calls), `max_budget_usd` cost cap (native
+  SDK option), and a wall-clock timeout via `asyncio.wait_for`. Budget exhaustion
+  is the typed error `BUDGET_EXCEEDED`.
 - Record tokens used and duration from the SDK `ResultMessage` onto the job record.
 - Malformed/invalid plan output: retry ONCE, then fail with typed `PLAN_INVALID`.
 
@@ -86,7 +86,7 @@ Every job step fails with a typed, user-safe error the status screen can display
 `JIRA_CONFIG_MISSING`, `JIRA_AUTH_FAILED`, `JIRA_UNREACHABLE`, `TICKET_NOT_FOUND`,
 `TICKET_EMPTY`,
 `INPUT_INVALID`, `REPO_HOST_NOT_ALLOWED`, `CLONE_FAILED`, `REPO_MAP_FAILED`,
-`PLAN_INVALID`, `BUDGET_EXCEEDED`, `INTERNAL`. Raw stack traces never reach the
+`AGENT_CONFIG_MISSING`, `PLAN_INVALID`, `BUDGET_EXCEEDED`, `INTERNAL`. Raw stack traces never reach the
 client. Every job ends in a terminal state — `PLAN_READY` or `FAILED` with a reason.
 Job states: `QUEUED → FETCHING_TICKET → CLONING_REPO → MAPPING_REPO → PLANNING →
 PLAN_READY | FAILED`.

@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.auth import router as auth_router
 from app.api.routes import router as api_router
 from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
@@ -40,6 +41,7 @@ def create_app(store: JobStore | None = None, steps: JobSteps | None = None) -> 
     app = FastAPI(title="jira2pullreq", lifespan=_lifespan)
     app.state.job_store = store if store is not None else JobStore(settings.db_path)
     app.state.job_steps = steps if steps is not None else default_steps()
+    app.include_router(auth_router)
     app.include_router(api_router)
 
     app.add_middleware(
@@ -47,6 +49,7 @@ def create_app(store: JobStore | None = None, steps: JobSteps | None = None) -> 
         allow_origins=settings.cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
+        allow_credentials=True,
     )
 
     @app.exception_handler(AppError)

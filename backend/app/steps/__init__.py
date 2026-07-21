@@ -1,28 +1,14 @@
-"""Job step implementations.
-
-Wired into the runner via default_steps(). Steps land one commit at a time;
-unimplemented ones raise INTERNAL so a job still terminates cleanly.
-"""
+"""Job step implementations, wired into the runner via default_steps()."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from app.core.errors import AppError, ErrorCode
-from app.jobs.runner import JobSteps, PlanResult
-from app.schemas.repomap import RepoMap
-from app.schemas.ticket import TicketData
+from app.jobs.runner import JobSteps
+from app.steps.implement_agent import implement_plan
 from app.steps.jira_fetch import fetch_ticket
+from app.steps.plan_agent import generate_plan
 from app.steps.repo_clone import clone_repo
 from app.steps.repo_map import build_repo_map
-
-
-def _not_implemented(step: str) -> AppError:
-    return AppError(ErrorCode.INTERNAL, internal_detail=f"step '{step}' not implemented yet")
-
-
-async def _generate_plan(ticket: TicketData, repo_map: RepoMap, clone_path: Path) -> PlanResult:
-    raise _not_implemented("generate_plan")
+from app.steps.validation_runner import validate_workspace
 
 
 def default_steps() -> JobSteps:
@@ -30,5 +16,7 @@ def default_steps() -> JobSteps:
         fetch_ticket=fetch_ticket,
         clone_repo=clone_repo,
         build_repo_map=build_repo_map,
-        generate_plan=_generate_plan,
+        generate_plan=generate_plan,
+        implement_plan=implement_plan,
+        validate_workspace=validate_workspace,
     )

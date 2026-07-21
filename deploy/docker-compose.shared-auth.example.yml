@@ -1,0 +1,67 @@
+services:
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    image: jira2pullreq-backend:local
+    restart: unless-stopped
+    env_file:
+      - ${BACKEND_ENV_FILE:-../backend/.env}
+    environment:
+      AUTH_ENABLED: "true"
+      AUTH_ALLOW_DEV_LOGIN: "false"
+      AUTH_SESSION_COOKIE_SECURE: "true"
+      AUTH_TRUSTED_PROXY_ENABLED: "true"
+      AUTH_TRUSTED_PROXY_SOURCES: '["${TRUSTED_PROXY_SOURCE:-172.30.0.10/32}"]'
+      CORS_ORIGINS: '["https://${APP_HOSTNAME}"]'
+    networks:
+      app_net:
+        ipv4_address: 172.30.0.20
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    image: jira2pullreq-frontend:local
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    networks:
+      app_net:
+        ipv4_address: 172.30.0.30
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.12.0
+    restart: unless-stopped
+    env_file:
+      - ${OAUTH2_PROXY_ENV_FILE:-./oauth2-proxy/oauth2-proxy.env.example}
+    environment:
+      OAUTH2_PROXY_REDIRECT_URL: https://${APP_HOSTNAME}/oauth2/callback
+    networks:
+      app_net:
+        ipv4_address: 172.30.0.40
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+      - oauth2-proxy
+    ports:
+      - "${PUBLIC_HTTPS_PORT:-443}:443"
+    environment:
+      APP_HOSTNAME: ${APP_HOSTNAME}
+    volumes:
+      - ./nginx/oauth2-proxy.compose.conf.example:/etc/nginx/templates/default.conf.template:ro
+      - ${TLS_DIR:-./tls}:/etc/ssl:ro
+    networks:
+      app_net:
+        ipv4_address: 172.30.0.10
+
+networks:
+  app_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

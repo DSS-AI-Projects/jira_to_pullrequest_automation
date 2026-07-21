@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +22,7 @@ TICKET_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}-\d{1,10}$")
 _BROWSE_PATH_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9_]{1,63}-\d{1,10})(?:$|/)")
 _SELECTED_ISSUE_RE = re.compile(r"selectedIssue=([A-Za-z][A-Za-z0-9_]{1,63}-\d{1,10})")
 _SCP_LIKE_RE = re.compile(r"^git@([A-Za-z0-9.-]+):([A-Za-z0-9._/~-]+?)(?:\.git)?/?$")
+_WINDOWS_ABS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 class JobCreateRequest(BaseModel):
@@ -30,7 +32,9 @@ class JobCreateRequest(BaseModel):
 
     ticket: str = Field(min_length=1, max_length=2000, description="Jira ticket key or URL")
     repo: str = Field(
-        min_length=1, max_length=2000, description="Repo URL or pre-configured repo name"
+        min_length=1,
+        max_length=2000,
+        description="Repo URL, pre-configured repo name, or approved local path",
     )
 
 
@@ -88,6 +92,27 @@ def load_preconfigured_repos(settings: Settings) -> list[RepoChoice]:
     return [RepoChoice.model_validate(entry) for entry in data.get("repos", [])]
 
 
+def _looks_like_local_path(value: str) -> bool:
+    return bool(_WINDOWS_ABS_PATH_RE.match(value))
+
+
+def _validate_local_repo_path(value: str, settings: Settings) -> str:
+    if not settings.allow_local_repos:
+        raise AppError(ErrorCode.LOCAL_REPO_NOT_ALLOWED)
+
+    candidate = Path(value).expanduser().resolve()
+    if not candidate.exists():
+        raise AppError(ErrorCode.LOCAL_REPO_NOT_FOUND)
+    if not candidate.is_dir():
+        raise AppError(ErrorCode.LOCAL_REPO_NOT_DIRECTORY)
+
+    allowed_roots = [root.expanduser().resolve() for root in settings.allowed_local_repo_roots]
+    if not any(root == candidate or root in candidate.parents for root in allowed_roots):
+        raise AppError(ErrorCode.LOCAL_REPO_OUTSIDE_ALLOWED_ROOT)
+
+    return str(candidate)
+
+
 def _validate_repo_url(value: str, settings: Settings) -> str:
     """Validate shape + host allowlist. Never accepts embedded credentials."""
     scp = _SCP_LIKE_RE.match(value)
@@ -131,12 +156,15 @@ def _require_allowed_host(host: str, settings: Settings) -> None:
 
 
 def normalize_repo(raw: str, settings: Settings) -> str:
-    """Resolve a pre-configured repo name or validate a repo URL."""
+    """Resolve a pre-configured repo name or validate a repo identifier."""
     value = raw.strip()
     _reject_credential_shaped(value, "repo")
 
     for choice in load_preconfigured_repos(settings):
         if value == choice.name:
             return _validate_repo_url(choice.url, settings)
+
+    if _looks_like_local_path(value):
+        return _validate_local_repo_path(value, settings)
 
     return _validate_repo_url(value, settings)

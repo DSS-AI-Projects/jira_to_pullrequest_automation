@@ -99,6 +99,74 @@ def test_extra_allowed_host_can_be_configured(tmp_path: Path) -> None:
     assert normalize_repo("https://gitlab.com/acme/repo", settings)
 
 
+def test_allowed_local_path_is_accepted(tmp_path: Path) -> None:
+    local_root = tmp_path / "repos"
+    local_repo = local_root / "my-service"
+    local_repo.mkdir(parents=True)
+    settings = make_settings(
+        tmp_path,
+        allow_local_repos=True,
+        allowed_local_repo_roots=[local_root],
+    )
+    assert normalize_repo(str(local_repo), settings) == str(local_repo.resolve())
+
+
+def test_local_path_is_rejected_when_disabled(tmp_path: Path) -> None:
+    local_root = tmp_path / "repos"
+    local_repo = local_root / "my-service"
+    local_repo.mkdir(parents=True)
+    settings = make_settings(
+        tmp_path,
+        allow_local_repos=False,
+        allowed_local_repo_roots=[local_root],
+    )
+    with pytest.raises(AppError) as excinfo:
+        normalize_repo(str(local_repo), settings)
+    assert excinfo.value.code == ErrorCode.LOCAL_REPO_NOT_ALLOWED
+
+
+def test_missing_local_path_is_rejected(tmp_path: Path) -> None:
+    local_root = tmp_path / "repos"
+    missing_repo = local_root / "missing-service"
+    settings = make_settings(
+        tmp_path,
+        allow_local_repos=True,
+        allowed_local_repo_roots=[local_root],
+    )
+    with pytest.raises(AppError) as excinfo:
+        normalize_repo(str(missing_repo), settings)
+    assert excinfo.value.code == ErrorCode.LOCAL_REPO_NOT_FOUND
+
+
+def test_file_local_path_is_rejected(tmp_path: Path) -> None:
+    local_root = tmp_path / "repos"
+    local_root.mkdir()
+    file_path = local_root / "notes.txt"
+    file_path.write_text("hello", encoding="utf-8")
+    settings = make_settings(
+        tmp_path,
+        allow_local_repos=True,
+        allowed_local_repo_roots=[local_root],
+    )
+    with pytest.raises(AppError) as excinfo:
+        normalize_repo(str(file_path), settings)
+    assert excinfo.value.code == ErrorCode.LOCAL_REPO_NOT_DIRECTORY
+
+
+def test_local_path_outside_allowed_root_is_rejected(tmp_path: Path) -> None:
+    local_root = tmp_path / "repos"
+    local_repo = tmp_path / "other" / "my-service"
+    local_repo.mkdir(parents=True)
+    settings = make_settings(
+        tmp_path,
+        allow_local_repos=True,
+        allowed_local_repo_roots=[local_root],
+    )
+    with pytest.raises(AppError) as excinfo:
+        normalize_repo(str(local_repo), settings)
+    assert excinfo.value.code == ErrorCode.LOCAL_REPO_OUTSIDE_ALLOWED_ROOT
+
+
 def test_url_with_embedded_password_is_rejected(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     with pytest.raises(AppError) as excinfo:

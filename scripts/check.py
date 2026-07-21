@@ -18,6 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "backend"
 FRONTEND = ROOT / "frontend"
+SCRIPTS_DIR = "Scripts" if sys.platform == "win32" else "bin"
+EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
 
 failures: list[str] = []
 
@@ -27,6 +29,26 @@ def uv() -> list[str]:
     if shutil.which("uv"):
         return ["uv"]
     return [sys.executable, "-m", "uv"]
+
+
+def _backend_venv_script(name: str) -> Path | None:
+    script = BACKEND / ".venv" / SCRIPTS_DIR / f"{name}{EXE_SUFFIX}"
+    return script if script.exists() else None
+
+
+def backend_tool(name: str, *args: str) -> list[str]:
+    """Use backend/.venv when present; otherwise fall back to uv run."""
+    script = _backend_venv_script(name)
+    if script is not None:
+        return [str(script), *args]
+    return [*uv(), "run", name, *args]
+
+
+def backend_python(*args: str) -> list[str]:
+    python = _backend_venv_script("python")
+    if python is not None:
+        return [str(python), *args]
+    return [*uv(), "run", "python", *args]
 
 
 def npx() -> str:
@@ -51,14 +73,14 @@ def main() -> int:
     args = parser.parse_args()
 
     if BACKEND.exists():
-        run("backend: ruff lint", [*uv(), "run", "ruff", "check", "."], cwd=BACKEND)
+        run("backend: ruff lint", backend_tool("ruff", "check", "."), cwd=BACKEND)
         run(
             "backend: ruff format",
-            [*uv(), "run", "ruff", "format", "--check", "."],
+            backend_tool("ruff", "format", "--check", "."),
             cwd=BACKEND,
         )
-        run("backend: pyright", [*uv(), "run", "pyright"], cwd=BACKEND)
-        run("backend: pytest", [*uv(), "run", "pytest", "-q"], cwd=BACKEND)
+        run("backend: pyright", backend_tool("pyright"), cwd=BACKEND)
+        run("backend: pytest", backend_tool("pytest", "-q"), cwd=BACKEND)
     else:
         print("skip: backend/ not present yet")
 
@@ -79,7 +101,7 @@ def main() -> int:
         # the committed contract has drifted from the Pydantic source of truth.
         run(
             "schema: export json-schema",
-            [*uv(), "run", "python", "-m", "app.schemas.export"],
+            backend_python("-m", "app.schemas.export"),
             cwd=BACKEND,
         )
         run("schema: generate ts", [npm(), "run", "--silent", "gen:plan"], cwd=FRONTEND)

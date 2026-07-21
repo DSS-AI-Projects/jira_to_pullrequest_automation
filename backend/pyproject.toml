@@ -12,6 +12,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "tree-sitter>=0.26.0",
     "tree-sitter-language-pack>=1.12.5",
+    "claude-agent-sdk>=0.2.115",
 ]
 
 [dependency-groups]

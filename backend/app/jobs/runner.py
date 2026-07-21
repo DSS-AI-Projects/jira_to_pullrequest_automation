@@ -14,7 +14,16 @@ from pathlib import Path
 from app.core.config import Settings
 from app.core.errors import DEFAULT_MESSAGES, AppError, ErrorCode
 from app.core.logging import get_logger
-from app.jobs.models import AgentUsage, Job, JobError, JobState
+from app.jobs.models import (
+    AgentUsage,
+    ImplementationResult,
+    Job,
+    JobError,
+    JobState,
+    RepoInfo,
+    RepoSourceKind,
+    ValidationResult,
+)
 from app.jobs.store import JobStore
 from app.schemas.plan import Plan
 from app.schemas.repomap import RepoMap
@@ -30,13 +39,27 @@ class PlanResult:
 
 
 @dataclass(frozen=True)
+class ImplementationStepResult:
+    result: ImplementationResult
+    usage: AgentUsage
+
+
+@dataclass(frozen=True)
+class CloneResult:
+    clone_path: Path
+    repo_info: RepoInfo
+
+
+@dataclass(frozen=True)
 class JobSteps:
     """The four job steps, injectable for tests."""
 
     fetch_ticket: Callable[[str], Awaitable[TicketData]]
-    clone_repo: Callable[[str, str, Path], Awaitable[Path]]  # (job_id, repo_url, workdir)
+    clone_repo: Callable[[str, str, str, Path], Awaitable[CloneResult]]
     build_repo_map: Callable[[Path], Awaitable[RepoMap]]
     generate_plan: Callable[[TicketData, RepoMap, Path], Awaitable[PlanResult]]
+    implement_plan: Callable[[Job, Path], Awaitable[ImplementationStepResult]]
+    validate_workspace: Callable[[Path], Awaitable[list[ValidationResult]]]
 
 
 def _advance(store: JobStore, job: Job, state: JobState) -> Job:
@@ -44,9 +67,16 @@ def _advance(store: JobStore, job: Job, state: JobState) -> Job:
     return store.save(job)
 
 
-def _fail(store: JobStore, job: Job, code: ErrorCode, message: str) -> None:
+def _fail(
+    store: JobStore,
+    job: Job,
+    code: ErrorCode,
+    message: str,
+    *,
+    failure_state: JobState = JobState.FAILED,
+) -> None:
     job.error = JobError(code=code, message=message, stage=job.state)
-    job.state = JobState.FAILED
+    job.state = failure_state
     store.save(job)
 
 
@@ -60,7 +90,12 @@ async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSt
         ticket = await steps.fetch_ticket(job.ticket_key)
 
         job = _advance(store, job, JobState.CLONING_REPO)
-        clone_path = await steps.clone_repo(job.id, job.repo_url, settings.workdir)
+        clone_result = await steps.clone_repo(
+            job.id, job.ticket_key, job.repo_url, settings.workdir
+        )
+        clone_path = clone_result.clone_path
+        job.repo_info = clone_result.repo_info
+        job.workspace_path = str(clone_path)
 
         job = _advance(store, job, JobState.MAPPING_REPO)
         repo_map = await steps.build_repo_map(clone_path)
@@ -89,3 +124,75 @@ async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSt
         final = store.get(job.id)
         if final is not None and not final.is_terminal:  # pragma: no cover - defensive
             _fail(store, final, ErrorCode.INTERNAL, DEFAULT_MESSAGES[ErrorCode.INTERNAL])
+
+
+async def run_implementation(
+    job_id: str, store: JobStore, settings: Settings, steps: JobSteps
+) -> None:
+    del settings  # reserved for future implementation-step configuration
+    job = store.get(job_id)
+    if job is None:  # pragma: no cover - defensive
+        logger.error("run_implementation: job %s not found", job_id)
+        return
+    try:
+        if job.state != JobState.IMPLEMENTATION_QUEUED or job.plan is None:
+            raise AppError(ErrorCode.IMPLEMENTATION_NOT_READY)
+        if job.repo_info is None or job.repo_info.source_kind != RepoSourceKind.LOCAL:
+            raise AppError(ErrorCode.IMPLEMENTATION_NOT_SUPPORTED)
+        if not job.workspace_path:
+            raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+
+        workspace_path = Path(job.workspace_path)
+        if not workspace_path.exists():
+            raise AppError(
+                ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING,
+                internal_detail=f"workspace path missing: {workspace_path}",
+            )
+
+        job.implementation_started_at = store.save(job).updated_at
+        job = _advance(store, job, JobState.IMPLEMENTING)
+        implementation = await steps.implement_plan(job, workspace_path)
+
+        job.implementation_result = implementation.result
+        job.implementation_usage = implementation.usage
+        store.save(job)
+        job = _advance(store, job, JobState.VALIDATING)
+        job.validation_results = await steps.validate_workspace(workspace_path)
+        job.implementation_finished_at = store.save(job).updated_at
+        job.state = JobState.IMPLEMENTATION_READY
+        store.save(job)
+        logger.info("job %s: implementation ready", job.id)
+    except AppError as err:
+        logger.warning(
+            "job %s implementation failed at %s: %s (%s)",
+            job.id,
+            job.state,
+            err.code,
+            err.internal_detail or "no detail",
+        )
+        _fail(
+            store,
+            job,
+            err.code,
+            err.user_message,
+            failure_state=JobState.IMPLEMENTATION_FAILED,
+        )
+    except Exception:
+        logger.exception("job %s implementation crashed at %s", job.id, job.state)
+        _fail(
+            store,
+            job,
+            ErrorCode.INTERNAL,
+            DEFAULT_MESSAGES[ErrorCode.INTERNAL],
+            failure_state=JobState.IMPLEMENTATION_FAILED,
+        )
+    finally:
+        final = store.get(job.id)
+        if final is not None and not final.is_terminal:  # pragma: no cover - defensive
+            _fail(
+                store,
+                final,
+                ErrorCode.INTERNAL,
+                DEFAULT_MESSAGES[ErrorCode.INTERNAL],
+                failure_state=JobState.IMPLEMENTATION_FAILED,
+            )

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import traceback
+from typing import Any, cast
 
 from app.core import secrets
 
@@ -25,20 +26,40 @@ def redact(text: str) -> str:
     return text
 
 
+def _redact_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact(value)
+    return value
+
+
 class RedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            message = record.getMessage()
-        except Exception:
-            message = str(record.msg)
         if record.exc_info and record.exc_info != (None, None, None):
+            try:
+                message = record.getMessage()
+            except Exception:
+                message = str(record.msg)
             exc_type, exc, tb = record.exc_info
             formatted = "".join(traceback.format_exception(exc_type, exc, tb))
-            message = f"{message}\n{formatted}"
+            message = redact(f"{message}\n{formatted}")
+            record.msg = "%s"
+            record.args = (message,)
             record.exc_info = None
             record.exc_text = None
-        record.msg = redact(message)
-        record.args = ()
+            return True
+        if isinstance(record.args, dict):
+            record.args = {key: _redact_value(value) for key, value in record.args.items()}
+        elif isinstance(record.args, tuple):
+            record.args = tuple(_redact_value(value) for value in record.args)
+        elif isinstance(record.args, list):
+            values = cast(list[Any], record.args)
+            record.args = tuple(_redact_value(value) for value in values)
+        elif record.args:
+            record.args = (_redact_value(record.args),)
+        if isinstance(record.msg, str):
+            record.msg = redact(record.msg)
+        else:
+            record.msg = _redact_value(record.msg)
         return True
 
 
