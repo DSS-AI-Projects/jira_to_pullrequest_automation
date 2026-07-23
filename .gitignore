@@ -4,6 +4,11 @@
 
 # App runtime data (SQLite DB, repo clones)
 var/
+*.db
+
+# Temporary local debug artifacts
+.dbg/
+debug-*.md
 
 # Python
 __pycache__/
