@@ -12,7 +12,16 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.auth.models import Session, User, UserRole
+from app.auth.models import (
+    JiraConnection,
+    JiraOAuthState,
+    ProviderOAuthState,
+    RepoHostingConnection,
+    RepoHostingProvider,
+    Session,
+    User,
+    UserRole,
+)
 from app.jobs.models import Job
 
 _SCHEMA = """
@@ -42,6 +51,43 @@ CREATE TABLE IF NOT EXISTS sessions (
 )
 """
 
+_JIRA_CONNECTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS jira_connections (
+    user_id TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+_JIRA_OAUTH_STATES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS jira_oauth_states (
+    state TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    data TEXT NOT NULL
+)
+"""
+
+_REPO_HOSTING_CONNECTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS repo_hosting_connections (
+    user_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    data TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, provider)
+)
+"""
+
+_PROVIDER_OAUTH_STATES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS provider_oauth_states (
+    state TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    data TEXT NOT NULL
+)
+"""
+
 
 class JobStore:
     def __init__(self, db_path: Path | str) -> None:
@@ -53,6 +99,10 @@ class JobStore:
             self._conn.execute(_SCHEMA)
             self._conn.execute(_USERS_SCHEMA)
             self._conn.execute(_SESSIONS_SCHEMA)
+            self._conn.execute(_JIRA_CONNECTIONS_SCHEMA)
+            self._conn.execute(_JIRA_OAUTH_STATES_SCHEMA)
+            self._conn.execute(_REPO_HOSTING_CONNECTIONS_SCHEMA)
+            self._conn.execute(_PROVIDER_OAUTH_STATES_SCHEMA)
             self._conn.commit()
 
     def create(self, job: Job) -> None:
@@ -165,6 +215,161 @@ class JobStore:
             self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._conn.commit()
 
+    def save_jira_connection(self, connection: JiraConnection) -> JiraConnection:
+        connection.updated_at = datetime.now(UTC)
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO jira_connections (user_id, data, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    data = excluded.data,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    connection.user_id,
+                    connection.model_dump_json(),
+                    connection.updated_at.isoformat(),
+                ),
+            )
+            self._conn.commit()
+        return connection
+
+    def get_jira_connection(self, user_id: str) -> JiraConnection | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM jira_connections WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return JiraConnection.model_validate_json(row[0]) if row else None
+
+    def delete_jira_connection(self, user_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM jira_connections WHERE user_id = ?", (user_id,))
+            self._conn.commit()
+
+    def create_jira_oauth_state(self, user_id: str, ttl_minutes: int) -> JiraOAuthState:
+        oauth_state = JiraOAuthState.new(user_id=user_id, ttl_minutes=ttl_minutes)
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO jira_oauth_states (state, user_id, expires_at, data)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    oauth_state.state,
+                    oauth_state.user_id,
+                    oauth_state.expires_at.isoformat(),
+                    oauth_state.model_dump_json(),
+                ),
+            )
+            self._conn.commit()
+        return oauth_state
+
+    def consume_jira_oauth_state(self, state: str, user_id: str) -> JiraOAuthState | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM jira_oauth_states WHERE state = ?",
+                (state,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute("DELETE FROM jira_oauth_states WHERE state = ?", (state,))
+            self._conn.commit()
+        oauth_state = JiraOAuthState.model_validate_json(row[0])
+        if oauth_state.user_id != user_id or oauth_state.is_expired:
+            return None
+        return oauth_state
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def save_repo_hosting_connection(
+        self, connection: RepoHostingConnection
+    ) -> RepoHostingConnection:
+        connection.updated_at = datetime.now(UTC)
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO repo_hosting_connections (user_id, provider, data, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, provider) DO UPDATE SET
+                    data = excluded.data,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    connection.user_id,
+                    connection.provider.value,
+                    connection.model_dump_json(),
+                    connection.updated_at.isoformat(),
+                ),
+            )
+            self._conn.commit()
+        return connection
+
+    def get_repo_hosting_connection(
+        self, user_id: str, provider: RepoHostingProvider
+    ) -> RepoHostingConnection | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM repo_hosting_connections WHERE user_id = ? AND provider = ?",
+                (user_id, provider.value),
+            ).fetchone()
+        return RepoHostingConnection.model_validate_json(row[0]) if row else None
+
+    def list_repo_hosting_connections(self, user_id: str) -> list[RepoHostingConnection]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT data FROM repo_hosting_connections WHERE user_id = ? ORDER BY provider",
+                (user_id,),
+            ).fetchall()
+        return [RepoHostingConnection.model_validate_json(row[0]) for row in rows]
+
+    def delete_repo_hosting_connection(self, user_id: str, provider: RepoHostingProvider) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM repo_hosting_connections WHERE user_id = ? AND provider = ?",
+                (user_id, provider.value),
+            )
+            self._conn.commit()
+
+    def create_provider_oauth_state(
+        self, user_id: str, provider: RepoHostingProvider, ttl_minutes: int
+    ) -> ProviderOAuthState:
+        oauth_state = ProviderOAuthState.new(
+            user_id=user_id, provider=provider, ttl_minutes=ttl_minutes
+        )
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO provider_oauth_states (state, user_id, provider, expires_at, data)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    oauth_state.state,
+                    oauth_state.user_id,
+                    oauth_state.provider.value,
+                    oauth_state.expires_at.isoformat(),
+                    oauth_state.model_dump_json(),
+                ),
+            )
+            self._conn.commit()
+        return oauth_state
+
+    def consume_provider_oauth_state(
+        self, state: str, user_id: str, provider: RepoHostingProvider
+    ) -> ProviderOAuthState | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM provider_oauth_states WHERE state = ?",
+                (state,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute("DELETE FROM provider_oauth_states WHERE state = ?", (state,))
+            self._conn.commit()
+        oauth_state = ProviderOAuthState.model_validate_json(row[0])
+        if oauth_state.user_id != user_id or oauth_state.provider != provider or oauth_state.is_expired:
+            return None
+        return oauth_state

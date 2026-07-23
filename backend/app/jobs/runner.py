@@ -7,6 +7,8 @@ error. A job can never end outside PLAN_READY or FAILED.
 
 from __future__ import annotations
 
+import asyncio
+import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +18,8 @@ from app.core.errors import DEFAULT_MESSAGES, AppError, ErrorCode
 from app.core.logging import get_logger
 from app.jobs.models import (
     AgentUsage,
+    ImplementationDiff,
+    ImplementationDiffFile,
     ImplementationResult,
     Job,
     JobError,
@@ -54,7 +58,7 @@ class CloneResult:
 class JobSteps:
     """The four job steps, injectable for tests."""
 
-    fetch_ticket: Callable[[str], Awaitable[TicketData]]
+    fetch_ticket: Callable[[Job, JobStore], Awaitable[TicketData]]
     clone_repo: Callable[[str, str, str, Path], Awaitable[CloneResult]]
     build_repo_map: Callable[[Path], Awaitable[RepoMap]]
     generate_plan: Callable[[TicketData, RepoMap, Path], Awaitable[PlanResult]]
@@ -80,6 +84,102 @@ def _fail(
     store.save(job)
 
 
+def _run_git_command(workspace_path: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(workspace_path), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return completed.stdout
+
+
+def _read_git_head_sync(workspace_path: Path) -> str | None:
+    try:
+        return _run_git_command(workspace_path, "rev-parse", "HEAD").strip() or None
+    except subprocess.CalledProcessError:
+        return None
+    except FileNotFoundError:
+        return None
+
+
+def _parse_numstat(output: str) -> tuple[int | None, int | None, bool]:
+    line = output.strip()
+    if not line:
+        return None, None, False
+
+    additions_text, deletions_text, *_rest = line.split("\t", maxsplit=2)
+    is_binary = additions_text == "-" or deletions_text == "-"
+    additions = None if additions_text == "-" else int(additions_text)
+    deletions = None if deletions_text == "-" else int(deletions_text)
+    return additions, deletions, is_binary
+
+
+def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> ImplementationDiff:
+    overall_patch = _run_git_command(
+        workspace_path,
+        "diff",
+        "--no-ext-diff",
+        "--find-renames",
+        "--unified=3",
+        base_ref,
+        "--",
+    )
+    changed_paths = [
+        line
+        for line in _run_git_command(
+            workspace_path, "diff", "--name-only", base_ref, "--"
+        ).splitlines()
+        if line.strip()
+    ]
+    files: list[ImplementationDiffFile] = []
+    for path in changed_paths:
+        patch = _run_git_command(
+            workspace_path,
+            "diff",
+            "--no-ext-diff",
+            "--find-renames",
+            "--unified=3",
+            base_ref,
+            "--",
+            path,
+        )
+        additions, deletions, is_binary = _parse_numstat(
+            _run_git_command(workspace_path, "diff", "--numstat", base_ref, "--", path)
+        )
+        files.append(
+            ImplementationDiffFile(
+                path=path,
+                patch=patch,
+                additions=additions,
+                deletions=deletions,
+                is_binary=is_binary,
+            )
+        )
+    return ImplementationDiff(overall_patch=overall_patch, files=files)
+
+
+async def _collect_implementation_diff(
+    workspace_path: Path, base_ref: str
+) -> ImplementationDiff | None:
+    try:
+        return await asyncio.to_thread(_collect_implementation_diff_sync, workspace_path, base_ref)
+    except subprocess.CalledProcessError:
+        logger.warning(
+            "failed to collect implementation diff for %s",
+            workspace_path,
+            exc_info=True,
+        )
+    except FileNotFoundError:
+        logger.warning(
+            "git is unavailable while collecting implementation diff for %s",
+            workspace_path,
+        )
+    return None
+
+
 async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSteps) -> None:
     job = store.get(job_id)
     if job is None:  # pragma: no cover - defensive
@@ -87,7 +187,7 @@ async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSt
         return
     try:
         job = _advance(store, job, JobState.FETCHING_TICKET)
-        ticket = await steps.fetch_ticket(job.ticket_key)
+        ticket = await steps.fetch_ticket(job, store)
 
         job = _advance(store, job, JobState.CLONING_REPO)
         clone_result = await steps.clone_repo(
@@ -149,11 +249,14 @@ async def run_implementation(
                 internal_detail=f"workspace path missing: {workspace_path}",
             )
 
+        base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
+        base_ref = base_ref or "HEAD"
         job.implementation_started_at = store.save(job).updated_at
         job = _advance(store, job, JobState.IMPLEMENTING)
         implementation = await steps.implement_plan(job, workspace_path)
 
         job.implementation_result = implementation.result
+        job.implementation_diff = await _collect_implementation_diff(workspace_path, base_ref)
         job.implementation_usage = implementation.usage
         store.save(job)
         job = _advance(store, job, JobState.VALIDATING)

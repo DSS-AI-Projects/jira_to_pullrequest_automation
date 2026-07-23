@@ -110,6 +110,7 @@ async def implement_job(job_id: str, request: Request) -> JobCreated:
     now = datetime.now(UTC)
     job.error = None
     job.implementation_result = None
+    job.implementation_diff = None
     job.implementation_usage = None
     job.validation_results = []
     job.implementation_approved_at = now

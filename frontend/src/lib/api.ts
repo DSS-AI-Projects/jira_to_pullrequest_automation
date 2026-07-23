@@ -34,6 +34,96 @@ export type SessionInfo = {
   user: CurrentUser | null;
 };
 
+export type JiraAuthMode = "UNCONFIGURED" | "SHARED" | "DELEGATED";
+
+export type JiraCloudSite = {
+  id: string;
+  name: string;
+  url: string;
+};
+
+export type JiraConnectionInfo = {
+  site: JiraCloudSite;
+  scopes: string[];
+  connected_at: string;
+  updated_at: string;
+  access_token_expires_at: string;
+  has_refresh_token: boolean;
+};
+
+export type JiraAuthStatus = {
+  oauth_enabled: boolean;
+  oauth_configured: boolean;
+  shared_configured: boolean;
+  effective_mode: JiraAuthMode;
+  connected: boolean;
+  connection: JiraConnectionInfo | null;
+};
+
+export type JiraConnectStartResponse = {
+  authorization_url: string;
+};
+
+export type JiraConnectCallbackResponse = {
+  ok: boolean;
+  connection: JiraConnectionInfo;
+};
+
+export type RepoHostingProvider = "GITHUB" | "GITLAB";
+
+export type RepoHostingAuthKind = "OAUTH_USER" | "APP_INSTALLATION";
+
+export type RepoHostingConnectionInfo = {
+  provider: RepoHostingProvider;
+  auth_kind: RepoHostingAuthKind;
+  account_name: string;
+  account_id: string;
+  account_url: string;
+  scopes: string[];
+  installation_id: string | null;
+  connected_at: string;
+  updated_at: string;
+  access_token_expires_at: string | null;
+  has_refresh_token: boolean;
+};
+
+export type RepoHostingProviderStatus = {
+  provider: RepoHostingProvider;
+  display_name: string;
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  connection: RepoHostingConnectionInfo | null;
+};
+
+export type RepoHostingStatus = {
+  providers: RepoHostingProviderStatus[];
+};
+
+export type RepoHostingConnectStartResponse = {
+  authorization_url: string;
+};
+
+export type RepoHostingConnectCallbackResponse = {
+  ok: boolean;
+  connection: RepoHostingConnectionInfo;
+};
+
+export type GitHubRepositorySummary = {
+  id: number;
+  name: string;
+  full_name: string;
+  html_url: string;
+  clone_url: string;
+  default_branch: string | null;
+  owner_login: string;
+  private: boolean;
+};
+
+export type GitHubRepositoryListResponse = {
+  repos: GitHubRepositorySummary[];
+};
+
 export type JobError = {
   code: string;
   message: string;
@@ -72,6 +162,19 @@ export type ImplementationResult = {
   follow_up_questions: string[];
 };
 
+export type ImplementationDiffFile = {
+  path: string;
+  patch: string;
+  additions: number | null;
+  deletions: number | null;
+  is_binary: boolean;
+};
+
+export type ImplementationDiff = {
+  overall_patch: string;
+  files: ImplementationDiffFile[];
+};
+
 export type ValidationStatus = "PASSED" | "FAILED" | "SKIPPED";
 
 export type ValidationResult = {
@@ -94,6 +197,7 @@ export type Job = {
   usage: AgentUsage | null;
   implementation_usage: AgentUsage | null;
   implementation_result: ImplementationResult | null;
+  implementation_diff: ImplementationDiff | null;
   validation_results: ValidationResult[];
   implementation_approved_at: string | null;
   implementation_started_at: string | null;
@@ -196,6 +300,19 @@ function normalizeJob(job: Job): Job {
     validation_results: Array.isArray(job.validation_results)
       ? job.validation_results
       : [],
+    implementation_diff: job.implementation_diff
+      ? {
+          ...job.implementation_diff,
+          files: Array.isArray(job.implementation_diff.files)
+            ? job.implementation_diff.files.map((file) => ({
+                ...file,
+                additions: file.additions ?? null,
+                deletions: file.deletions ?? null,
+                is_binary: file.is_binary ?? false,
+              }))
+            : [],
+        }
+      : null,
     implementation_usage: job.implementation_usage ?? null,
     implementation_result: job.implementation_result
       ? {
@@ -292,4 +409,101 @@ export async function logout(signal?: AbortSignal): Promise<void> {
     signal,
   });
   await parseJson<{ ok: boolean }>(response);
+}
+
+export async function fetchJiraAuthStatus(
+  signal?: AbortSignal,
+): Promise<JiraAuthStatus> {
+  const response = await apiFetch("/api/auth/jira", {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<JiraAuthStatus>(response);
+}
+
+export async function startJiraConnect(
+  signal?: AbortSignal,
+): Promise<JiraConnectStartResponse> {
+  const response = await apiFetch("/api/auth/jira/connect", {
+    method: "POST",
+    signal,
+  });
+  return parseJson<JiraConnectStartResponse>(response);
+}
+
+export async function completeJiraConnect(
+  params: { code: string; state: string },
+  signal?: AbortSignal,
+): Promise<JiraConnectCallbackResponse> {
+  const search = new URLSearchParams(params).toString();
+  const response = await apiFetch(`/api/auth/jira/callback?${search}`, {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<JiraConnectCallbackResponse>(response);
+}
+
+export async function disconnectJira(signal?: AbortSignal): Promise<void> {
+  const response = await apiFetch("/api/auth/jira", {
+    method: "DELETE",
+    signal,
+  });
+  await parseJson<{ ok: boolean }>(response);
+}
+
+export async function fetchRepoHostingStatus(
+  signal?: AbortSignal,
+): Promise<RepoHostingStatus> {
+  const response = await apiFetch("/api/auth/repo-hosting", {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<RepoHostingStatus>(response);
+}
+
+export async function disconnectRepoHostingProvider(
+  provider: RepoHostingProvider,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await apiFetch(`/api/auth/repo-hosting/${provider}`, {
+    method: "DELETE",
+    signal,
+  });
+  await parseJson<{ ok: boolean }>(response);
+}
+
+export async function startGitHubConnect(
+  signal?: AbortSignal,
+): Promise<RepoHostingConnectStartResponse> {
+  const response = await apiFetch("/api/auth/repo-hosting/github/connect", {
+    method: "POST",
+    signal,
+  });
+  return parseJson<RepoHostingConnectStartResponse>(response);
+}
+
+export async function completeGitHubConnect(
+  params: { code: string; state: string },
+  signal?: AbortSignal,
+): Promise<RepoHostingConnectCallbackResponse> {
+  const search = new URLSearchParams(params).toString();
+  const response = await apiFetch(`/api/auth/repo-hosting/github/callback?${search}`, {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<RepoHostingConnectCallbackResponse>(response);
+}
+
+export async function fetchGitHubRepositories(
+  signal?: AbortSignal,
+): Promise<GitHubRepositoryListResponse> {
+  const response = await apiFetch("/api/auth/repo-hosting/github/repos", {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<GitHubRepositoryListResponse>(response);
+}
+
+export function redirectBrowser(url: string): void {
+  window.location.assign(url);
 }

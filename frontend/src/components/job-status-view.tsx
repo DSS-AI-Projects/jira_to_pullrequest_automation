@@ -8,6 +8,7 @@ import {
   implementJob,
   isAbortError,
   type Job,
+  type ImplementationDiffFile,
   type ValidationResult,
 } from "@/lib/api";
 import { isTerminalState, JOB_STATES, JOB_STATE_LABELS } from "@/lib/job";
@@ -36,6 +37,18 @@ function totalCost(job: Job): number | null {
     return null;
   }
   return values.reduce((sum, value) => sum + value, 0);
+}
+
+function diffStat(file: ImplementationDiffFile): string {
+  const additions = file.additions ?? 0;
+  const deletions = file.deletions ?? 0;
+  if (file.is_binary) {
+    return "Binary";
+  }
+  if (additions === 0 && deletions === 0) {
+    return "No line changes";
+  }
+  return `+${additions} -${deletions}`;
 }
 
 export function JobStatusView(props: { jobId: string }) {
@@ -339,6 +352,40 @@ export function JobStatusView(props: { jobId: string }) {
                   </li>
                 ))}
               </ul>
+            </section>
+
+            <section className="panel">
+              <h3>Diff</h3>
+              {job.implementation_diff ? (
+                <>
+                  <p className="meta-muted">
+                    This patch is captured from the isolated workspace after implementation.
+                  </p>
+                  <details>
+                    <summary className="pill-button">Show full patch</summary>
+                    <pre className="output-block">{job.implementation_diff.overall_patch}</pre>
+                  </details>
+                  <ul className="content-list">
+                    {(job.implementation_diff.files ?? []).map((file) => (
+                      <li key={`${file.path}-${file.is_binary}`}>
+                        <div className="change-header">
+                          <code>{file.path}</code>
+                          <span className="pill">{diffStat(file)}</span>
+                        </div>
+                        {file.is_binary ? (
+                          <p className="meta-muted">
+                            Binary file diff is not shown.
+                          </p>
+                        ) : (
+                          <pre className="output-block">{file.patch}</pre>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="meta-muted">No diff artifacts were recorded for this job.</p>
+              )}
             </section>
 
             <section className="panel">

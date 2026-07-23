@@ -88,6 +88,23 @@ class ImplementationResult(BaseModel):
     follow_up_questions: list[str] = []
 
 
+class ImplementationDiffFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    patch: str
+    additions: int | None = None
+    deletions: int | None = None
+    is_binary: bool = False
+
+
+class ImplementationDiff(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    overall_patch: str
+    files: list[ImplementationDiffFile] = []
+
+
 class ValidationStatus(StrEnum):
     PASSED = "PASSED"
     FAILED = "FAILED"
@@ -119,6 +136,7 @@ class Job(BaseModel):
     usage: AgentUsage | None = None
     implementation_usage: AgentUsage | None = None
     implementation_result: ImplementationResult | None = None
+    implementation_diff: ImplementationDiff | None = None
     validation_results: list[ValidationResult] = []
     implementation_approved_at: datetime | None = None
     implementation_started_at: datetime | None = None

@@ -3,6 +3,7 @@
 import dataclasses
 import io
 import logging
+import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -12,8 +13,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.logging import RedactionFilter
-from app.jobs.models import Job, RepoInfo, RepoSourceKind
-from app.jobs.runner import CloneResult
+from app.jobs.models import AgentUsage, ImplementationResult, Job, RepoInfo, RepoSourceKind
+from app.jobs.runner import CloneResult, ImplementationStepResult
 from app.jobs.store import JobStore
 from app.main import create_app
 from tests.fakes import make_fake_steps
@@ -35,11 +36,46 @@ def client(store: JobStore) -> Iterator[TestClient]:
 
 @pytest.fixture
 def local_client(store: JobStore) -> Iterator[TestClient]:
+    def init_git_workspace(path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "README.md").write_text("Hello AI Agentic World\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(path), "branch", "-M", "main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "add", "README.md"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "-m", "Initial commit"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     async def local_clone(
         job_id: str, ticket_key: str, repo_url: str, workdir: Path
     ) -> CloneResult:
         clone_path = workdir / job_id
-        clone_path.mkdir(parents=True, exist_ok=True)
+        init_git_workspace(clone_path)
         return CloneResult(
             clone_path=clone_path,
             repo_info=RepoInfo(
@@ -52,7 +88,36 @@ def local_client(store: JobStore) -> Iterator[TestClient]:
             ),
         )
 
-    steps = dataclasses.replace(make_fake_steps(), clone_repo=local_clone)
+    async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepResult:
+        del job
+        (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated the README greeting.",
+                changed_files=[
+                    {
+                        "path": "README.md",
+                        "action": "modify",
+                        "rationale": "Update the greeting text to match the approved plan.",
+                    }
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(
+                input_tokens=120,
+                output_tokens=80,
+                total_cost_usd=0.02,
+                num_turns=2,
+                duration_seconds=1.2,
+            ),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=local_clone,
+        implement_plan=implement_plan,
+    )
     app = create_app(store=store, steps=steps)
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
@@ -149,6 +214,9 @@ def test_plan_ready_local_job_can_be_approved_for_implementation(
     )
     assert final["state"] == "IMPLEMENTATION_READY"
     assert final["implementation_result"] is not None
+    assert final["implementation_diff"] is not None
+    assert "README.md" in final["implementation_diff"]["overall_patch"]
+    assert final["implementation_diff"]["files"][0]["path"] == "README.md"
     assert final["implementation_usage"] is not None
     assert final["validation_results"] is not None
 

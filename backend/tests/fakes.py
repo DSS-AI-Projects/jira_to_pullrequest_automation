@@ -15,6 +15,7 @@ from app.jobs.models import (
     ValidationStatus,
 )
 from app.jobs.runner import CloneResult, ImplementationStepResult, JobSteps, PlanResult
+from app.jobs.store import JobStore
 from app.schemas.plan import Plan
 from app.schemas.repomap import RepoMap
 from app.schemas.ticket import TicketData
@@ -38,8 +39,9 @@ def sample_plan() -> Plan:
 
 
 def make_fake_steps() -> JobSteps:
-    async def fetch_ticket(ticket_key: str) -> TicketData:
-        return TicketData(key=ticket_key, summary="A ticket", description="Do the thing.")
+    async def fetch_ticket(job: Job, store: JobStore) -> TicketData:
+        del store
+        return TicketData(key=job.ticket_key, summary="A ticket", description="Do the thing.")
 
     async def clone_repo(
         job_id: str, ticket_key: str, repo_url: str, workdir: Path

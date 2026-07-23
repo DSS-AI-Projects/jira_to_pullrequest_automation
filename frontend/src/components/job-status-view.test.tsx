@@ -65,6 +65,7 @@ describe("JobStatusView", () => {
         },
         implementation_usage: null,
         implementation_result: null,
+        implementation_diff: null,
         validation_results: [],
         implementation_approved_at: null,
         implementation_started_at: null,
@@ -125,6 +126,20 @@ describe("JobStatusView", () => {
           warnings: [],
           follow_up_questions: ["Confirm punctuation."],
         },
+        implementation_diff: {
+          overall_patch:
+            "diff --git a/README b/README\nindex 1111111..2222222 100644\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-Hello AI Agentic World\n+Hello Back To World\n",
+          files: [
+            {
+              path: "README",
+              patch:
+                "diff --git a/README b/README\nindex 1111111..2222222 100644\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-Hello AI Agentic World\n+Hello Back To World\n",
+              additions: 1,
+              deletions: 1,
+              is_binary: false,
+            },
+          ],
+        },
         validation_results: [
           {
             name: "validation-profile",
@@ -152,6 +167,8 @@ describe("JobStatusView", () => {
     await waitFor(() => expect(implementJob).toHaveBeenCalledWith("job-123"));
     await screen.findByText(/Updated README greeting/i);
     expect(screen.getByText(/validation results/i)).toBeInTheDocument();
+    expect(screen.getByText(/Show full patch/i)).toBeInTheDocument();
+    expect(screen.getByText(/\+1 -1/)).toBeInTheDocument();
     expect(screen.getByText(/Confirm punctuation/i)).toBeInTheDocument();
     expect(screen.getByText(/Implementation workspace/i)).toBeInTheDocument();
     expect(screen.getByText(/D:\\workdir\\job-123\\repo/i)).toBeInTheDocument();
@@ -189,6 +206,7 @@ describe("JobStatusView", () => {
       usage: null,
       implementation_usage: null,
       implementation_result: null,
+      implementation_diff: null,
       validation_results: [],
       implementation_approved_at: null,
       implementation_started_at: null,
@@ -247,6 +265,7 @@ describe("JobStatusView", () => {
         warnings: ["Check the filename mismatch."],
         follow_up_questions: [],
       },
+      implementation_diff: undefined,
       validation_results: undefined,
       implementation_approved_at: "2026-07-17T00:02:00Z",
       implementation_started_at: "2026-07-17T00:02:01Z",
@@ -259,6 +278,7 @@ describe("JobStatusView", () => {
 
     await screen.findByText(/Updated README greeting/i);
     expect(screen.getByText(/Validation results/i)).toBeInTheDocument();
+    expect(screen.getByText(/No diff artifacts were recorded/i)).toBeInTheDocument();
     expect(screen.getByText(/Check the filename mismatch/i)).toBeInTheDocument();
   });
 });

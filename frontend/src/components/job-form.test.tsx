@@ -3,9 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobForm } from "@/components/job-form";
 
-const { push, createJob, fetchRepos } = vi.hoisted(() => ({
+const { push, createJob, fetchGitHubRepositories, fetchRepos } = vi.hoisted(() => ({
   push: vi.fn(),
   createJob: vi.fn(),
+  fetchGitHubRepositories: vi.fn(),
   fetchRepos: vi.fn(),
 }));
 
@@ -20,6 +21,7 @@ vi.mock("@/lib/api", async () => {
   return {
     ...actual,
     createJob,
+    fetchGitHubRepositories,
     fetchRepos,
   };
 });
@@ -28,6 +30,7 @@ describe("JobForm", () => {
   beforeEach(() => {
     push.mockReset();
     createJob.mockReset();
+    fetchGitHubRepositories.mockReset();
     fetchRepos.mockReset();
   });
 
@@ -47,6 +50,9 @@ describe("JobForm", () => {
         require_ticket_branch_match: true,
       },
     });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
     createJob.mockResolvedValue({ job_id: "job-123" });
 
     render(<JobForm />);
@@ -85,6 +91,9 @@ describe("JobForm", () => {
         require_ticket_branch_match: false,
       },
     });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
     createJob.mockRejectedValue(
       new Error("The repo field looks like it contains a credential."),
     );
@@ -120,6 +129,9 @@ describe("JobForm", () => {
         require_ticket_branch_match: true,
       },
     });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
     createJob.mockResolvedValue({ job_id: "job-local" });
 
     render(<JobForm />);
@@ -143,5 +155,52 @@ describe("JobForm", () => {
       }),
     );
     expect(push).toHaveBeenCalledWith("/jobs/job-local");
+  });
+
+  it("shows connected GitHub repos and submits the selected clone url", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+      },
+    });
+    fetchGitHubRepositories.mockResolvedValue({
+      repos: [
+        {
+          id: 1001,
+          name: "repo-one",
+          full_name: "octocat/repo-one",
+          html_url: "https://github.com/octocat/repo-one",
+          clone_url: "https://github.com/octocat/repo-one.git",
+          default_branch: "main",
+          owner_login: "octocat",
+          private: false,
+        },
+      ],
+    });
+    createJob.mockResolvedValue({ job_id: "job-github" });
+
+    render(<JobForm />);
+
+    await screen.findByText("Connected GitHub repos");
+    fireEvent.click(screen.getByRole("button", { name: "octocat/repo-one" }));
+    fireEvent.change(screen.getByLabelText(/Jira ticket key or URL/i), {
+      target: { value: "PROJ-77" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Generate implementation plan/i }),
+    );
+
+    await waitFor(() =>
+      expect(createJob).toHaveBeenCalledWith({
+        ticket: "PROJ-77",
+        repo: "https://github.com/octocat/repo-one.git",
+      }),
+    );
+    expect(push).toHaveBeenCalledWith("/jobs/job-github");
   });
 });

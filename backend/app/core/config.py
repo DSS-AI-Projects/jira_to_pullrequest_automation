@@ -7,6 +7,7 @@ app-wide object ever holds them (security invariant 5).
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -25,6 +26,20 @@ class Settings(BaseSettings):
     # Jira (non-secret parts; the token stays in core.secrets)
     jira_base_url: str | None = None
     jira_email: str | None = None
+    jira_oauth_enabled: bool = False
+    jira_oauth_client_id: str | None = None
+    jira_oauth_callback_url: str | None = None
+    jira_oauth_scopes: list[str] = ["read:jira-work", "offline_access"]
+    jira_oauth_state_ttl_minutes: int = 10
+    github_oauth_enabled: bool = False
+    github_oauth_client_id: str | None = None
+    github_oauth_callback_url: str | None = None
+    github_oauth_scopes: list[str] = ["repo", "read:user"]
+    github_oauth_state_ttl_minutes: int = 10
+    gitlab_oauth_enabled: bool = False
+    gitlab_oauth_client_id: str | None = None
+    gitlab_oauth_callback_url: str | None = None
+    gitlab_oauth_scopes: list[str] = ["api", "read_user"]
 
     # Repo input validation (security invariant 5)
     allowed_git_hosts: list[str] = ["github.com"]
@@ -75,4 +90,6 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return Settings(_env_file=None)  # type: ignore[call-arg]
     return Settings()

@@ -6,8 +6,10 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   createJob,
+  fetchGitHubRepositories,
   fetchRepos,
   isAbortError,
+  type GitHubRepositorySummary,
   type RepoChoice,
   type RepoList,
 } from "@/lib/api";
@@ -21,6 +23,7 @@ export function JobForm() {
   const [repo, setRepo] = useState("");
   const [repoMode, setRepoMode] = useState<RepoMode>("remote");
   const [repos, setRepos] = useState<RepoChoice[]>([]);
+  const [githubRepos, setGitHubRepos] = useState<GitHubRepositorySummary[]>([]);
   const [allowedHosts, setAllowedHosts] = useState<string[]>([]);
   const [localRepoSupport, setLocalRepoSupport] =
     useState<RepoList["local_repo_support"] | null>(null);
@@ -39,6 +42,28 @@ export function JobForm() {
           setRepos(response.repos);
           setAllowedHosts(response.allowed_hosts);
           setLocalRepoSupport(response.local_repo_support);
+        }
+        try {
+          const githubResponse = await fetchGitHubRepositories(controller.signal);
+          if (active) {
+            setGitHubRepos(githubResponse.repos);
+          }
+        } catch (githubError) {
+          if (!active || isAbortError(githubError)) {
+            return;
+          }
+          if (
+            githubError instanceof Error &&
+            /connect your github account before loading repositories/i.test(
+              githubError.message,
+            )
+          ) {
+            if (active) {
+              setGitHubRepos([]);
+            }
+            return;
+          }
+          throw githubError;
         }
       } catch (repoError) {
         if (!active || isAbortError(repoError)) {
@@ -66,11 +91,17 @@ export function JobForm() {
     if (repoMode === "local") {
       return "Enter an approved absolute local path to a Git working tree.";
     }
+    if (githubRepos.length > 0 && repos.length > 0) {
+      return "Pick a connected GitHub repo, use a pre-configured repo, or enter an allowed repository URL.";
+    }
+    if (githubRepos.length > 0) {
+      return "Pick a connected GitHub repo below or enter an allowed repository URL.";
+    }
     if (repos.length === 0) {
       return "Enter an allowed repository URL or pre-configured repo name.";
     }
     return "Pick a pre-configured repo below or enter an allowed repository URL.";
-  }, [repoMode, repos.length]);
+  }, [githubRepos.length, repoMode, repos.length]);
 
   const repoLabel =
     repoMode === "local"
@@ -183,12 +214,35 @@ export function JobForm() {
         </label>
 
         <datalist id="repo-suggestions">
+          {githubRepos.map((repoOption) => (
+            <option key={repoOption.id} value={repoOption.clone_url}>
+              {repoOption.full_name}
+            </option>
+          ))}
           {repos.map((repoOption) => (
             <option key={repoOption.name} value={repoOption.name}>
               {repoOption.url}
             </option>
           ))}
         </datalist>
+
+        {repoMode === "remote" && githubRepos.length > 0 ? (
+          <div className="quick-picks">
+            <span className="quick-picks-label">Connected GitHub repos</span>
+            <div className="pill-row">
+              {githubRepos.map((repoOption) => (
+                <button
+                  className="pill-button"
+                  key={repoOption.id}
+                  onClick={() => setRepo(repoOption.clone_url)}
+                  type="button"
+                >
+                  {repoOption.full_name}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {repoMode === "remote" && repos.length > 0 ? (
           <div className="quick-picks">

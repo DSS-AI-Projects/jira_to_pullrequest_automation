@@ -19,6 +19,13 @@ class ErrorCode(StrEnum):
     JIRA_CONFIG_MISSING = "JIRA_CONFIG_MISSING"
     JIRA_AUTH_FAILED = "JIRA_AUTH_FAILED"
     JIRA_UNREACHABLE = "JIRA_UNREACHABLE"
+    JIRA_OAUTH_NOT_AVAILABLE = "JIRA_OAUTH_NOT_AVAILABLE"
+    JIRA_OAUTH_STATE_INVALID = "JIRA_OAUTH_STATE_INVALID"
+    JIRA_OAUTH_CALLBACK_FAILED = "JIRA_OAUTH_CALLBACK_FAILED"
+    JIRA_SITE_NOT_ACCESSIBLE = "JIRA_SITE_NOT_ACCESSIBLE"
+    REPO_PROVIDER_NOT_AVAILABLE = "REPO_PROVIDER_NOT_AVAILABLE"
+    REPO_PROVIDER_STATE_INVALID = "REPO_PROVIDER_STATE_INVALID"
+    REPO_PROVIDER_CALLBACK_FAILED = "REPO_PROVIDER_CALLBACK_FAILED"
     TICKET_NOT_FOUND = "TICKET_NOT_FOUND"
     TICKET_EMPTY = "TICKET_EMPTY"
     REPO_HOST_NOT_ALLOWED = "REPO_HOST_NOT_ALLOWED"
@@ -59,6 +66,27 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
         "Jira rejected the server's credentials. Check JIRA_EMAIL and JIRA_API_TOKEN."
     ),
     ErrorCode.JIRA_UNREACHABLE: "Could not reach Jira. Check JIRA_BASE_URL and your network.",
+    ErrorCode.JIRA_OAUTH_NOT_AVAILABLE: (
+        "Per-user Jira sign-in is not configured on this server."
+    ),
+    ErrorCode.JIRA_OAUTH_STATE_INVALID: (
+        "That Jira sign-in attempt is missing or expired. Start the connect flow again."
+    ),
+    ErrorCode.JIRA_OAUTH_CALLBACK_FAILED: (
+        "Jira sign-in could not be completed. Try connecting again."
+    ),
+    ErrorCode.JIRA_SITE_NOT_ACCESSIBLE: (
+        "Your Jira account cannot access the Jira site configured on this server."
+    ),
+    ErrorCode.REPO_PROVIDER_NOT_AVAILABLE: (
+        "That repository provider sign-in is not configured on this server."
+    ),
+    ErrorCode.REPO_PROVIDER_STATE_INVALID: (
+        "That repository provider sign-in attempt is missing or expired. Start the connect flow again."
+    ),
+    ErrorCode.REPO_PROVIDER_CALLBACK_FAILED: (
+        "Repository provider sign-in could not be completed. Try connecting again."
+    ),
     ErrorCode.TICKET_NOT_FOUND: "That Jira ticket could not be found (or is not visible).",
     ErrorCode.TICKET_EMPTY: "The ticket has no usable content (empty summary and description).",
     ErrorCode.REPO_HOST_NOT_ALLOWED: "That repository host is not on the allowed list.",
@@ -117,6 +145,13 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
 HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.INPUT_INVALID: 400,
     ErrorCode.AUTH_NOT_AVAILABLE: 400,
+    ErrorCode.JIRA_OAUTH_NOT_AVAILABLE: 400,
+    ErrorCode.JIRA_OAUTH_STATE_INVALID: 400,
+    ErrorCode.JIRA_OAUTH_CALLBACK_FAILED: 400,
+    ErrorCode.JIRA_SITE_NOT_ACCESSIBLE: 400,
+    ErrorCode.REPO_PROVIDER_NOT_AVAILABLE: 400,
+    ErrorCode.REPO_PROVIDER_STATE_INVALID: 400,
+    ErrorCode.REPO_PROVIDER_CALLBACK_FAILED: 400,
     ErrorCode.REPO_HOST_NOT_ALLOWED: 400,
     ErrorCode.LOCAL_REPO_NOT_ALLOWED: 400,
     ErrorCode.LOCAL_REPO_NOT_FOUND: 400,

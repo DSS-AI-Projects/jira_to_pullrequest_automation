@@ -14,6 +14,8 @@ import httpx
 from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger
+from app.jobs.models import Job
+from app.jobs.store import JobStore
 from app.schemas.ticket import TicketData
 from app.steps.jira_auth import get_jira_auth
 
@@ -73,11 +75,11 @@ def split_acceptance_criteria(description: str) -> tuple[str, str | None]:
     return before, after or None
 
 
-async def fetch_ticket(ticket_key: str) -> TicketData:
+async def fetch_ticket(job: Job, store: JobStore) -> TicketData:
     settings = get_settings()
-    auth = get_jira_auth(settings)  # lazy: the token lives only in this call stack
+    auth = await get_jira_auth(job, store, settings)
 
-    url = f"{auth.base_url}/rest/api/3/issue/{ticket_key}"
+    url = f"{auth.base_url}/rest/api/3/issue/{job.ticket_key}"
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
@@ -118,9 +120,9 @@ async def fetch_ticket(ticket_key: str) -> TicketData:
     if not summary and not description:
         raise AppError(ErrorCode.TICKET_EMPTY)
 
-    logger.info("fetched ticket %s (%d comments)", ticket_key, len(comments))
+    logger.info("fetched ticket %s (%d comments)", job.ticket_key, len(comments))
     return TicketData(
-        key=str(payload.get("key") or ticket_key),
+        key=str(payload.get("key") or job.ticket_key),
         summary=summary,
         description=description,
         acceptance_criteria=acceptance,

@@ -89,6 +89,29 @@ ol {
   gap: 1rem;
 }
 
+.auth-bar__identity {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.auth-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.jira-access {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.9rem 1rem;
+  border-radius: 1rem;
+  background: #f7faff;
+  border: 1px solid #d8e5ff;
+  min-width: min(30rem, 100%);
+}
+
 .auth-card {
   align-items: stretch;
 }
@@ -434,6 +457,11 @@ ol {
   .hero-card,
   .plan-columns {
     grid-template-columns: 1fr;
+  }
+
+  .auth-bar__content {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .hero-copy {

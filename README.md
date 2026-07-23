@@ -8,16 +8,18 @@ invariants, plan schema, failure policy, and quality gates.
 
 ## Security model (short version)
 
-The app **never custodies user secrets**. The web form accepts only non-secret
-identifiers (ticket key/URL, repo identifier). Jira auth comes from environment
-variables (`backend/.env`, gitignored — see `backend/.env.example` for the names);
-git clone uses your machine's ambient git auth (SSH key / credential helper);
-the Anthropic key comes from env. No credential is ever typed into the UI, logged,
+The web form accepts only non-secret identifiers (ticket key/URL, repo
+identifier). In shared Jira mode, Jira auth comes from environment variables
+(`backend/.env`, gitignored — see `backend/.env.example` for the names); git
+clone uses your machine's ambient git auth (SSH key / credential helper); the
+Anthropic key comes from env. No credential is ever typed into the UI, logged,
 sent to the LLM, or committed.
 
-When app authentication is enabled, the server does store non-secret user
-metadata plus server-managed session ids in its SQLite database so it can enforce
-job ownership. External identity provider credentials still stay outside the app.
+When app authentication is enabled, the server stores non-secret user metadata
+plus server-managed session ids in SQLite so it can enforce job ownership. In
+the new delegated Jira mode, the backend may also store user-specific Jira OAuth
+tokens encrypted at rest in SQLite. Those tokens still stay out of the browser
+forms, logs, and LLM prompts.
 
 ## Authentication (Milestone M1)
 
@@ -55,6 +57,43 @@ Relevant settings in `backend/.env`:
 - `AUTH_TRUSTED_SUBJECT_HEADER=X-Auth-Request-User`
 - `AUTH_TRUSTED_PROVIDER_NAME=trusted-proxy`
 - `AUTH_ADMIN_EMAILS=["admin@example.com"]`
+
+## Jira access modes
+
+Two Jira auth modes now coexist so shared and multi-user deployments can migrate
+incrementally:
+
+- Shared server credentials: configure `JIRA_BASE_URL`, `JIRA_EMAIL`, and
+  `JIRA_API_TOKEN` for the existing single-account server-side Jira access path.
+- Delegated per-user access: enable Atlassian OAuth via
+  `JIRA_OAUTH_ENABLED=true`, `JIRA_OAUTH_CLIENT_ID`,
+  `JIRA_OAUTH_CALLBACK_URL`, `JIRA_OAUTH_CLIENT_SECRET`, and
+  `JIRA_OAUTH_ENCRYPTION_KEY`.
+- For the built-in frontend UX, set `JIRA_OAUTH_CALLBACK_URL` to the public
+  frontend callback route, for example `http://localhost:3000/auth/jira/callback`
+  in local dev or `https://app.example.com/auth/jira/callback` behind a shared
+  deployment proxy.
+- Delegated access is stored per signed-in user and used preferentially during
+  Jira fetches. If a user has not connected Jira yet, the backend still falls
+  back to the shared server credentials when those are configured.
+- `JIRA_BASE_URL` remains important in delegated mode because it identifies which
+  Jira Cloud site this server should target when a user can access more than one
+  Atlassian site.
+
+## Repository provider foundations
+
+The next multi-user milestone starts the transition from local-path and ambient
+machine git access toward provider-managed repository connections.
+
+- The backend now has a provider-aware connection model for repository hosting
+  accounts (`GitHub`, `GitLab`) stored per signed-in user.
+- New protected APIs expose repository provider connection status so the frontend
+  can build a user-facing connect/disconnect flow in later slices.
+- This foundation does not yet replace the current clone path or local repo
+  workflow. It prepares the app for managed repository access and server-side
+  workspace isolation in later milestones.
+- Optional config placeholders are included in `backend/.env.example` for
+  `GITHUB_OAUTH_*` and `GITLAB_OAUTH_*`.
 
 For local development over plain HTTP, leave `AUTH_SESSION_COOKIE_SECURE=false`.
 For HTTPS deployments behind a reverse proxy, set it to `true`.
