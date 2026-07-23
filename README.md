@@ -80,20 +80,31 @@ incrementally:
   Jira Cloud site this server should target when a user can access more than one
   Atlassian site.
 
-## Repository provider foundations
+## Repository provider connections
 
-The next multi-user milestone starts the transition from local-path and ambient
-machine git access toward provider-managed repository connections.
+The app now supports per-user GitHub OAuth connections for repository hosting
+(GitLab foundation exists but is not yet connected).
 
-- The backend now has a provider-aware connection model for repository hosting
-  accounts (`GitHub`, `GitLab`) stored per signed-in user.
-- New protected APIs expose repository provider connection status so the frontend
-  can build a user-facing connect/disconnect flow in later slices.
-- This foundation does not yet replace the current clone path or local repo
-  workflow. It prepares the app for managed repository access and server-side
-  workspace isolation in later milestones.
-- Optional config placeholders are included in `backend/.env.example` for
-  `GITHUB_OAUTH_*` and `GITLAB_OAUTH_*`.
+- The backend implements GitHub OAuth flow with encrypted at rest token storage
+  (using Fernet)
+- The frontend provides UI for GitHub Connect/Disconnect and callback redirect handling
+- The job form can show quick-picks of repositories from a connected GitHub account
+- Config requirements in `backend/.env`: `GITHUB_OAUTH_ENABLED=true`,
+  `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`,
+  `GITHUB_OAUTH_CALLBACK_URL` (frontend route), `GITHUB_OAUTH_ENCRYPTION_KEY`.
+- Like Jira delegated mode, GitHub OAuth tokens are stored encrypted per signed-in user
+  and never exposed to the UI, logs, or LLM.
+- GitLab foundation exists (connection model, config placeholders) but the
+  full OAuth flow is not implemented yet.
+- Currently, the GitHub connection is used for repo discovery only; the actual
+  git clone still uses your local machine's ambient git credentials (future
+  milestone will add delegated git auth).
+
+## Diff capture fix
+
+The implementation diff capture now uses a pre-implementation baseline git SHA
+so it correctly captures changes even when the implementation commit or otherwise
+advances the git state of the workspace.
 
 For local development over plain HTTP, leave `AUTH_SESSION_COOKIE_SECURE=false`.
 For HTTPS deployments behind a reverse proxy, set it to `true`.
@@ -178,12 +189,17 @@ before starting the backend.
 ## Run (dev)
 
 ```sh
-# terminal 1 — backend on :8000
+# terminal 1 — backend on :8000 (default)
 cd backend && uv run uvicorn app.main:app --reload
+
+# Or use port 8010 to avoid stale listeners:
+# cd backend && uv run uvicorn app.main:app --reload --host localhost --port 8010
 
 # terminal 2 — frontend on :3000
 cd frontend && npm run dev
 ```
+
+If you run the backend on port 8010 locally, set NEXT_PUBLIC_API_BASE_URL=http://localhost:8010 in the frontend environment or set the backend to listen on localhost:8000.
 
 ## Quality gates
 
