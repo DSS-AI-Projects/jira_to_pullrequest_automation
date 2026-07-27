@@ -12,6 +12,9 @@
 #   from backend/.env — the same file local dev already uses. Create it from
 #   backend/.env.example first.
 # - Auth is ON with the built-in dev login (no SSO/proxy needed locally).
+# - ZERO-CREDIT BY DEFAULT: AGENT_PLAN_STUB=true, so the planner returns a canned
+#   plan with no Anthropic API call. Set it to "false" (+ ANTHROPIC_API_KEY in
+#   backend/.env) to generate real plans.
 # - The browser talks to the backend cross-origin at http://localhost:8000
 #   (the published port below); no reverse proxy is involved.
 # - LOCAL-REPO EXECUTION DOES NOT WORK IN-CONTAINER: local repo paths must be
@@ -38,6 +41,11 @@ services:
       # Allow the browser origins used for local access (cookie auth needs an
       # explicit allowlist, not "*", because requests send credentials).
       CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+      # Zero-credit by default: the planning agent returns a canned plan with NO
+      # Anthropic API call, so the full flow (Jira fetch, clone, repo map, plan
+      # review UI, errors) works out of the box without any credits. To generate
+      # real plans, set this to "false" and put ANTHROPIC_API_KEY in backend/.env.
+      AGENT_PLAN_STUB: "true"
     ports:
       - "8000:8000"
     volumes:
