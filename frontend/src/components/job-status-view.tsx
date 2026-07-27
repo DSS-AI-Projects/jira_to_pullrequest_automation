@@ -30,9 +30,10 @@ function currency(value: number | null): string {
 }
 
 function totalCost(job: Job): number | null {
-  const values = [job.usage?.total_cost_usd, job.implementation_usage?.total_cost_usd].filter(
-    (value): value is number => value !== null && value !== undefined,
-  );
+  const values = [
+    job.usage?.total_cost_usd,
+    job.implementation_usage?.total_cost_usd,
+  ].filter((value): value is number => value !== null && value !== undefined);
   if (values.length === 0) {
     return null;
   }
@@ -119,8 +120,8 @@ export function JobStatusView(props: { jobId: string }) {
   const canImplement =
     job?.state === "PLAN_READY" && job.repo_info?.source_kind === "LOCAL";
 
-  const hasImplementationResult =
-    job?.state === "IMPLEMENTATION_READY" && job.implementation_result;
+  const implementationResult =
+    job?.state === "IMPLEMENTATION_READY" ? job.implementation_result : null;
 
   async function handleImplement() {
     if (!job) {
@@ -210,7 +211,11 @@ export function JobStatusView(props: { jobId: string }) {
             <>
               <div className="summary-card">
                 <span className="meta-label">Source</span>
-                <strong>{job.repo_info.source_kind === "LOCAL" ? "Local repo" : "Remote repo"}</strong>
+                <strong>
+                  {job.repo_info.source_kind === "LOCAL"
+                    ? "Local repo"
+                    : "Remote repo"}
+                </strong>
               </div>
               <div className="summary-card">
                 <span className="meta-label">Branch</span>
@@ -218,7 +223,9 @@ export function JobStatusView(props: { jobId: string }) {
               </div>
               <div className="summary-card">
                 <span className="meta-label">Commit</span>
-                <strong className="break-all">{job.repo_info.commit_sha.slice(0, 12)}</strong>
+                <strong className="break-all">
+                  {job.repo_info.commit_sha.slice(0, 12)}
+                </strong>
               </div>
               <div className="summary-card">
                 <span className="meta-label">Working tree</span>
@@ -276,7 +283,9 @@ export function JobStatusView(props: { jobId: string }) {
             </div>
             <div className="summary-card">
               <span className="meta-label">Implementation cost</span>
-              <strong>{currency(job.implementation_usage?.total_cost_usd ?? null)}</strong>
+              <strong>
+                {currency(job.implementation_usage?.total_cost_usd ?? null)}
+              </strong>
             </div>
             <div className="summary-card">
               <span className="meta-label">Total cost</span>
@@ -304,7 +313,9 @@ export function JobStatusView(props: { jobId: string }) {
                 onClick={() => void handleImplement()}
                 type="button"
               >
-                {implementing ? "Starting implementation..." : "Approve and Implement"}
+                {implementing
+                  ? "Starting implementation..."
+                  : "Approve and Implement"}
               </button>
             ) : null}
           </div>
@@ -325,7 +336,7 @@ export function JobStatusView(props: { jobId: string }) {
         </section>
       ) : null}
 
-      {hasImplementationResult ? (
+      {job && implementationResult ? (
         <section className="plan-layout">
           <div className="panel">
             <div className="section-heading">
@@ -335,15 +346,17 @@ export function JobStatusView(props: { jobId: string }) {
               </div>
               <span className="pill success-pill">Ready</span>
             </div>
-            <p>{job.implementation_result.summary}</p>
+            <p>{implementationResult.summary}</p>
           </div>
 
           <div className="plan-columns">
             <section className="panel">
               <h3>Changed files</h3>
               <ul className="content-list">
-                {(job.implementation_result.changed_files ?? []).map((change) => (
-                  <li key={`${change.path}-${change.action}-${change.rationale}`}>
+                {(implementationResult.changed_files ?? []).map((change) => (
+                  <li
+                    key={`${change.path}-${change.action}-${change.rationale}`}
+                  >
                     <div className="change-header">
                       <code>{change.path}</code>
                       <span className="pill cap">{change.action}</span>
@@ -359,11 +372,14 @@ export function JobStatusView(props: { jobId: string }) {
               {job.implementation_diff ? (
                 <>
                   <p className="meta-muted">
-                    This patch is captured from the isolated workspace after implementation.
+                    This patch is captured from the isolated workspace after
+                    implementation.
                   </p>
                   <details>
                     <summary className="pill-button">Show full patch</summary>
-                    <pre className="output-block">{job.implementation_diff.overall_patch}</pre>
+                    <pre className="output-block">
+                      {job.implementation_diff.overall_patch}
+                    </pre>
                   </details>
                   <ul className="content-list">
                     {(job.implementation_diff.files ?? []).map((file) => (
@@ -384,7 +400,9 @@ export function JobStatusView(props: { jobId: string }) {
                   </ul>
                 </>
               ) : (
-                <p className="meta-muted">No diff artifacts were recorded for this job.</p>
+                <p className="meta-muted">
+                  No diff artifacts were recorded for this job.
+                </p>
               )}
             </section>
 
@@ -395,14 +413,20 @@ export function JobStatusView(props: { jobId: string }) {
                   <li key={`${result.name}-${result.command}`}>
                     <div className="change-header">
                       <strong>{result.name}</strong>
-                      <span className={`pill validation-pill ${statusClass(result)}`}>
+                      <span
+                        className={`pill validation-pill ${statusClass(result)}`}
+                      >
                         {result.status.toLowerCase()}
                       </span>
                     </div>
                     <p>{result.summary}</p>
-                    {result.command ? <code className="break-all">{result.command}</code> : null}
+                    {result.command ? (
+                      <code className="break-all">{result.command}</code>
+                    ) : null}
                     {result.output_excerpt ? (
-                      <pre className="output-block">{result.output_excerpt}</pre>
+                      <pre className="output-block">
+                        {result.output_excerpt}
+                      </pre>
                     ) : null}
                   </li>
                 ))}
@@ -413,9 +437,9 @@ export function JobStatusView(props: { jobId: string }) {
           <div className="plan-columns">
             <section className="panel">
               <h3>Warnings</h3>
-              {(job.implementation_result.warnings ?? []).length > 0 ? (
+              {(implementationResult.warnings ?? []).length > 0 ? (
                 <ul className="bullet-list">
-                  {(job.implementation_result.warnings ?? []).map((warning) => (
+                  {(implementationResult.warnings ?? []).map((warning) => (
                     <li key={warning}>{warning}</li>
                   ))}
                 </ul>
@@ -426,14 +450,18 @@ export function JobStatusView(props: { jobId: string }) {
 
             <section className="panel">
               <h3>Follow-up questions</h3>
-              {(job.implementation_result.follow_up_questions ?? []).length > 0 ? (
+              {(implementationResult.follow_up_questions ?? []).length > 0 ? (
                 <ul className="bullet-list">
-                  {(job.implementation_result.follow_up_questions ?? []).map((question) => (
-                    <li key={question}>{question}</li>
-                  ))}
+                  {(implementationResult.follow_up_questions ?? []).map(
+                    (question) => (
+                      <li key={question}>{question}</li>
+                    ),
+                  )}
                 </ul>
               ) : (
-                <p className="meta-muted">No follow-up questions were recorded.</p>
+                <p className="meta-muted">
+                  No follow-up questions were recorded.
+                </p>
               )}
             </section>
           </div>

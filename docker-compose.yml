@@ -1,0 +1,75 @@
+# Local, single-command containerised run: backend + frontend only.
+#
+#   docker compose up --build
+#   # then open http://localhost:3000 and use the dev-login form
+#
+# This is the LOCAL convenience stack. For the hardened shared deployment
+# (nginx + oauth2-proxy + TLS, SSO, secure cookies) use
+# deploy/docker-compose.shared-auth.example.yml instead.
+#
+# Notes:
+# - Secrets (ANTHROPIC_API_KEY, Jira/GitHub config, encryption keys) are read
+#   from backend/.env — the same file local dev already uses. Create it from
+#   backend/.env.example first.
+# - Auth is ON with the built-in dev login (no SSO/proxy needed locally).
+# - The browser talks to the backend cross-origin at http://localhost:8000
+#   (the published port below); no reverse proxy is involved.
+# - LOCAL-REPO EXECUTION DOES NOT WORK IN-CONTAINER: local repo paths must be
+#   absolute Windows paths and the container workspace is Linux, so use remote
+#   repo URLs / pre-configured repos for the plan flow here. Local-repo mode and
+#   the implement/validate phase remain a host-only (non-Docker) path.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: jira2pullreq-backend:local
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # Local-friendly auth: enabled, with the built-in dev login, over plain HTTP.
+      # These override anything in backend/.env so the local stack is predictable.
+      AUTH_ENABLED: "true"
+      AUTH_ALLOW_DEV_LOGIN: "true"
+      AUTH_SESSION_COOKIE_SECURE: "false"
+      AUTH_TRUSTED_PROXY_ENABLED: "false"
+      # Allow the browser origins used for local access (cookie auth needs an
+      # explicit allowlist, not "*", because requests send credentials).
+      CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist the SQLite job store + clones across container restarts.
+      - backend_var:/app/var
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: jira2pullreq-frontend:local
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # NEXT_PUBLIC_API_BASE_URL is intentionally unset: at runtime the browser
+      # (on http://localhost:3000) resolves the API base to http://localhost:8000,
+      # which is the published backend port above. Set it only for split origins.
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  backend_var:
