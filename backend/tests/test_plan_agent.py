@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.core import secrets
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.jobs.models import AgentUsage
 from app.schemas.repomap import RepoMap
@@ -117,8 +117,10 @@ def test_agent_tools_are_read_only(agent_env: None, tmp_path: Path) -> None:
 def test_budgets_are_configured(agent_env: None, tmp_path: Path) -> None:
     settings = get_settings()
     options = build_options(tmp_path, FAKE_ANTHROPIC_KEY, settings)
-    assert options.max_turns == settings.agent_max_turns
-    assert options.max_budget_usd == settings.agent_max_budget_usd
+    assert options.max_turns == settings.agent_plan_max_turns
+    assert options.max_budget_usd == settings.agent_plan_max_budget_usd
+    assert options.model == settings.agent_plan_model
+    assert options.effort == settings.agent_effort
     assert options.output_format is not None
     assert options.output_format["type"] == "json_schema"
 
@@ -263,3 +265,93 @@ async def test_success_without_structured_output_is_typed_request_failure(
         await generate_plan(ticket(), repo_map(), tmp_path)
     assert excinfo.value.code == ErrorCode.AGENT_REQUEST_FAILED
     assert "Credit balance is too low" in (excinfo.value.internal_detail or "")
+
+
+# --- token-saving controls ---
+
+
+async def test_stub_mode_returns_canned_plan_without_api_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("AGENT_PLAN_STUB", "true")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # stub must not need a key
+    monkeypatch.setattr(secrets, "_ENV_FILE", tmp_path / "missing.env")
+    get_settings.cache_clear()
+
+    called = install_fake_agent(monkeypatch, [])  # any agent call would pop from []
+    result = await generate_plan(ticket(), repo_map(), tmp_path)
+
+    assert called == []  # the agent was never invoked
+    assert result.usage.cached is False
+    assert result.usage.total_cost_usd == 0.0
+    assert result.plan.proposed_changes  # schema-valid
+    assert "STUB" in result.plan.summary
+
+
+def test_repo_doc_is_injected_when_present(tmp_path: Path) -> None:
+    (tmp_path / "CLAUDE.md").write_text("Architecture: everything lives in src/.", encoding="utf-8")
+    doc = plan_agent.read_repo_doc(tmp_path, max_chars=8000)
+    assert doc is not None and "everything lives in src/" in doc
+    prompt = build_prompt(ticket(), repo_map(), doc)
+    assert "<repo_guidance note=" in prompt
+    assert "everything lives in src/" in prompt
+
+
+def test_repo_doc_absent_yields_no_guidance_block(tmp_path: Path) -> None:
+    assert plan_agent.read_repo_doc(tmp_path, max_chars=8000) is None
+    prompt = build_prompt(ticket(), repo_map(), None)
+    assert "<repo_guidance note=" not in prompt
+
+
+def test_repo_doc_is_capped(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("x" * 20_000, encoding="utf-8")
+    doc = plan_agent.read_repo_doc(tmp_path, max_chars=100)
+    assert doc is not None
+    assert "repo guidance truncated" in doc
+
+
+async def test_cache_token_usage_is_recorded(
+    agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    outcome = AgentRunOutcome(
+        subtype="success",
+        structured_output=sample_plan().model_dump(mode="json"),
+        usage={
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cache_read_input_tokens": 800,
+            "cache_creation_input_tokens": 120,
+        },
+        total_cost_usd=0.05,
+        num_turns=3,
+        duration_ms=4200,
+    )
+    install_fake_agent(monkeypatch, [outcome])
+    result = await generate_plan(ticket(), repo_map(), tmp_path)
+    assert result.usage.cache_read_input_tokens == 800
+    assert result.usage.cache_creation_input_tokens == 120
+
+
+async def test_plan_cache_hit_skips_second_api_call(
+    agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("AGENT_PLAN_CACHE_ENABLED", "true")
+
+    def fake_cache_path(_settings: Settings) -> Path:
+        return tmp_path / "plan_cache.db"
+
+    monkeypatch.setattr(plan_agent, "_plan_cache_path", fake_cache_path)
+    get_settings.cache_clear()
+
+    prompts = install_fake_agent(monkeypatch, [success_outcome()])
+
+    first = await generate_plan(ticket(), repo_map(), tmp_path)
+    assert first.usage.cached is False
+    assert len(prompts) == 1
+
+    # Identical inputs → cache hit, no second agent call.
+    second = await generate_plan(ticket(), repo_map(), tmp_path)
+    assert second.usage.cached is True
+    assert second.usage.total_cost_usd == 0.0
+    assert second.plan.summary == first.plan.summary
+    assert len(prompts) == 1  # agent was NOT called again

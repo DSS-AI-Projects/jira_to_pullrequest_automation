@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -81,11 +82,26 @@ class Settings(BaseSettings):
     repo_map_max_file_bytes: int = 262_144
     repo_map_max_chars: int = 60_000
 
-    # Planning agent budget (recorded per job; enforced in the agent step)
-    agent_model: str = "claude-opus-4-8"
-    agent_max_turns: int = 40
+    # Agent models — per phase so planning can run on a cheaper tier than
+    # implementation (token-saving; planning is analysis, not code-writing).
+    agent_plan_model: str = "claude-sonnet-5"
+    agent_implement_model: str = "claude-opus-4-8"
+    # Reasoning depth (low|medium|high|xhigh|max). "medium" is the cost/quality
+    # sweet spot for planning; raise for hard tickets.
+    agent_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    # Per-phase turn + cost caps. Planning is bounded tighter than implementation.
+    agent_plan_max_turns: int = 20
+    agent_implement_max_turns: int = 40
+    agent_plan_max_budget_usd: float = 1.0
+    agent_implement_max_budget_usd: float = 3.0
     agent_timeout_seconds: int = 600
-    agent_max_budget_usd: float = 2.0
+    # Token-saving controls (see docs). Stub returns a canned plan with NO API
+    # call (pipeline testing without credits). Cache reuses a prior plan for the
+    # same ticket+repo inputs. Repo-doc injection front-loads CLAUDE.md/AGENTS.md
+    # so the agent needs fewer exploration reads.
+    agent_plan_stub: bool = False
+    agent_plan_cache_enabled: bool = True
+    agent_repo_doc_max_chars: int = 8000
 
 
 @lru_cache

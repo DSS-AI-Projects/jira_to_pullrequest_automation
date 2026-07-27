@@ -95,9 +95,10 @@ def build_options(workspace_path: Path, api_key: str, settings: Settings) -> Cla
         tools=["Read", "Grep", "Glob", "Edit", "Write"],
         allowed_tools=["Read", "Grep", "Glob", "Edit", "Write"],
         disallowed_tools=["Bash", "WebFetch", "WebSearch", "Task", "DeleteFile"],
-        model=settings.agent_model,
-        max_turns=settings.agent_max_turns,
-        max_budget_usd=settings.agent_max_budget_usd,
+        model=settings.agent_implement_model,
+        effort=settings.agent_effort,
+        max_turns=settings.agent_implement_max_turns,
+        max_budget_usd=settings.agent_implement_max_budget_usd,
         output_format={"type": "json_schema", "schema": ImplementationResult.model_json_schema()},
         env=scrubbed_env(api_key),
     )
@@ -152,6 +153,8 @@ def _usage_from(outcome: AgentRunOutcome) -> AgentUsage:
     return AgentUsage(
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
+        cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+        cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
         total_cost_usd=outcome.total_cost_usd,
         num_turns=outcome.num_turns,
         duration_seconds=outcome.duration_ms / 1000,

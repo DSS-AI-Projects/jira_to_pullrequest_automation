@@ -92,11 +92,22 @@ Plan.model_json_schema()}`; the SDK validates and re-prompts and surfaces
 clone. Agent config:
 
 - Planning tools: read/grep/glob only, cwd = the clone dir; no Bash, no network tools.
+- Per-phase config: planning and implementation have independent model, turn, and
+  budget settings (`AGENT_PLAN_*` / `AGENT_IMPLEMENT_*`) so planning can run on a
+  cheaper tier; shared `AGENT_EFFORT` controls reasoning depth.
 - Budget: `max_turns` cap, `max_budget_usd` cost cap (native SDK option), and a
   wall-clock timeout via `asyncio.wait_for`. Budget exhaustion is `BUDGET_EXCEEDED`.
-- Record tokens used and duration from the SDK `ResultMessage` onto the job record
-  (`usage` for planning, `implementation_usage` for implementation).
+- Record tokens (incl. cache read/creation), cost, and duration from the SDK
+  `ResultMessage` onto the job record (`usage` / `implementation_usage`).
 - Malformed/invalid plan output: retry ONCE, then fail with typed `PLAN_INVALID`.
+
+**Token-saving controls (planning step):** all opt-in via env, accuracy-preserving
+first: `AGENT_PLAN_STUB` returns a canned plan with no API call (zero-credit
+pipeline testing); `AGENT_PLAN_CACHE_ENABLED` (on by default) memoizes plans on a
+hash of prompt+model+effort+schema so identical ticket+repo re-runs cost zero
+tokens (`backend/app/steps/plan_cache.py`); the planner front-loads the repo's own
+`CLAUDE.md`/`AGENTS.md`/`README` (capped by `AGENT_REPO_DOC_MAX_CHARS`) so it needs
+fewer exploration reads. Context management/compaction is handled by the harness.
 
 ## The plan schema is a versioned contract
 

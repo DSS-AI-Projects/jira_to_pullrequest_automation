@@ -66,9 +66,12 @@ class AgentUsage(BaseModel):
 
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
     total_cost_usd: float | None = None
     num_turns: int | None = None
     duration_seconds: float
+    cached: bool = False  # True when served from the plan cache (no API call)
 
 
 class ImplementationChange(BaseModel):

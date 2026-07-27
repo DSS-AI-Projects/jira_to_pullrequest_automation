@@ -88,6 +88,27 @@ EXCLUDED_DIRS = {
     "vendor",
     ".idea",
     ".vscode",
+    # Additional generated / tooling / cache dirs — keep the map high-signal so
+    # the agent spends fewer tokens on noise.
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".tox",
+    ".gradle",
+    ".terraform",
+    ".dart_tool",
+    ".svelte-kit",
+    ".turbo",
+    ".cache",
+    ".nuxt",
+    ".parcel-cache",
+    "coverage",
+    "htmlcov",
+    "out",
+    "bin",
+    "obj",
+    "Pods",
+    "__snapshots__",
 }
 
 _MAX_SYMBOLS_PER_FILE = 100
