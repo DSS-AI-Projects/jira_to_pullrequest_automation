@@ -308,9 +308,7 @@ class RepoHostingConnectionInfo(BaseModel):
     has_refresh_token: bool = False
 
     @classmethod
-    def from_connection(
-        cls, connection: RepoHostingConnection
-    ) -> RepoHostingConnectionInfo:
+    def from_connection(cls, connection: RepoHostingConnection) -> RepoHostingConnectionInfo:
         return cls(
             provider=connection.provider,
             auth_kind=connection.auth_kind,

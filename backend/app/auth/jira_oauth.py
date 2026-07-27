@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -13,14 +14,14 @@ from app.auth.models import (
     JiraAuthStatus,
     JiraCloudSite,
     JiraConnectCallbackResponse,
-    JiraConnectStartResponse,
     JiraConnection,
     JiraConnectionInfo,
+    JiraConnectStartResponse,
     User,
 )
-from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core import secrets
 from app.core.config import Settings
+from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core.errors import AppError, ErrorCode
 from app.jobs.store import JobStore
 
@@ -276,7 +277,9 @@ async def _resolve_accessible_site(access_token: str, settings: Settings) -> Jir
     if response.status_code in (401, 403):
         raise AppError(
             ErrorCode.JIRA_AUTH_FAILED,
-            user_message="Jira rejected the delegated sign-in response. Reconnect your Jira account.",
+            user_message=(
+                "Jira rejected the delegated sign-in response. Reconnect your Jira account."
+            ),
             internal_detail=f"accessible-resources returned {response.status_code}",
         )
     if response.status_code != 200:
@@ -290,15 +293,20 @@ async def _resolve_accessible_site(access_token: str, settings: Settings) -> Jir
             ErrorCode.JIRA_OAUTH_CALLBACK_FAILED,
             internal_detail="accessible-resources response was not a list",
         )
-    resources = [
-        JiraCloudSite(
-            id=str(item.get("id") or "").strip(),
-            name=str(item.get("name") or "").strip() or "Jira Cloud",
-            url=str(item.get("url") or "").strip(),
+    resources: list[JiraCloudSite] = []
+    for raw in cast(list[Any], payload):
+        if not isinstance(raw, dict):
+            continue
+        item = cast(dict[str, Any], raw)
+        if not (item.get("id") and item.get("url")):
+            continue
+        resources.append(
+            JiraCloudSite(
+                id=str(item.get("id") or "").strip(),
+                name=str(item.get("name") or "").strip() or "Jira Cloud",
+                url=str(item.get("url") or "").strip(),
+            )
         )
-        for item in payload
-        if isinstance(item, dict) and item.get("id") and item.get("url")
-    ]
     if not resources:
         raise AppError(
             ErrorCode.JIRA_SITE_NOT_ACCESSIBLE,
@@ -311,7 +319,9 @@ async def _resolve_accessible_site(access_token: str, settings: Settings) -> Jir
                 return resource
         raise AppError(
             ErrorCode.JIRA_SITE_NOT_ACCESSIBLE,
-            internal_detail=f"Configured site {settings.jira_base_url} not present in accessible resources",
+            internal_detail=(
+                f"Configured site {settings.jira_base_url} not in accessible resources"
+            ),
         )
     if len(resources) == 1:
         return resources[0]

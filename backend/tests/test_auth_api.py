@@ -2,15 +2,15 @@ from collections.abc import Iterator
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
-import pytest
 import httpx
+import pytest
 import respx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.auth.models import RepoHostingAuthKind, RepoHostingConnection, RepoHostingProvider
-from app.core.crypto import encrypt_secret
 from app.core.config import get_settings
+from app.core.crypto import encrypt_secret
 from app.jobs.store import JobStore
 from app.main import create_app
 from tests.fakes import make_fake_steps
@@ -22,9 +22,7 @@ def auth_store() -> JobStore:
 
 
 @pytest.fixture
-def auth_client(
-    auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[TestClient]:
+def auth_client(auth_store: JobStore, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("AUTH_ENABLED", "true")
     monkeypatch.setenv("AUTH_ALLOW_DEV_LOGIN", "true")
     monkeypatch.setenv("AUTH_ADMIN_EMAILS", '["admin@example.com"]')
@@ -458,7 +456,9 @@ def test_github_repo_callback_persists_connection(
         )
     )
 
-    callback = auth_client.get(f"/api/auth/repo-hosting/github/callback?code=test-code&state={state}")
+    callback = auth_client.get(
+        f"/api/auth/repo-hosting/github/callback?code=test-code&state={state}"
+    )
     assert callback.status_code == 200
     assert callback.json()["connection"]["provider"] == "GITHUB"
     assert callback.json()["connection"]["account_name"] == "octocat"

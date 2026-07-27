@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.core.errors import DEFAULT_MESSAGES, AppError, ErrorCode
 from app.jobs.models import (
     AgentUsage,
+    ImplementationChange,
     ImplementationResult,
     Job,
     JobState,
@@ -184,11 +185,11 @@ async def test_implementation_happy_path_reaches_implementation_ready(tmp_path: 
             result=ImplementationResult(
                 summary="Updated the README greeting.",
                 changed_files=[
-                    {
-                        "path": "README.md",
-                        "action": "modify",
-                        "rationale": "Update the greeting text to match the approved plan.",
-                    }
+                    ImplementationChange(
+                        path="README.md",
+                        action="modify",
+                        rationale="Update the greeting text to match the approved plan.",
+                    )
                 ],
                 warnings=[],
                 follow_up_questions=[],

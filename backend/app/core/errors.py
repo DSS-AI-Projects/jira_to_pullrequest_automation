@@ -66,9 +66,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
         "Jira rejected the server's credentials. Check JIRA_EMAIL and JIRA_API_TOKEN."
     ),
     ErrorCode.JIRA_UNREACHABLE: "Could not reach Jira. Check JIRA_BASE_URL and your network.",
-    ErrorCode.JIRA_OAUTH_NOT_AVAILABLE: (
-        "Per-user Jira sign-in is not configured on this server."
-    ),
+    ErrorCode.JIRA_OAUTH_NOT_AVAILABLE: ("Per-user Jira sign-in is not configured on this server."),
     ErrorCode.JIRA_OAUTH_STATE_INVALID: (
         "That Jira sign-in attempt is missing or expired. Start the connect flow again."
     ),
@@ -82,7 +80,8 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
         "That repository provider sign-in is not configured on this server."
     ),
     ErrorCode.REPO_PROVIDER_STATE_INVALID: (
-        "That repository provider sign-in attempt is missing or expired. Start the connect flow again."
+        "That repository provider sign-in attempt is missing or expired. "
+        "Start the connect flow again."
     ),
     ErrorCode.REPO_PROVIDER_CALLBACK_FAILED: (
         "Repository provider sign-in could not be completed. Try connecting again."
@@ -94,9 +93,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
         "Local repository paths are not enabled in this environment."
     ),
     ErrorCode.LOCAL_REPO_NOT_FOUND: "The local repository path does not exist.",
-    ErrorCode.LOCAL_REPO_NOT_DIRECTORY: (
-        "The local repository path must point to a directory."
-    ),
+    ErrorCode.LOCAL_REPO_NOT_DIRECTORY: ("The local repository path must point to a directory."),
     ErrorCode.LOCAL_REPO_OUTSIDE_ALLOWED_ROOT: (
         "That local repository path is outside the allowed local roots."
     ),
@@ -126,12 +123,8 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.BUDGET_EXCEEDED: (
         "The planning agent exceeded its run budget before finishing a plan."
     ),
-    ErrorCode.VALIDATION_FAILED: (
-        "Running post-implementation validation failed unexpectedly."
-    ),
-    ErrorCode.IMPLEMENTATION_NOT_READY: (
-        "This job is not ready for implementation approval yet."
-    ),
+    ErrorCode.VALIDATION_FAILED: ("Running post-implementation validation failed unexpectedly."),
+    ErrorCode.IMPLEMENTATION_NOT_READY: ("This job is not ready for implementation approval yet."),
     ErrorCode.IMPLEMENTATION_NOT_SUPPORTED: (
         "Implementation is currently available only for jobs created from "
         "approved local repositories."

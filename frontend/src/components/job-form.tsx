@@ -25,8 +25,9 @@ export function JobForm() {
   const [repos, setRepos] = useState<RepoChoice[]>([]);
   const [githubRepos, setGitHubRepos] = useState<GitHubRepositorySummary[]>([]);
   const [allowedHosts, setAllowedHosts] = useState<string[]>([]);
-  const [localRepoSupport, setLocalRepoSupport] =
-    useState<RepoList["local_repo_support"] | null>(null);
+  const [localRepoSupport, setLocalRepoSupport] = useState<
+    RepoList["local_repo_support"] | null
+  >(null);
   const [loadingRepos, setLoadingRepos] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +45,9 @@ export function JobForm() {
           setLocalRepoSupport(response.local_repo_support);
         }
         try {
-          const githubResponse = await fetchGitHubRepositories(controller.signal);
+          const githubResponse = await fetchGitHubRepositories(
+            controller.signal,
+          );
           if (active) {
             setGitHubRepos(githubResponse.repos);
           }
@@ -164,10 +167,17 @@ export function JobForm() {
 
         <label className="field">
           <span>Repository source</span>
-          <div className="source-toggle" role="tablist" aria-label="Repository source">
+          <div
+            className="source-toggle"
+            role="tablist"
+            aria-label="Repository source"
+          >
             <button
               aria-selected={repoMode === "remote"}
-              className={["pill-button", repoMode === "remote" ? "is-selected" : ""]
+              className={[
+                "pill-button",
+                repoMode === "remote" ? "is-selected" : "",
+              ]
                 .filter(Boolean)
                 .join(" ")}
               onClick={() => {
@@ -180,7 +190,10 @@ export function JobForm() {
             </button>
             <button
               aria-selected={repoMode === "local"}
-              className={["pill-button", repoMode === "local" ? "is-selected" : ""]
+              className={[
+                "pill-button",
+                repoMode === "local" ? "is-selected" : "",
+              ]
                 .filter(Boolean)
                 .join(" ")}
               disabled={!localRepoSupport?.enabled}
@@ -294,7 +307,9 @@ export function JobForm() {
             <div className="policy-list">
               <span>
                 Dirty repos:{" "}
-                {localRepoSupport.allow_dirty ? "allowed by config" : "rejected by default"}
+                {localRepoSupport.allow_dirty
+                  ? "allowed by config"
+                  : "rejected by default"}
               </span>
               <span>
                 Branch match:{" "}

@@ -15,24 +15,24 @@ from app.auth.jira_oauth import (
     disconnect_connection,
     get_jira_auth_status,
 )
-from app.auth.repo_hosting import (
-    disconnect_repo_hosting_connection,
-    get_repo_hosting_status,
-)
 from app.auth.models import (
     CurrentUser,
     DevLoginRequest,
+    GitHubRepositoryListResponse,
     JiraAuthStatus,
     JiraConnectCallbackResponse,
     JiraConnectStartResponse,
     LogoutResponse,
-    GitHubRepositoryListResponse,
     RepoHostingConnectCallbackResponse,
     RepoHostingConnectStartResponse,
     RepoHostingProvider,
     RepoHostingStatus,
     SessionInfo,
     UserRole,
+)
+from app.auth.repo_hosting import (
+    disconnect_repo_hosting_connection,
+    get_repo_hosting_status,
 )
 from app.auth.service import (
     build_session_info,
@@ -57,9 +57,7 @@ async def session_info(request: Request, response: Response) -> SessionInfo:
 
 
 @router.post("/dev-login", response_model=SessionInfo)
-async def dev_login(
-    payload: DevLoginRequest, request: Request, response: Response
-) -> SessionInfo:
+async def dev_login(payload: DevLoginRequest, request: Request, response: Response) -> SessionInfo:
     settings = get_settings()
     if not settings.auth_enabled or not settings.auth_allow_dev_login:
         raise AppError(ErrorCode.AUTH_NOT_AVAILABLE)
@@ -163,32 +161,26 @@ async def repo_hosting_status(request: Request) -> RepoHostingStatus:
         raise AppError(
             ErrorCode.AUTH_NOT_AVAILABLE,
             user_message=(
-                "Per-user repository provider connections require app authentication "
-                "to be enabled."
+                "Per-user repository provider connections require app authentication to be enabled."
             ),
         )
     return get_repo_hosting_status(user, _store(request), get_settings())
 
 
-@router.post(
-    "/repo-hosting/github/connect", response_model=RepoHostingConnectStartResponse
-)
+@router.post("/repo-hosting/github/connect", response_model=RepoHostingConnectStartResponse)
 async def github_repo_hosting_connect(request: Request) -> RepoHostingConnectStartResponse:
     user = require_current_user(request)
     if user is None:
         raise AppError(
             ErrorCode.AUTH_NOT_AVAILABLE,
             user_message=(
-                "Per-user repository provider connections require app authentication "
-                "to be enabled."
+                "Per-user repository provider connections require app authentication to be enabled."
             ),
         )
     return create_github_authorization_request(user, _store(request), get_settings())
 
 
-@router.get(
-    "/repo-hosting/github/callback", response_model=RepoHostingConnectCallbackResponse
-)
+@router.get("/repo-hosting/github/callback", response_model=RepoHostingConnectCallbackResponse)
 async def github_repo_hosting_callback(
     request: Request,
     code: str,
@@ -200,8 +192,7 @@ async def github_repo_hosting_callback(
         raise AppError(
             ErrorCode.AUTH_NOT_AVAILABLE,
             user_message=(
-                "Per-user repository provider connections require app authentication "
-                "to be enabled."
+                "Per-user repository provider connections require app authentication to be enabled."
             ),
         )
     if error:
@@ -218,17 +209,14 @@ async def github_repo_hosting_callback(
     )
 
 
-@router.get(
-    "/repo-hosting/github/repos", response_model=GitHubRepositoryListResponse
-)
+@router.get("/repo-hosting/github/repos", response_model=GitHubRepositoryListResponse)
 async def github_repo_hosting_repos(request: Request) -> GitHubRepositoryListResponse:
     user = require_current_user(request)
     if user is None:
         raise AppError(
             ErrorCode.AUTH_NOT_AVAILABLE,
             user_message=(
-                "Per-user repository provider connections require app authentication "
-                "to be enabled."
+                "Per-user repository provider connections require app authentication to be enabled."
             ),
         )
     return await list_github_repositories(user, _store(request))
@@ -243,8 +231,7 @@ async def repo_hosting_disconnect(
         raise AppError(
             ErrorCode.AUTH_NOT_AVAILABLE,
             user_message=(
-                "Per-user repository provider connections require app authentication "
-                "to be enabled."
+                "Per-user repository provider connections require app authentication to be enabled."
             ),
         )
     disconnect_repo_hosting_connection(user, provider, _store(request))

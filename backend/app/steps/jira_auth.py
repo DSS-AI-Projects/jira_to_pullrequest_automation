@@ -46,7 +46,11 @@ async def get_jira_auth(job: Job, store: JobStore, settings: Settings) -> JiraAu
                 base_url=build_delegated_api_base(connection.site.id),
                 auth_header=f"Bearer {access_token}",
             )
-        if not settings.jira_base_url or not settings.jira_email or not secrets.get_jira_api_token():
+        if (
+            not settings.jira_base_url
+            or not settings.jira_email
+            or not secrets.get_jira_api_token()
+        ):
             raise AppError(
                 ErrorCode.JIRA_CONFIG_MISSING,
                 user_message=(

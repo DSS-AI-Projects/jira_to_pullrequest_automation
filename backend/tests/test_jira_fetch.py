@@ -230,7 +230,9 @@ async def test_fetch_uses_delegated_connection_when_available(
     )
 
     ticket = await fetch_ticket(
-        Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo", owner_user_id=user.id),
+        Job.new(
+            ticket_key="PROJ-1", repo_url="https://github.com/acme/repo", owner_user_id=user.id
+        ),
         jira_store,
     )
 
@@ -281,7 +283,9 @@ async def test_fetch_refreshes_delegated_tokens_before_calling_jira(
     )
 
     await fetch_ticket(
-        Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo", owner_user_id=user.id),
+        Job.new(
+            ticket_key="PROJ-1", repo_url="https://github.com/acme/repo", owner_user_id=user.id
+        ),
         jira_store,
     )
 

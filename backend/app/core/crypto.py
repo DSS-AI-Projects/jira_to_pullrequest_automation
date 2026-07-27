@@ -14,13 +14,11 @@ def _get_fernet(provider: str) -> Fernet:
         missing_error = ErrorCode.JIRA_OAUTH_NOT_AVAILABLE
         missing_detail = "JIRA_OAUTH_ENCRYPTION_KEY is not configured"
         invalid_detail = "JIRA_OAUTH_ENCRYPTION_KEY is invalid"
-        decrypt_detail = "Stored Jira OAuth secret could not be decrypted"
     elif provider == "github":
         key = secrets.get_github_oauth_encryption_key()
         missing_error = ErrorCode.REPO_PROVIDER_NOT_AVAILABLE
         missing_detail = "GITHUB_OAUTH_ENCRYPTION_KEY is not configured"
         invalid_detail = "GITHUB_OAUTH_ENCRYPTION_KEY is invalid"
-        decrypt_detail = "Stored GitHub OAuth secret could not be decrypted"
     else:  # pragma: no cover - defensive guard
         raise AppError(ErrorCode.INTERNAL, internal_detail=f"Unknown crypto provider: {provider}")
 

@@ -370,6 +370,10 @@ class JobStore:
             self._conn.execute("DELETE FROM provider_oauth_states WHERE state = ?", (state,))
             self._conn.commit()
         oauth_state = ProviderOAuthState.model_validate_json(row[0])
-        if oauth_state.user_id != user_id or oauth_state.provider != provider or oauth_state.is_expired:
+        if (
+            oauth_state.user_id != user_id
+            or oauth_state.provider != provider
+            or oauth_state.is_expired
+        ):
             return None
         return oauth_state

@@ -45,7 +45,8 @@ function readConnectionFlash(): JiraFlash | null {
   if (jira === "connect_failed") {
     return {
       kind: "error",
-      message: "Jira sign-in did not complete. Try connecting your Jira account again.",
+      message:
+        "Jira sign-in did not complete. Try connecting your Jira account again.",
     };
   }
   const github = params.get("github");
@@ -61,7 +62,8 @@ function readConnectionFlash(): JiraFlash | null {
   if (github === "connect_failed") {
     return {
       kind: "error",
-      message: "GitHub sign-in did not complete. Try connecting your GitHub account again.",
+      message:
+        "GitHub sign-in did not complete. Try connecting your GitHub account again.",
     };
   }
   return null;
@@ -70,15 +72,19 @@ function readConnectionFlash(): JiraFlash | null {
 export function AuthGate(props: { children: ReactNode }) {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [jiraStatus, setJiraStatus] = useState<JiraAuthStatus | null>(null);
-  const [repoHostingStatus, setRepoHostingStatus] = useState<RepoHostingStatus | null>(null);
+  const [repoHostingStatus, setRepoHostingStatus] =
+    useState<RepoHostingStatus | null>(null);
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [jiraSubmitting, setJiraSubmitting] = useState(false);
-  const [repoSubmitting, setRepoSubmitting] = useState<RepoHostingProvider | null>(null);
+  const [repoSubmitting, setRepoSubmitting] =
+    useState<RepoHostingProvider | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [jiraFlash, setJiraFlash] = useState<JiraFlash | null>(readConnectionFlash);
+  const [jiraFlash, setJiraFlash] = useState<JiraFlash | null>(
+    readConnectionFlash,
+  );
 
   useEffect(() => {
     if (!jiraFlash) {
@@ -269,7 +275,9 @@ export function AuthGate(props: { children: ReactNode }) {
         redirectBrowser(response.authorization_url);
         return;
       }
-      setError("Connect flow for this repository provider is not available yet.");
+      setError(
+        "Connect flow for this repository provider is not available yet.",
+      );
       setRepoSubmitting(null);
     } catch (providerError) {
       setError(
@@ -350,7 +358,8 @@ export function AuthGate(props: { children: ReactNode }) {
           <span className="eyebrow">Jira access</span>
           <strong>Using shared Jira access</strong>
           <p className="meta-muted">
-            This environment is currently using the server&apos;s shared Jira credentials.
+            This environment is currently using the server&apos;s shared Jira
+            credentials.
           </p>
         </div>
       );
@@ -361,7 +370,8 @@ export function AuthGate(props: { children: ReactNode }) {
         <span className="eyebrow">Jira access</span>
         <strong>Jira is not configured</strong>
         <p className="meta-muted">
-          Configure shared Jira credentials or enable delegated Jira OAuth for this environment.
+          Configure shared Jira credentials or enable delegated Jira OAuth for
+          this environment.
         </p>
       </div>
     );
@@ -393,7 +403,11 @@ export function AuthGate(props: { children: ReactNode }) {
               <>
                 <p className="meta-muted">
                   Connected as{" "}
-                  <a href={provider.connection.account_url} rel="noreferrer" target="_blank">
+                  <a
+                    href={provider.connection.account_url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
                     {provider.connection.account_name}
                   </a>
                 </p>
@@ -401,7 +415,9 @@ export function AuthGate(props: { children: ReactNode }) {
                   <button
                     className="secondary-link"
                     disabled={repoSubmitting === provider.provider}
-                    onClick={() => void handleRepoProviderDisconnect(provider.provider)}
+                    onClick={() =>
+                      void handleRepoProviderDisconnect(provider.provider)
+                    }
                     type="button"
                   >
                     {repoSubmitting === provider.provider
@@ -413,14 +429,16 @@ export function AuthGate(props: { children: ReactNode }) {
             ) : provider.configured ? (
               <>
                 <p className="meta-muted">
-                  {provider.display_name} is configured on this server but not connected for this
-                  user yet.
+                  {provider.display_name} is configured on this server but not
+                  connected for this user yet.
                 </p>
                 <div className="actions">
                   <button
                     className="secondary-link"
                     disabled={repoSubmitting === provider.provider}
-                    onClick={() => void handleRepoProviderConnect(provider.provider)}
+                    onClick={() =>
+                      void handleRepoProviderConnect(provider.provider)
+                    }
                     type="button"
                   >
                     {repoSubmitting === provider.provider
@@ -430,17 +448,20 @@ export function AuthGate(props: { children: ReactNode }) {
                 </div>
                 {provider.provider !== "GITHUB" ? (
                   <p className="meta-muted">
-                    The connection flow for {provider.display_name} will be added in a later slice.
+                    The connection flow for {provider.display_name} will be
+                    added in a later slice.
                   </p>
                 ) : null}
               </>
             ) : provider.enabled ? (
               <p className="meta-muted">
-                {provider.display_name} is enabled but still missing required server config.
+                {provider.display_name} is enabled but still missing required
+                server config.
               </p>
             ) : (
               <p className="meta-muted">
-                {provider.display_name} connections are not enabled in this environment.
+                {provider.display_name} connections are not enabled in this
+                environment.
               </p>
             )}
           </div>
@@ -519,7 +540,11 @@ export function AuthGate(props: { children: ReactNode }) {
                 {error ? <p className="banner banner-error">{error}</p> : null}
 
                 <div className="actions">
-                  <button className="primary-button" disabled={submitting} type="submit">
+                  <button
+                    className="primary-button"
+                    disabled={submitting}
+                    type="submit"
+                  >
                     {submitting ? "Signing in..." : "Sign in"}
                   </button>
                 </div>
@@ -555,7 +580,9 @@ export function AuthGate(props: { children: ReactNode }) {
             <div className="auth-bar__actions">
               <button
                 className="secondary-link"
-                disabled={submitting || jiraSubmitting || repoSubmitting !== null}
+                disabled={
+                  submitting || jiraSubmitting || repoSubmitting !== null
+                }
                 onClick={() => void handleLogout()}
                 type="button"
               >

@@ -9,7 +9,9 @@ const { fetchJob, implementJob } = vi.hoisted(() => ({
 }));
 
 vi.mock("next/link", () => ({
-  default: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} />,
+  default: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a {...props} />
+  ),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -50,7 +52,11 @@ describe("JobStatusView", () => {
           ticket_type: "chore",
           impacted_files: [{ path: "README", reason: "Contains the greeting" }],
           proposed_changes: [
-            { file: "README", action: "modify", description: "Replace Hello World text." },
+            {
+              file: "README",
+              action: "modify",
+              description: "Replace Hello World text.",
+            },
           ],
           test_strategy: "Inspect README manually.",
           risks: [],
@@ -94,7 +100,11 @@ describe("JobStatusView", () => {
           ticket_type: "chore",
           impacted_files: [{ path: "README", reason: "Contains the greeting" }],
           proposed_changes: [
-            { file: "README", action: "modify", description: "Replace Hello World text." },
+            {
+              file: "README",
+              action: "modify",
+              description: "Replace Hello World text.",
+            },
           ],
           test_strategy: "Inspect README manually.",
           risks: [],
@@ -145,7 +155,8 @@ describe("JobStatusView", () => {
             name: "validation-profile",
             command: "",
             status: "SKIPPED",
-            summary: "No recognized validation profile was detected for this repository.",
+            summary:
+              "No recognized validation profile was detected for this repository.",
             output_excerpt: null,
           },
         ],
@@ -217,7 +228,9 @@ describe("JobStatusView", () => {
 
     render(<JobStatusView jobId="job-remote" />);
 
-    await screen.findByText(/Implementation approval is available only for local repository jobs/i);
+    await screen.findByText(
+      /Implementation approval is available only for local repository jobs/i,
+    );
     expect(
       screen.queryByRole("button", { name: /Approve and Implement/i }),
     ).not.toBeInTheDocument();
@@ -245,7 +258,11 @@ describe("JobStatusView", () => {
         ticket_type: "chore",
         impacted_files: [{ path: "README", reason: "Contains the greeting" }],
         proposed_changes: [
-          { file: "README", action: "modify", description: "Replace Hello World text." },
+          {
+            file: "README",
+            action: "modify",
+            description: "Replace Hello World text.",
+          },
         ],
         test_strategy: "Inspect README manually.",
         risks: [],
@@ -278,7 +295,11 @@ describe("JobStatusView", () => {
 
     await screen.findByText(/Updated README greeting/i);
     expect(screen.getByText(/Validation results/i)).toBeInTheDocument();
-    expect(screen.getByText(/No diff artifacts were recorded/i)).toBeInTheDocument();
-    expect(screen.getByText(/Check the filename mismatch/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No diff artifacts were recorded/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Check the filename mismatch/i),
+    ).toBeInTheDocument();
   });
 });

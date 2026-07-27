@@ -280,10 +280,7 @@ async function parseJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-async function apiFetch(
-  path: string,
-  init?: RequestInit,
-): Promise<Response> {
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(`${defaultApiBaseUrl()}${path}`, {
     credentials: "include",
     ...init,
@@ -487,10 +484,13 @@ export async function completeGitHubConnect(
   signal?: AbortSignal,
 ): Promise<RepoHostingConnectCallbackResponse> {
   const search = new URLSearchParams(params).toString();
-  const response = await apiFetch(`/api/auth/repo-hosting/github/callback?${search}`, {
-    signal,
-    cache: "no-store",
-  });
+  const response = await apiFetch(
+    `/api/auth/repo-hosting/github/callback?${search}`,
+    {
+      signal,
+      cache: "no-store",
+    },
+  );
   return parseJson<RepoHostingConnectCallbackResponse>(response);
 }
 

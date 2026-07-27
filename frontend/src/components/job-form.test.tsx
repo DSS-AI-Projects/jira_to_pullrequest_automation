@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobForm } from "@/components/job-form";
 
-const { push, createJob, fetchGitHubRepositories, fetchRepos } = vi.hoisted(() => ({
-  push: vi.fn(),
-  createJob: vi.fn(),
-  fetchGitHubRepositories: vi.fn(),
-  fetchRepos: vi.fn(),
-}));
+const { push, createJob, fetchGitHubRepositories, fetchRepos } = vi.hoisted(
+  () => ({
+    push: vi.fn(),
+    createJob: vi.fn(),
+    fetchGitHubRepositories: vi.fn(),
+    fetchRepos: vi.fn(),
+  }),
+);
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({

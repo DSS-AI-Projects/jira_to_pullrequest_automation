@@ -68,9 +68,8 @@ describe("GitHubCallbackPage", () => {
 
     await screen.findByText(/missing required parameters/i);
     expect(completeGitHubConnect).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: /Return to app/i })).toHaveAttribute(
-      "href",
-      "/?github=connect_failed",
-    );
+    expect(
+      screen.getByRole("link", { name: /Return to app/i }),
+    ).toHaveAttribute("href", "/?github=connect_failed");
   });
 });

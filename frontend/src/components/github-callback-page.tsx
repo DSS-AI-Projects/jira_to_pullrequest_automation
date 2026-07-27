@@ -43,7 +43,10 @@ export function GitHubCallbackPage({
 
     void (async () => {
       try {
-        const response = await completeGitHubConnect({ code, state }, controller.signal);
+        const response = await completeGitHubConnect(
+          { code, state },
+          controller.signal,
+        );
         if (!active) {
           return;
         }
@@ -81,7 +84,11 @@ export function GitHubCallbackPage({
     <main className="page-shell auth-page">
       <section className="panel stack">
         <div className="panel-heading">
-          <h1>{failed ? "GitHub connection failed" : "Finishing GitHub connection"}</h1>
+          <h1>
+            {failed
+              ? "GitHub connection failed"
+              : "Finishing GitHub connection"}
+          </h1>
           <p>{message}</p>
         </div>
         {failed ? (

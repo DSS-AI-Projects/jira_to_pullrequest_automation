@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -115,9 +116,9 @@ async def complete_github_authorization(
         user_id=user.id,
         provider=RepoHostingProvider.GITHUB,
         auth_kind=RepoHostingAuthKind.OAUTH_USER,
-        account_name=user_profile["login"],
+        account_name=str(user_profile["login"]),
         account_id=str(user_profile["id"]),
-        account_url=user_profile["html_url"],
+        account_url=str(user_profile["html_url"]),
         scopes=token_bundle.scopes or settings.github_oauth_scopes,
         access_token_encrypted=encrypt_secret(token_bundle.access_token),
         refresh_token_encrypted=(
@@ -230,7 +231,9 @@ async def _fetch_current_user(access_token: str) -> dict[str, str | int]:
     if response.status_code in (401, 403):
         raise AppError(
             ErrorCode.REPO_PROVIDER_CALLBACK_FAILED,
-            user_message="GitHub rejected the delegated sign-in response. Reconnect your GitHub account.",
+            user_message=(
+                "GitHub rejected the delegated sign-in response. Reconnect your GitHub account."
+            ),
             internal_detail=f"github user lookup returned {response.status_code}",
         )
     if response.status_code != 200:
@@ -274,7 +277,10 @@ async def _fetch_user_repositories(access_token: str) -> list[GitHubRepositorySu
     if response.status_code in (401, 403):
         raise AppError(
             ErrorCode.REPO_PROVIDER_CALLBACK_FAILED,
-            user_message="GitHub rejected repository access for this connection. Reconnect your GitHub account.",
+            user_message=(
+                "GitHub rejected repository access for this connection. "
+                "Reconnect your GitHub account."
+            ),
             internal_detail=f"github repo listing returned {response.status_code}",
         )
     if response.status_code != 200:
@@ -283,10 +289,10 @@ async def _fetch_user_repositories(access_token: str) -> list[GitHubRepositorySu
             internal_detail=f"github repo listing returned {response.status_code}",
         )
 
-    payload = response.json()
+    payload: list[dict[str, Any]] = response.json()
     repos: list[GitHubRepositorySummary] = []
     for item in payload:
-        owner = item.get("owner") or {}
+        owner: dict[str, Any] = item.get("owner") or {}
         repos.append(
             GitHubRepositorySummary(
                 id=int(item["id"]),

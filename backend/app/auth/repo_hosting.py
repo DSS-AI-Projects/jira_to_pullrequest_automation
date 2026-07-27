@@ -67,6 +67,8 @@ def disconnect_repo_hosting_connection(
     if store.get_repo_hosting_connection(user.id, provider) is None:
         raise AppError(
             ErrorCode.INPUT_INVALID,
-            user_message=f"No { _PROVIDER_DISPLAY_NAMES[provider] } connection is stored for this user.",
+            user_message=(
+                f"No {_PROVIDER_DISPLAY_NAMES[provider]} connection is stored for this user."
+            ),
         )
     store.delete_repo_hosting_connection(user.id, provider)

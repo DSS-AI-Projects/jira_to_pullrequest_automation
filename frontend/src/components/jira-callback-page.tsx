@@ -43,11 +43,16 @@ export function JiraCallbackPage({
 
     void (async () => {
       try {
-        const response = await completeJiraConnect({ code, state }, controller.signal);
+        const response = await completeJiraConnect(
+          { code, state },
+          controller.signal,
+        );
         if (!active) {
           return;
         }
-        setMessage(`Connected Jira site ${response.connection.site.name}. Returning to the app...`);
+        setMessage(
+          `Connected Jira site ${response.connection.site.name}. Returning to the app...`,
+        );
         window.setTimeout(() => {
           redirectTo(
             buildJiraResultUrl({
@@ -79,7 +84,9 @@ export function JiraCallbackPage({
     <main className="page-shell auth-page">
       <section className="panel stack">
         <div className="panel-heading">
-          <h1>{failed ? "Jira connection failed" : "Finishing Jira connection"}</h1>
+          <h1>
+            {failed ? "Jira connection failed" : "Finishing Jira connection"}
+          </h1>
           <p>{message}</p>
         </div>
         {failed ? (

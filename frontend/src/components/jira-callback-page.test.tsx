@@ -56,20 +56,19 @@ describe("JiraCallbackPage", () => {
       ),
     );
     await waitFor(() =>
-      expect(redirectTo).toHaveBeenCalledWith("/?jira=connected&jira_site=Acme+Jira"),
+      expect(redirectTo).toHaveBeenCalledWith(
+        "/?jira=connected&jira_site=Acme+Jira",
+      ),
     );
   });
 
   it("shows a friendly error when the callback params are missing", async () => {
-    render(
-      <JiraCallbackPage code={null} error={null} state={null} />,
-    );
+    render(<JiraCallbackPage code={null} error={null} state={null} />);
 
     await screen.findByText(/missing required parameters/i);
     expect(completeJiraConnect).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: /Return to app/i })).toHaveAttribute(
-      "href",
-      "/?jira=connect_failed",
-    );
+    expect(
+      screen.getByRole("link", { name: /Return to app/i }),
+    ).toHaveAttribute("href", "/?jira=connect_failed");
   });
 });

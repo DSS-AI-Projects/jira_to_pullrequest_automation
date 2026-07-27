@@ -53,14 +53,17 @@ def _python_commands(workspace_path: Path) -> list[ValidationCommand]:
             )
         )
 
-    has_pytest_config = any(
-        path.exists()
-        for path in (
-            workspace_path / "pytest.ini",
-            workspace_path / "tox.ini",
-            workspace_path / "setup.cfg",
+    has_pytest_config = (
+        any(
+            path.exists()
+            for path in (
+                workspace_path / "pytest.ini",
+                workspace_path / "tox.ini",
+                workspace_path / "setup.cfg",
+            )
         )
-    ) or "[tool.pytest.ini_options]" in pyproject_text
+        or "[tool.pytest.ini_options]" in pyproject_text
+    )
     has_tests = (workspace_path / "tests").exists()
     if has_pytest_config or has_tests:
         commands.append(

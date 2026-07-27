@@ -392,7 +392,8 @@ describe("AuthGate", () => {
       ],
     });
     startGitHubConnect.mockResolvedValue({
-      authorization_url: "https://github.com/login/oauth/authorize?state=github123",
+      authorization_url:
+        "https://github.com/login/oauth/authorize?state=github123",
     });
 
     render(
@@ -401,7 +402,9 @@ describe("AuthGate", () => {
       </AuthGate>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect GitHub" }),
+    );
 
     await waitFor(() => expect(startGitHubConnect).toHaveBeenCalled());
     expect(redirectBrowser).toHaveBeenCalledWith(

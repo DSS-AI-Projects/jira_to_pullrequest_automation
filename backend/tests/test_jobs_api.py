@@ -7,13 +7,20 @@ import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.logging import RedactionFilter
-from app.jobs.models import AgentUsage, ImplementationResult, Job, RepoInfo, RepoSourceKind
+from app.jobs.models import (
+    AgentUsage,
+    ImplementationChange,
+    ImplementationResult,
+    Job,
+    RepoInfo,
+    RepoSourceKind,
+)
 from app.jobs.runner import CloneResult, ImplementationStepResult
 from app.jobs.store import JobStore
 from app.main import create_app
@@ -95,11 +102,11 @@ def local_client(store: JobStore) -> Iterator[TestClient]:
             result=ImplementationResult(
                 summary="Updated the README greeting.",
                 changed_files=[
-                    {
-                        "path": "README.md",
-                        "action": "modify",
-                        "rationale": "Update the greeting text to match the approved plan.",
-                    }
+                    ImplementationChange(
+                        path="README.md",
+                        action="modify",
+                        rationale="Update the greeting text to match the approved plan.",
+                    )
                 ],
                 warnings=[],
                 follow_up_questions=[],
@@ -128,7 +135,7 @@ def poll_until_terminal(
     job_id: str,
     timeout: float = 5.0,
     terminal_states: tuple[str, ...] = ("PLAN_READY", "FAILED"),
-) -> dict[str, object]:
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         body = client.get(f"/api/jobs/{job_id}").json()
