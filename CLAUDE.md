@@ -107,7 +107,12 @@ pipeline testing); `AGENT_PLAN_CACHE_ENABLED` (on by default) memoizes plans on 
 hash of prompt+model+effort+schema so identical ticket+repo re-runs cost zero
 tokens (`backend/app/steps/plan_cache.py`); the planner front-loads the repo's own
 `CLAUDE.md`/`AGENTS.md`/`README` (capped by `AGENT_REPO_DOC_MAX_CHARS`) so it needs
-fewer exploration reads. Context management/compaction is handled by the harness.
+fewer exploration reads; and a **deterministic repo digest**
+(`backend/app/steps/repo_digest.py`, zero tokens) — languages, top-level layout,
+key files, core modules by symbol count, README excerpt — is computed once per
+repo state, cached (`AGENT_REPO_DIGEST_*`), and injected into every plan so the
+agent orients without exploring. Context management/compaction is handled by the
+harness.
 
 ## The plan schema is a versioned contract
 

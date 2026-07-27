@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     agent_plan_stub: bool = False
     agent_plan_cache_enabled: bool = True
     agent_repo_doc_max_chars: int = 8000
+    # Deterministic repo digest (zero-token orientation), computed once per repo
+    # state and cached, injected into planning so the agent explores less.
+    agent_repo_digest_enabled: bool = True
+    agent_repo_digest_cache_enabled: bool = True
+    agent_repo_digest_max_chars: int = 3000
 
 
 @lru_cache

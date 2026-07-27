@@ -15,6 +15,7 @@ def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """
     monkeypatch.setenv("AGENT_PLAN_CACHE_ENABLED", "false")
     monkeypatch.setenv("AGENT_PLAN_STUB", "false")
+    monkeypatch.setenv("AGENT_REPO_DIGEST_CACHE_ENABLED", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

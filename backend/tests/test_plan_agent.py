@@ -355,3 +355,40 @@ async def test_plan_cache_hit_skips_second_api_call(
     assert second.usage.total_cost_usd == 0.0
     assert second.plan.summary == first.plan.summary
     assert len(prompts) == 1  # agent was NOT called again
+
+
+async def test_generate_plan_injects_repo_digest(
+    agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "README.md").write_text("Acme service does X.", encoding="utf-8")
+    prompts = install_fake_agent(monkeypatch, [success_outcome()])
+    await generate_plan(ticket(), repo_map(), tmp_path)
+    assert "<repo_digest note=" in prompts[0]
+    assert "Acme service does X." in prompts[0]
+
+
+def test_get_repo_digest_is_cached(
+    agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("AGENT_REPO_DIGEST_CACHE_ENABLED", "true")
+
+    def fake_digest_cache_path(_settings: Settings) -> Path:
+        return tmp_path / "repo_digest.db"
+
+    monkeypatch.setattr(plan_agent, "_repo_digest_cache_path", fake_digest_cache_path)
+    get_settings.cache_clear()
+
+    builds: list[int] = []
+    real_build = plan_agent.build_repo_digest
+
+    def counting_build(clone: Path, rm: RepoMap, max_chars: int) -> str:
+        builds.append(1)
+        return real_build(clone, rm, max_chars)
+
+    monkeypatch.setattr(plan_agent, "build_repo_digest", counting_build)
+
+    settings = get_settings()
+    first = plan_agent.get_repo_digest(tmp_path, repo_map(), settings)
+    second = plan_agent.get_repo_digest(tmp_path, repo_map(), settings)
+    assert first == second
+    assert len(builds) == 1  # second call served from the cache
