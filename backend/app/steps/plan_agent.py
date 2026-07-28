@@ -29,10 +29,11 @@ from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger, redact
 from app.jobs.models import AgentUsage
 from app.jobs.runner import PlanResult
-from app.schemas.plan import ChangeAction, Plan, ProposedChange, TicketType
+from app.schemas.plan import Plan
 from app.schemas.repomap import RepoMap
 from app.schemas.ticket import TicketData
 from app.steps.plan_cache import PlanCache, plan_cache_key
+from app.steps.plan_stub import build_stub_plan
 from app.steps.repo_digest import RepoDigestCache, build_repo_digest, repo_digest_key
 
 logger = get_logger(__name__)
@@ -233,31 +234,6 @@ def _usage_from(outcome: AgentRunOutcome) -> AgentUsage:
     )
 
 
-def _stub_plan(ticket: TicketData) -> Plan:
-    """A schema-valid canned plan produced without any API call, for testing
-    the pipeline end-to-end without spending Anthropic credits."""
-    summary = ticket.summary.strip() or ticket.key
-    return Plan(
-        summary=f"[STUB PLAN — no LLM call] {summary}",
-        ticket_type=TicketType.UNKNOWN,
-        impacted_files=[],
-        proposed_changes=[
-            ProposedChange(
-                file="TBD",
-                action=ChangeAction.MODIFY,
-                description=(
-                    "Stub planning mode is enabled (AGENT_PLAN_STUB); this placeholder "
-                    "plan was returned without calling the model. Disable stub mode to "
-                    "generate a real plan."
-                ),
-            )
-        ],
-        test_strategy="Not planned in stub mode.",
-        risks=[],
-        open_questions=[],
-    )
-
-
 def _plan_cache_path(settings: Settings) -> Path:
     return settings.db_path.parent / "plan_cache.db"
 
@@ -291,11 +267,12 @@ def get_repo_digest(clone_path: Path, repo_map: RepoMap, settings: Settings) -> 
 async def generate_plan(ticket: TicketData, repo_map: RepoMap, clone_path: Path) -> PlanResult:
     settings = get_settings()
 
-    # Stub mode: return a canned plan with no API call (zero-credit pipeline testing).
+    # Stub mode: return a ticket-shaped canned plan with no API call (zero-credit
+    # pipeline/demo testing). Deterministic per ticket+repo, varied across them.
     if settings.agent_plan_stub:
-        logger.info("plan agent: stub mode enabled; returning canned plan (no API call)")
+        logger.info("plan agent: stub mode enabled; returning offline plan (no API call)")
         return PlanResult(
-            plan=_stub_plan(ticket),
+            plan=build_stub_plan(ticket, repo_map),
             usage=AgentUsage(duration_seconds=0.0, total_cost_usd=0.0, cached=False),
         )
 

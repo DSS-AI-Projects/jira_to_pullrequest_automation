@@ -66,11 +66,12 @@ def repo_digest_key(repo_map_text: str) -> str:
     return hashlib.sha256(f"v{_DIGEST_VERSION}\0{repo_map_text}".encode()).hexdigest()
 
 
-def _parse_repo_map(text: str) -> list[tuple[str, int]]:
+def parse_repo_map_files(text: str) -> list[tuple[str, int]]:
     """Return (relative_path, symbol_count) for each file listed in the map.
 
     File lines are left-justified; symbol lines are indented; the truncation
-    marker starts with '['.
+    marker starts with '['. Shared with plan_stub.py so both the digest and
+    the offline stub-plan generator rank files the same way.
     """
     files: list[tuple[str, int]] = []
     current: str | None = None
@@ -142,7 +143,7 @@ def _readme_excerpt(clone_path: Path) -> str | None:
 
 
 def build_repo_digest(clone_path: Path, repo_map: RepoMap, max_chars: int) -> str:
-    files = _parse_repo_map(repo_map.text)
+    files = parse_repo_map_files(repo_map.text)
     paths = [path for path, _ in files]
 
     lines: list[str] = ["Auto-generated repository orientation (deterministic; untrusted data)."]

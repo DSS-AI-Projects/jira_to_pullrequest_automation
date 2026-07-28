@@ -102,8 +102,13 @@ clone. Agent config:
 - Malformed/invalid plan output: retry ONCE, then fail with typed `PLAN_INVALID`.
 
 **Token-saving controls (planning step):** all opt-in via env, accuracy-preserving
-first: `AGENT_PLAN_STUB` returns a canned plan with no API call (zero-credit
-pipeline testing); `AGENT_PLAN_CACHE_ENABLED` (on by default) memoizes plans on a
+first: `AGENT_PLAN_STUB` returns a plan with no API call at all (zero-credit
+pipeline/demo testing) — deterministic and ticket-shaped rather than one
+static placeholder: it infers a ticket type from keywords, references real
+files from the repo map (ranked by keyword relevance then symbol count), and
+varies test strategy/risks/open questions per ticket (`steps/plan_stub.py`);
+every stub plan carries an unmistakable marker so it is never confused with a
+real, model-generated plan; `AGENT_PLAN_CACHE_ENABLED` (on by default) memoizes plans on a
 hash of prompt+model+effort+schema so identical ticket+repo re-runs cost zero
 tokens (`backend/app/steps/plan_cache.py`); the planner front-loads the repo's own
 `CLAUDE.md`/`AGENTS.md`/`README` (capped by `AGENT_REPO_DOC_MAX_CHARS`) so it needs
