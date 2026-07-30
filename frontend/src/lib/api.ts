@@ -199,6 +199,7 @@ export type Job = {
   implementation_result: ImplementationResult | null;
   implementation_diff: ImplementationDiff | null;
   validation_results: ValidationResult[];
+  implementation_clarifications: string | null;
   implementation_approved_at: string | null;
   implementation_started_at: string | null;
   implementation_finished_at: string | null;
@@ -368,10 +369,18 @@ export async function fetchJob(
 
 export async function implementJob(
   jobId: string,
+  payload?: { clarifications?: string },
   signal?: AbortSignal,
 ): Promise<JobCreated> {
+  const clarifications = payload?.clarifications?.trim();
   const response = await apiFetch(`/api/jobs/${jobId}/implement`, {
     method: "POST",
+    ...(clarifications
+      ? {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clarifications }),
+        }
+      : {}),
     signal,
   });
   return parseJson<JobCreated>(response);

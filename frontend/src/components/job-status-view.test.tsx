@@ -73,6 +73,7 @@ describe("JobStatusView", () => {
         implementation_result: null,
         implementation_diff: null,
         validation_results: [],
+        implementation_clarifications: null,
         implementation_approved_at: null,
         implementation_started_at: null,
         implementation_finished_at: null,
@@ -160,6 +161,7 @@ describe("JobStatusView", () => {
             output_excerpt: null,
           },
         ],
+        implementation_clarifications: "Use British spelling in the greeting.",
         implementation_approved_at: "2026-07-17T00:02:00Z",
         implementation_started_at: "2026-07-17T00:02:01Z",
         implementation_finished_at: "2026-07-17T00:02:10Z",
@@ -173,9 +175,19 @@ describe("JobStatusView", () => {
     const button = await screen.findByRole("button", {
       name: /Approve and Implement/i,
     });
+    const textarea = screen.getByPlaceholderText(
+      /Use British spelling for user-facing copy/i,
+    );
+    fireEvent.change(textarea, {
+      target: { value: "  Use British spelling in the greeting.  " },
+    });
     fireEvent.click(button);
 
-    await waitFor(() => expect(implementJob).toHaveBeenCalledWith("job-123"));
+    await waitFor(() =>
+      expect(implementJob).toHaveBeenCalledWith("job-123", {
+        clarifications: "  Use British spelling in the greeting.  ",
+      }),
+    );
     await screen.findByText(/Updated README greeting/i);
     expect(screen.getByText(/validation results/i)).toBeInTheDocument();
     expect(screen.getByText(/Show full patch/i)).toBeInTheDocument();
@@ -184,6 +196,12 @@ describe("JobStatusView", () => {
     expect(screen.getByText(/Implementation workspace/i)).toBeInTheDocument();
     expect(screen.getByText(/D:\\workdir\\job-123\\repo/i)).toBeInTheDocument();
     expect(screen.getByText(/\$0.15/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Guidance considered during implementation/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Use British spelling in the greeting\./i),
+    ).toBeInTheDocument();
   });
 
   it("explains when implementation approval is unavailable for remote jobs", async () => {
@@ -219,6 +237,7 @@ describe("JobStatusView", () => {
       implementation_result: null,
       implementation_diff: null,
       validation_results: [],
+      implementation_clarifications: null,
       implementation_approved_at: null,
       implementation_started_at: null,
       implementation_finished_at: null,
@@ -284,6 +303,7 @@ describe("JobStatusView", () => {
       },
       implementation_diff: undefined,
       validation_results: undefined,
+      implementation_clarifications: null,
       implementation_approved_at: "2026-07-17T00:02:00Z",
       implementation_started_at: "2026-07-17T00:02:01Z",
       implementation_finished_at: "2026-07-17T00:02:10Z",

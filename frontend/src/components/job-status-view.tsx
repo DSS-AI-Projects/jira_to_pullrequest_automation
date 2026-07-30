@@ -57,6 +57,7 @@ export function JobStatusView(props: { jobId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [implementing, setImplementing] = useState(false);
+  const [clarifications, setClarifications] = useState("");
 
   const loadJob = useCallback(
     async (signal: AbortSignal) => {
@@ -130,7 +131,7 @@ export function JobStatusView(props: { jobId: string }) {
     setImplementing(true);
     setError(null);
     try {
-      await implementJob(job.id);
+      await implementJob(job.id, { clarifications });
       setRefreshKey((value) => value + 1);
     } catch (implementError) {
       setError(
@@ -306,7 +307,25 @@ export function JobStatusView(props: { jobId: string }) {
                 details above.
               </p>
             </div>
-            {canImplement ? (
+          </div>
+          {canImplement ? (
+            <div className="stack">
+              <label className="field">
+                <span>Additional guidance (optional)</span>
+                <small>
+                  Answer any open questions from the plan, or add other context
+                  the implementation should take into account.
+                </small>
+                <textarea
+                  className="text-input"
+                  rows={4}
+                  maxLength={4000}
+                  value={clarifications}
+                  disabled={implementing}
+                  onChange={(event) => setClarifications(event.target.value)}
+                  placeholder="e.g. Use British spelling for user-facing copy; the config flag should default to false."
+                />
+              </label>
               <button
                 className="primary-button"
                 disabled={implementing}
@@ -317,8 +336,8 @@ export function JobStatusView(props: { jobId: string }) {
                   ? "Starting implementation..."
                   : "Approve and Implement"}
               </button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
           {!canImplement && job.state === "PLAN_READY" ? (
             <p className="meta-muted">
               Implementation approval is available only for local repository
@@ -347,6 +366,16 @@ export function JobStatusView(props: { jobId: string }) {
               <span className="pill success-pill">Ready</span>
             </div>
             <p>{implementationResult.summary}</p>
+            {job.implementation_clarifications ? (
+              <div className="field">
+                <span className="meta-label">
+                  Guidance considered during implementation
+                </span>
+                <p className="output-block">
+                  {job.implementation_clarifications}
+                </p>
+              </div>
+            ) : null}
           </div>
 
           <div className="plan-columns">
