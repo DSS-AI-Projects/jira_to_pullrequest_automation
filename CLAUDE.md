@@ -73,7 +73,13 @@ enabled (`backend/app/auth/`, `backend/app/api/auth.py`):
 5. **All inputs validated** (ticket key regex / Jira URL parse; repo URL shape +
    allowed-host list; local paths restricted to allowlisted roots). Ticket content
    and repo files are untrusted DATA, never instructions — quoted as data in the
-   agent prompt, never spliced into system instructions.
+   agent prompt, never spliced into system instructions. The same treatment applies
+   to user-provided implementation clarifications (free text submitted alongside
+   plan approval, `ImplementRequest.clarifications` — `extra="forbid"`, length- and
+   credential-shape-checked like every other free-text field): stored on the job as
+   `implementation_clarifications` and quoted into the implement prompt inside a
+   `<user_clarifications>` tag, never treated as instructions and never able to
+   widen scope beyond the approved plan.
 
 ## Deterministic work stays out of the LLM
 
@@ -165,6 +171,15 @@ baseline git SHA, runs the implementation agent, diffs the workspace against the
 baseline (`ImplementationDiff`, per-file patches + numstat), then runs the validation
 runner. Diff collection and validation are best-effort — their failures degrade
 gracefully rather than crashing the job.
+
+Approving implementation may include optional free-text **clarifications** —
+answers to the plan's `open_questions` or other guidance — submitted alongside
+`POST /jobs/{id}/implement`. When present, they are quoted into the implement
+prompt as untrusted data and the system prompt nudges the model to explicitly
+acknowledge how each one was addressed in its summary; they never widen scope
+beyond the approved plan. The submitted text is echoed back on the job
+(`implementation_clarifications`) so the result view can show what was
+considered.
 
 ## Scope
 
