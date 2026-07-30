@@ -228,6 +228,108 @@ def test_plan_ready_local_job_can_be_approved_for_implementation(
     assert final["validation_results"] is not None
 
 
+def test_implement_persists_clarifications_and_surfaces_them_on_the_job(
+    local_client: TestClient,
+) -> None:
+    create = local_client.post(
+        "/api/jobs",
+        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(local_client, job_id)
+
+    implement = local_client.post(
+        f"/api/jobs/{job_id}/implement",
+        json={"clarifications": "  Prefer British spelling for the greeting.  "},
+    )
+    assert implement.status_code == 202
+
+    final = poll_until_terminal(
+        local_client,
+        job_id,
+        terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED"),
+    )
+    assert final["state"] == "IMPLEMENTATION_READY"
+    assert final["implementation_clarifications"] == "Prefer British spelling for the greeting."
+
+
+def test_implement_blank_clarifications_normalize_to_none(local_client: TestClient) -> None:
+    create = local_client.post(
+        "/api/jobs",
+        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(local_client, job_id)
+
+    implement = local_client.post(f"/api/jobs/{job_id}/implement", json={"clarifications": "   "})
+    assert implement.status_code == 202
+
+    final = poll_until_terminal(
+        local_client,
+        job_id,
+        terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED"),
+    )
+    assert final["implementation_clarifications"] is None
+
+
+def test_implement_omitted_body_stays_backward_compatible(local_client: TestClient) -> None:
+    create = local_client.post(
+        "/api/jobs",
+        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(local_client, job_id)
+
+    implement = local_client.post(f"/api/jobs/{job_id}/implement")
+    assert implement.status_code == 202
+
+    final = poll_until_terminal(
+        local_client,
+        job_id,
+        terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED"),
+    )
+    assert final["state"] == "IMPLEMENTATION_READY"
+    assert final["implementation_clarifications"] is None
+
+
+def test_implement_rejects_credential_shaped_clarifications_never_echoed(
+    local_client: TestClient,
+) -> None:
+    create = local_client.post(
+        "/api/jobs",
+        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(local_client, job_id)
+
+    response = local_client.post(
+        f"/api/jobs/{job_id}/implement", json={"clarifications": FAKE_TOKEN}
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+    assert FAKE_TOKEN not in response.text
+
+    # rejected before the job was ever moved out of PLAN_READY
+    unchanged = local_client.get(f"/api/jobs/{job_id}").json()
+    assert unchanged["state"] == "PLAN_READY"
+    assert unchanged["implementation_clarifications"] is None
+
+
+def test_implement_rejects_overlong_clarifications(local_client: TestClient) -> None:
+    create = local_client.post(
+        "/api/jobs",
+        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(local_client, job_id)
+
+    response = local_client.post(
+        f"/api/jobs/{job_id}/implement", json={"clarifications": "x" * 4001}
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+
+
 def test_implement_rejects_job_not_in_plan_ready_state(client: TestClient, store: JobStore) -> None:
     job = Job.new(ticket_key="PROJ-1", repo_url="git@github.com:acme/repo.git")
     store.create(job)

@@ -18,9 +18,11 @@ from app.jobs.models import Job, JobState, RepoSourceKind
 from app.jobs.runner import JobSteps, run_implementation, run_job
 from app.jobs.store import JobStore
 from app.schemas.inputs import (
+    ImplementRequest,
     JobCreateRequest,
     RepoChoice,
     load_preconfigured_repos,
+    normalize_clarifications,
     normalize_repo,
     normalize_ticket,
 )
@@ -93,7 +95,9 @@ async def get_job(job_id: str, request: Request) -> Job:
 
 
 @router.post("/jobs/{job_id}/implement", response_model=JobCreated, status_code=202)
-async def implement_job(job_id: str, request: Request) -> JobCreated:
+async def implement_job(
+    job_id: str, request: Request, payload: ImplementRequest | None = None
+) -> JobCreated:
     user = require_current_user(request)
     store = _store(request)
     job = store.get(job_id)
@@ -113,6 +117,9 @@ async def implement_job(job_id: str, request: Request) -> JobCreated:
     job.implementation_diff = None
     job.implementation_usage = None
     job.validation_results = []
+    job.implementation_clarifications = normalize_clarifications(
+        payload.clarifications if payload is not None else None
+    )
     job.implementation_approved_at = now
     job.implementation_started_at = None
     job.implementation_finished_at = None

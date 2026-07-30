@@ -141,6 +141,7 @@ class Job(BaseModel):
     implementation_result: ImplementationResult | None = None
     implementation_diff: ImplementationDiff | None = None
     validation_results: list[ValidationResult] = []
+    implementation_clarifications: str | None = None
     implementation_approved_at: datetime | None = None
     implementation_started_at: datetime | None = None
     implementation_finished_at: datetime | None = None

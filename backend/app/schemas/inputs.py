@@ -45,6 +45,18 @@ class RepoChoice(BaseModel):
     url: str
 
 
+class ImplementRequest(BaseModel):
+    # extra="forbid": same invariant-1 treatment as JobCreateRequest — this is
+    # another free-text field a user could paste a credential into.
+    model_config = ConfigDict(extra="forbid")
+
+    clarifications: str | None = Field(
+        default=None,
+        max_length=4000,
+        description="Optional guidance to consider during implementation",
+    )
+
+
 def _reject_credential_shaped(value: str, field: str) -> None:
     if looks_token_shaped(value):
         # Do not log or echo the value anywhere.
@@ -82,6 +94,23 @@ def normalize_ticket(raw: str, settings: Settings) -> str:
         ErrorCode.INPUT_INVALID,
         user_message="Enter a Jira ticket key like PROJ-123, or a ticket URL from your Jira.",
     )
+
+
+def normalize_clarifications(raw: str | None) -> str | None:
+    """Trim and validate free-text implementation guidance.
+
+    Blank input normalizes to None so a no-op submission never leaves an empty
+    <user_clarifications> block in the implement prompt. Token-shaped input is
+    rejected the same way ticket/repo fields are (invariant 1) — never logged
+    or echoed.
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    _reject_credential_shaped(value, "clarifications")
+    return value
 
 
 def load_preconfigured_repos(settings: Settings) -> list[RepoChoice]:
