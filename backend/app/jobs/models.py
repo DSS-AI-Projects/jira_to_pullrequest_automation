@@ -131,6 +131,7 @@ class Job(BaseModel):
     owner_user_id: str | None = None
     ticket_key: str
     repo_url: str
+    planning_notes: str | None = None
     state: JobState = JobState.QUEUED
     error: JobError | None = None
     repo_info: RepoInfo | None = None
@@ -149,13 +150,20 @@ class Job(BaseModel):
     updated_at: datetime
 
     @classmethod
-    def new(cls, ticket_key: str, repo_url: str, owner_user_id: str | None = None) -> Job:
+    def new(
+        cls,
+        ticket_key: str,
+        repo_url: str,
+        owner_user_id: str | None = None,
+        planning_notes: str | None = None,
+    ) -> Job:
         now = datetime.now(UTC)
         return cls(
             id=uuid.uuid4().hex,
             owner_user_id=owner_user_id,
             ticket_key=ticket_key,
             repo_url=repo_url,
+            planning_notes=planning_notes,
             created_at=now,
             updated_at=now,
         )

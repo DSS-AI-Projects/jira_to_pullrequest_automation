@@ -61,7 +61,7 @@ class JobSteps:
     fetch_ticket: Callable[[Job, JobStore], Awaitable[TicketData]]
     clone_repo: Callable[[str, str, str, Path], Awaitable[CloneResult]]
     build_repo_map: Callable[[Path], Awaitable[RepoMap]]
-    generate_plan: Callable[[TicketData, RepoMap, Path], Awaitable[PlanResult]]
+    generate_plan: Callable[[TicketData, RepoMap, Path, str | None], Awaitable[PlanResult]]
     implement_plan: Callable[[Job, Path], Awaitable[ImplementationStepResult]]
     validate_workspace: Callable[[Path], Awaitable[list[ValidationResult]]]
 
@@ -201,7 +201,7 @@ async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSt
         repo_map = await steps.build_repo_map(clone_path)
 
         job = _advance(store, job, JobState.PLANNING)
-        result = await steps.generate_plan(ticket, repo_map, clone_path)
+        result = await steps.generate_plan(ticket, repo_map, clone_path, job.planning_notes)
 
         job.plan = result.plan
         job.usage = result.usage

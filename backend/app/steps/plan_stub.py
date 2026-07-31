@@ -240,15 +240,18 @@ def _select_changes(
     return impacted_files, proposed_changes
 
 
-def build_stub_plan(ticket: TicketData, repo_map: RepoMap) -> Plan:
+def build_stub_plan(
+    ticket: TicketData, repo_map: RepoMap, planning_notes: str | None = None
+) -> Plan:
     """A schema-valid, ticket-shaped plan produced without any API call — for
     zero-credit pipeline/demo testing (AGENT_PLAN_STUB=true).
 
-    Deterministic per (ticket key + summary + repo map): re-running the same
-    ticket against the same repo state always yields the same stub plan, so
-    it is safe to use in tests and reproducible demos.
+    Deterministic per (ticket key + summary + repo map + planning notes):
+    re-running the same ticket against the same repo state and notes always
+    yields the same stub plan, so it is safe to use in tests and reproducible
+    demos.
     """
-    rng = random.Random(f"{ticket.key}:{ticket.summary}:{repo_map.text}")
+    rng = random.Random(f"{ticket.key}:{ticket.summary}:{repo_map.text}:{planning_notes or ''}")
     ticket_tokens = _tokenize(f"{ticket.summary} {ticket.description}")
     ticket_type = _infer_ticket_type(ticket_tokens)
 
@@ -262,7 +265,14 @@ def build_stub_plan(ticket: TicketData, repo_map: RepoMap) -> Plan:
 
     test_strategy = rng.choice(_TEST_STRATEGY_BY_TYPE[ticket_type])
 
-    risks = [_MANDATORY_RISK, *rng.sample(_RISK_POOL, k=min(_MAX_EXTRA_RISKS, len(_RISK_POOL)))]
+    risks = [_MANDATORY_RISK]
+    if planning_notes:
+        risks.append(
+            "Technical notes were supplied alongside this ticket; stub mode does "
+            "not analyze them — a real planning run would incorporate them into "
+            "the impacted files, proposed changes, and test strategy."
+        )
+    risks += rng.sample(_RISK_POOL, k=min(_MAX_EXTRA_RISKS, len(_RISK_POOL)))
 
     open_question_count = rng.choice(_OPEN_QUESTION_COUNT_WEIGHTS)
     open_questions = rng.sample(

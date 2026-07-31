@@ -58,7 +58,10 @@ def make_fake_steps() -> JobSteps:
     async def build_repo_map(clone_path: Path) -> RepoMap:
         return RepoMap(text="a.py\n", file_count=1)
 
-    async def generate_plan(ticket: TicketData, repo_map: RepoMap, clone_path: Path) -> PlanResult:
+    async def generate_plan(
+        ticket: TicketData, repo_map: RepoMap, clone_path: Path, planning_notes: str | None
+    ) -> PlanResult:
+        del planning_notes
         return PlanResult(plan=sample_plan(), usage=AgentUsage(duration_seconds=0.1))
 
     async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepResult:

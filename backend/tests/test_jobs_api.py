@@ -163,6 +163,86 @@ def test_submit_returns_job_id_and_job_reaches_plan_ready(client: TestClient) ->
     assert plan["schema_version"] == 1
 
 
+def test_submit_persists_planning_notes_and_surfaces_them_on_the_job(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/jobs",
+        json={
+            "ticket": "PROJ-123",
+            "repo": "git@github.com:acme/repo.git",
+            "planning_notes": "  Reuse the existing retry helper.  ",
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    body = poll_until_terminal(client, job_id)
+    assert body["state"] == "PLAN_READY"
+    assert body["planning_notes"] == "Reuse the existing retry helper."
+
+
+def test_submit_blank_planning_notes_normalizes_to_none(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        json={
+            "ticket": "PROJ-123",
+            "repo": "git@github.com:acme/repo.git",
+            "planning_notes": "   ",
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    body = poll_until_terminal(client, job_id)
+    assert body["planning_notes"] is None
+
+
+def test_submit_omitted_planning_notes_stays_backward_compatible(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs", json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"}
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    body = poll_until_terminal(client, job_id)
+    assert body["planning_notes"] is None
+
+
+def test_submit_rejects_credential_shaped_planning_notes_never_echoed(
+    client: TestClient, store: JobStore
+) -> None:
+    response = client.post(
+        "/api/jobs",
+        json={
+            "ticket": "PROJ-123",
+            "repo": "git@github.com:acme/repo.git",
+            "planning_notes": FAKE_TOKEN,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+    assert FAKE_TOKEN not in response.text
+    with store._lock:  # pyright: ignore[reportPrivateUsage]
+        rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT COUNT(*) FROM jobs"
+        ).fetchone()
+    assert rows[0] == 0
+
+
+def test_submit_rejects_overlong_planning_notes(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        json={
+            "ticket": "PROJ-123",
+            "repo": "git@github.com:acme/repo.git",
+            "planning_notes": "x" * 4001,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+
+
 def test_unknown_job_returns_typed_404(client: TestClient) -> None:
     response = client.get("/api/jobs/doesnotexist")
     assert response.status_code == 404

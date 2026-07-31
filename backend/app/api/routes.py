@@ -23,6 +23,7 @@ from app.schemas.inputs import (
     RepoChoice,
     load_preconfigured_repos,
     normalize_clarifications,
+    normalize_planning_notes,
     normalize_repo,
     normalize_ticket,
 )
@@ -72,8 +73,14 @@ async def create_job(payload: JobCreateRequest, request: Request) -> JobCreated:
     settings: Settings = get_settings()
     ticket_key = normalize_ticket(payload.ticket, settings)
     repo_url = normalize_repo(payload.repo, settings)
+    planning_notes = normalize_planning_notes(payload.planning_notes)
 
-    job = Job.new(ticket_key=ticket_key, repo_url=repo_url, owner_user_id=user.id if user else None)
+    job = Job.new(
+        ticket_key=ticket_key,
+        repo_url=repo_url,
+        owner_user_id=user.id if user else None,
+        planning_notes=planning_notes,
+    )
     store = _store(request)
     store.create(job)
     logger.info("job %s created: ticket=%s repo=%s", job.id, ticket_key, repo_url)

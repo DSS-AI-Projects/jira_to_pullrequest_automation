@@ -158,3 +158,31 @@ def test_changing_summary_for_same_key_can_change_output() -> None:
     a = build_stub_plan(ticket(key="PROJ-1", summary="Fix login error"), repo_map())
     b = build_stub_plan(ticket(key="PROJ-1", summary="Add SSO login support"), repo_map())
     assert a.ticket_type != b.ticket_type
+
+
+# --- planning notes ---
+
+
+def test_planning_notes_absent_by_default_omits_acknowledgment() -> None:
+    plan = build_stub_plan(ticket(), repo_map())
+    assert not any("Technical notes were supplied" in risk for risk in plan.risks)
+
+
+def test_planning_notes_present_adds_acknowledgment_risk() -> None:
+    plan = build_stub_plan(ticket(), repo_map(), planning_notes="Use dependency injection.")
+    assert any("Technical notes were supplied" in risk for risk in plan.risks)
+    assert plan.risks[0].startswith("This is a stub plan generated without a model call")
+
+
+def test_planning_notes_still_carries_stub_marker_and_mandatory_risk() -> None:
+    plan = build_stub_plan(ticket(), repo_map(), planning_notes="Anything at all.")
+    assert plan.summary.startswith("[STUB PLAN")
+    assert plan.risks[0].startswith("This is a stub plan generated without a model call")
+
+
+def test_changing_planning_notes_can_change_output_deterministically() -> None:
+    a = build_stub_plan(ticket(), repo_map(), planning_notes="Note A")
+    b = build_stub_plan(ticket(), repo_map(), planning_notes="Note B")
+    a_again = build_stub_plan(ticket(), repo_map(), planning_notes="Note A")
+    assert a == a_again  # deterministic for the same notes
+    assert a.test_strategy != b.test_strategy or a.risks != b.risks

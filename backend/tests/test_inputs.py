@@ -7,7 +7,7 @@ import pytest
 
 from app.core.config import Settings
 from app.core.errors import AppError, ErrorCode
-from app.schemas.inputs import normalize_repo, normalize_ticket
+from app.schemas.inputs import normalize_planning_notes, normalize_repo, normalize_ticket
 
 FAKE_TOKEN = "ATATT" + "3xF" + "a" * 27
 
@@ -185,3 +185,27 @@ def test_non_url_garbage_repo_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(AppError) as excinfo:
         normalize_repo("ftp://github.com/x", make_settings(tmp_path))
     assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+# --- planning notes ---
+
+
+def test_planning_notes_none_stays_none() -> None:
+    assert normalize_planning_notes(None) is None
+
+
+def test_planning_notes_blank_normalizes_to_none() -> None:
+    assert normalize_planning_notes("   \n  ") is None
+
+
+def test_planning_notes_trims_whitespace() -> None:
+    assert normalize_planning_notes("  Use the existing retry helper.  ") == (
+        "Use the existing retry helper."
+    )
+
+
+def test_planning_notes_token_shaped_is_rejected_without_echoing_value() -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_planning_notes(FAKE_TOKEN)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    assert FAKE_TOKEN not in excinfo.value.user_message

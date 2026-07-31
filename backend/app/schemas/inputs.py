@@ -36,6 +36,11 @@ class JobCreateRequest(BaseModel):
         max_length=2000,
         description="Repo URL, pre-configured repo name, or approved local path",
     )
+    planning_notes: str | None = Field(
+        default=None,
+        max_length=4000,
+        description="Optional technical guidance to shape the generated plan",
+    )
 
 
 class RepoChoice(BaseModel):
@@ -96,21 +101,30 @@ def normalize_ticket(raw: str, settings: Settings) -> str:
     )
 
 
-def normalize_clarifications(raw: str | None) -> str | None:
-    """Trim and validate free-text implementation guidance.
+def _normalize_free_text(raw: str | None, field: str) -> str | None:
+    """Trim and validate an optional free-text guidance field.
 
     Blank input normalizes to None so a no-op submission never leaves an empty
-    <user_clarifications> block in the implement prompt. Token-shaped input is
-    rejected the same way ticket/repo fields are (invariant 1) — never logged
-    or echoed.
+    untrusted-data block in the agent prompt. Token-shaped input is rejected
+    the same way ticket/repo fields are (invariant 1) — never logged or echoed.
     """
     if raw is None:
         return None
     value = raw.strip()
     if not value:
         return None
-    _reject_credential_shaped(value, "clarifications")
+    _reject_credential_shaped(value, field)
     return value
+
+
+def normalize_clarifications(raw: str | None) -> str | None:
+    """Trim and validate free-text implementation guidance (post-plan)."""
+    return _normalize_free_text(raw, "clarifications")
+
+
+def normalize_planning_notes(raw: str | None) -> str | None:
+    """Trim and validate free-text technical guidance (pre-plan)."""
+    return _normalize_free_text(raw, "planning_notes")
 
 
 def load_preconfigured_repos(settings: Settings) -> list[RepoChoice]:
