@@ -21,6 +21,7 @@ export function JobForm() {
   const router = useRouter();
   const [ticket, setTicket] = useState("");
   const [repo, setRepo] = useState("");
+  const [planningNotes, setPlanningNotes] = useState("");
   const [repoMode, setRepoMode] = useState<RepoMode>("remote");
   const [repos, setRepos] = useState<RepoChoice[]>([]);
   const [githubRepos, setGitHubRepos] = useState<GitHubRepositorySummary[]>([]);
@@ -126,6 +127,7 @@ export function JobForm() {
         const result = await createJob({
           ticket,
           repo,
+          planning_notes: planningNotes,
         });
         router.push(`/jobs/${result.job_id}`);
       } catch (submitError) {
@@ -320,6 +322,24 @@ export function JobForm() {
             </div>
           </div>
         ) : null}
+
+        <label className="field">
+          <span>Additional technical considerations (optional)</span>
+          <small>
+            Add constraints, preferred approaches, or context not captured in
+            the ticket description — this shapes the generated plan, not just
+            the implementation.
+          </small>
+          <textarea
+            className="text-input"
+            rows={4}
+            maxLength={4000}
+            name="planningNotes"
+            onChange={(event) => setPlanningNotes(event.target.value)}
+            placeholder="e.g. Reuse the existing retry helper in src/http.py; avoid adding new dependencies."
+            value={planningNotes}
+          />
+        </label>
 
         <div className="meta-note">
           <strong>Security:</strong> this app never accepts secrets in the form.

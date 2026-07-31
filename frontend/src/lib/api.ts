@@ -189,6 +189,7 @@ export type Job = {
   id: string;
   ticket_key: string;
   repo_url: string;
+  planning_notes: string | null;
   state: JobState;
   error: JobError | null;
   repo_info: RepoInfo | null;
@@ -342,6 +343,7 @@ export async function createJob(
   payload: {
     ticket: string;
     repo: string;
+    planning_notes?: string;
   },
   signal?: AbortSignal,
 ): Promise<JobCreated> {

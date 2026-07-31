@@ -35,6 +35,7 @@ describe("JobStatusView", () => {
         id: "job-123",
         ticket_key: "KAN-25",
         repo_url: "D:\\workspaces\\hello-world-debug",
+        planning_notes: "Reuse the existing retry helper.",
         state: "PLAN_READY",
         error: null,
         repo_info: {
@@ -84,6 +85,7 @@ describe("JobStatusView", () => {
         id: "job-123",
         ticket_key: "KAN-25",
         repo_url: "D:\\workspaces\\hello-world-debug",
+        planning_notes: "Reuse the existing retry helper.",
         state: "IMPLEMENTATION_READY",
         error: null,
         repo_info: {
@@ -202,6 +204,12 @@ describe("JobStatusView", () => {
     expect(
       screen.getByText(/Use British spelling in the greeting\./i),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Technical considerations you provided/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Reuse the existing retry helper\./i),
+    ).toBeInTheDocument();
   });
 
   it("explains when implementation approval is unavailable for remote jobs", async () => {
@@ -209,6 +217,7 @@ describe("JobStatusView", () => {
       id: "job-remote",
       ticket_key: "PROJ-1",
       repo_url: "git@github.com:acme/repo.git",
+      planning_notes: null,
       state: "PLAN_READY",
       error: null,
       repo_info: {
@@ -260,6 +269,7 @@ describe("JobStatusView", () => {
       id: "job-legacy",
       ticket_key: "KAN-25",
       repo_url: "D:\\work\\2026\\AI\\Trae\\Hello-World",
+      planning_notes: null,
       state: "IMPLEMENTATION_READY",
       error: null,
       repo_info: {

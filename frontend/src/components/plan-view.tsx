@@ -13,8 +13,12 @@ function currency(value: number | null): string {
   }).format(value);
 }
 
-export function PlanView(props: { plan: Plan; usage: AgentUsage | null }) {
-  const { plan, usage } = props;
+export function PlanView(props: {
+  plan: Plan;
+  usage: AgentUsage | null;
+  planningNotes?: string | null;
+}) {
+  const { plan, usage, planningNotes } = props;
 
   return (
     <section className="plan-layout">
@@ -32,6 +36,14 @@ export function PlanView(props: { plan: Plan; usage: AgentUsage | null }) {
             <span className="meta-label">Summary</span>
             <p>{plan.summary}</p>
           </div>
+          {planningNotes ? (
+            <div>
+              <span className="meta-label">
+                Technical considerations you provided
+              </span>
+              <p className="output-block">{planningNotes}</p>
+            </div>
+          ) : null}
           <div>
             <span className="meta-label">Ticket type</span>
             <p className="cap">{plan.ticket_type}</p>

@@ -69,6 +69,12 @@ describe("JobForm", () => {
         target: { value: "hello-world-sample" },
       },
     );
+    fireEvent.change(
+      screen.getByLabelText(/Additional technical considerations/i),
+      {
+        target: { value: "Reuse the existing retry helper." },
+      },
+    );
     fireEvent.click(
       screen.getByRole("button", { name: /Generate implementation plan/i }),
     );
@@ -77,6 +83,7 @@ describe("JobForm", () => {
       expect(createJob).toHaveBeenCalledWith({
         ticket: "PROJ-42",
         repo: "hello-world-sample",
+        planning_notes: "Reuse the existing retry helper.",
       }),
     );
     expect(push).toHaveBeenCalledWith("/jobs/job-123");
@@ -154,6 +161,7 @@ describe("JobForm", () => {
       expect(createJob).toHaveBeenCalledWith({
         ticket: "KAN-25",
         repo: "D:\\repos\\my-service",
+        planning_notes: "",
       }),
     );
     expect(push).toHaveBeenCalledWith("/jobs/job-local");
@@ -201,6 +209,7 @@ describe("JobForm", () => {
       expect(createJob).toHaveBeenCalledWith({
         ticket: "PROJ-77",
         repo: "https://github.com/octocat/repo-one.git",
+        planning_notes: "",
       }),
     );
     expect(push).toHaveBeenCalledWith("/jobs/job-github");

@@ -246,7 +246,13 @@ export function JobStatusView(props: { jobId: string }) {
         </section>
       ) : null}
 
-      {job?.plan ? <PlanView plan={job.plan} usage={job.usage} /> : null}
+      {job?.plan ? (
+        <PlanView
+          plan={job.plan}
+          usage={job.usage}
+          planningNotes={job.planning_notes}
+        />
+      ) : null}
 
       {job?.repo_info && job?.plan ? (
         <section className="panel">

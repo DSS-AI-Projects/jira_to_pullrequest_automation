@@ -54,5 +54,40 @@ describe("PlanView", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("$0.12")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Technical considerations you provided/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the submitted planning notes when present", () => {
+    render(
+      <PlanView
+        plan={{
+          schema_version: 1,
+          summary: "Update the CLI to support verbose mode.",
+          ticket_type: "feature",
+          impacted_files: [],
+          proposed_changes: [
+            {
+              file: "src/cli.ts",
+              action: "modify",
+              description: "Add a --verbose option and wire it to logging.",
+            },
+          ],
+          test_strategy: "Add unit coverage for argument parsing.",
+          risks: [],
+          open_questions: [],
+        }}
+        usage={null}
+        planningNotes="Reuse the existing retry helper in src/http.py."
+      />,
+    );
+
+    expect(
+      screen.getByText(/Technical considerations you provided/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Reuse the existing retry helper in src/http.py."),
+    ).toBeInTheDocument();
   });
 });
