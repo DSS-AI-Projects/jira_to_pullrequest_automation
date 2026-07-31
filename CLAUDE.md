@@ -79,7 +79,14 @@ enabled (`backend/app/auth/`, `backend/app/api/auth.py`):
    credential-shape-checked like every other free-text field): stored on the job as
    `implementation_clarifications` and quoted into the implement prompt inside a
    `<user_clarifications>` tag, never treated as instructions and never able to
-   widen scope beyond the approved plan.
+   widen scope beyond the approved plan. A second, distinct entry point exists
+   earlier in the flow: optional **planning notes** submitted alongside the ticket
+   and repo on the job-creation form (`JobCreateRequest.planning_notes`, same
+   `extra="forbid"` + length/credential-shape checks), stored as `Job.planning_notes`
+   and quoted into the planning prompt inside a `<user_technical_notes>` tag —
+   technical constraints or context to shape the generated plan itself, not just
+   the later implementation. It also participates in the plan cache key, since that
+   key hashes the full rendered prompt.
 
 ## Deterministic work stays out of the LLM
 
