@@ -222,7 +222,7 @@ async def test_success_without_structured_output_is_typed_request_failure(
     assert excinfo.value.code == ErrorCode.AGENT_REQUEST_FAILED
 
 
-async def test_invalid_structured_output_is_internal(
+async def test_invalid_structured_output_is_implementation_invalid(
     agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     bad = AgentRunOutcome(
@@ -239,7 +239,7 @@ async def test_invalid_structured_output_is_internal(
     install_fake_agent(monkeypatch, [bad])
     with pytest.raises(AppError) as excinfo:
         await implement_plan(implementation_job(), tmp_path)
-    assert excinfo.value.code == ErrorCode.INTERNAL
+    assert excinfo.value.code == ErrorCode.IMPLEMENTATION_INVALID
 
 
 async def test_harness_budget_stop_is_budget_exceeded(
@@ -249,3 +249,22 @@ async def test_harness_budget_stop_is_budget_exceeded(
     with pytest.raises(AppError) as excinfo:
         await implement_plan(implementation_job(), tmp_path)
     assert excinfo.value.code == ErrorCode.BUDGET_EXCEEDED
+
+
+async def test_max_structured_output_retries_is_implementation_invalid(
+    agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bad = AgentRunOutcome(
+        subtype="error_max_structured_output_retries",
+        structured_output=None,
+        usage=None,
+        total_cost_usd=0.78,
+        num_turns=20,
+        duration_ms=133_500,
+        errors=["Failed to provide valid structured output after 5 attempts"],
+    )
+    install_fake_agent(monkeypatch, [bad])
+    with pytest.raises(AppError) as excinfo:
+        await implement_plan(implementation_job(), tmp_path)
+    assert excinfo.value.code == ErrorCode.IMPLEMENTATION_INVALID
+    assert "Failed to provide valid structured output" in (excinfo.value.internal_detail or "")

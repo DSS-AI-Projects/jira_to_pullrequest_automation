@@ -234,7 +234,7 @@ async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepRe
             )
         except ValidationError as exc:
             raise AppError(
-                ErrorCode.INTERNAL,
+                ErrorCode.IMPLEMENTATION_INVALID,
                 internal_detail=redact(f"implementation result validation failed: {exc}"),
             ) from exc
 
@@ -247,6 +247,10 @@ async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepRe
             ErrorCode.BUDGET_EXCEEDED,
             internal_detail=f"harness stopped: {outcome.subtype}",
         )
+
+    if outcome.subtype == "error_max_structured_output_retries":
+        detail = redact(f"harness stopped: {outcome.subtype} errors={outcome.errors}")
+        raise AppError(ErrorCode.IMPLEMENTATION_INVALID, internal_detail=detail)
 
     detail = redact(f"subtype={outcome.subtype} errors={outcome.errors}")
     raise AppError(ErrorCode.INTERNAL, internal_detail=detail)

@@ -41,6 +41,7 @@ class ErrorCode(StrEnum):
     AGENT_CONFIG_MISSING = "AGENT_CONFIG_MISSING"
     AGENT_REQUEST_FAILED = "AGENT_REQUEST_FAILED"
     PLAN_INVALID = "PLAN_INVALID"
+    IMPLEMENTATION_INVALID = "IMPLEMENTATION_INVALID"
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
     VALIDATION_FAILED = "VALIDATION_FAILED"
     IMPLEMENTATION_NOT_READY = "IMPLEMENTATION_NOT_READY"
@@ -119,6 +120,10 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.PLAN_INVALID: (
         "The planning agent could not produce a valid plan for this ticket. "
         "Try again, or refine the ticket description."
+    ),
+    ErrorCode.IMPLEMENTATION_INVALID: (
+        "The implementation agent could not produce a valid result for this plan. "
+        "Try approving implementation again, or add clarifications to help it succeed."
     ),
     ErrorCode.BUDGET_EXCEEDED: (
         "The planning agent exceeded its run budget before finishing a plan."
