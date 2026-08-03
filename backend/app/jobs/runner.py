@@ -118,9 +118,16 @@ def _parse_numstat(output: str) -> tuple[int | None, int | None, bool]:
 
 
 def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> ImplementationDiff:
+    # Stage everything first: `git diff` never shows untracked files on its
+    # own, and the implement agent has no Bash tool to run `git add` itself —
+    # without this, newly created files would silently be missing from the
+    # diff even though the agent reported creating them.
+    _run_git_command(workspace_path, "add", "-A")
+
     overall_patch = _run_git_command(
         workspace_path,
         "diff",
+        "--cached",
         "--no-ext-diff",
         "--find-renames",
         "--unified=3",
@@ -130,7 +137,7 @@ def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> Im
     changed_paths = [
         line
         for line in _run_git_command(
-            workspace_path, "diff", "--name-only", base_ref, "--"
+            workspace_path, "diff", "--cached", "--name-only", base_ref, "--"
         ).splitlines()
         if line.strip()
     ]
@@ -139,6 +146,7 @@ def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> Im
         patch = _run_git_command(
             workspace_path,
             "diff",
+            "--cached",
             "--no-ext-diff",
             "--find-renames",
             "--unified=3",
@@ -147,7 +155,7 @@ def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> Im
             path,
         )
         additions, deletions, is_binary = _parse_numstat(
-            _run_git_command(workspace_path, "diff", "--numstat", base_ref, "--", path)
+            _run_git_command(workspace_path, "diff", "--cached", "--numstat", base_ref, "--", path)
         )
         files.append(
             ImplementationDiffFile(

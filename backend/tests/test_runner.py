@@ -303,6 +303,74 @@ async def test_implementation_diff_is_captured_even_when_changes_are_committed(
     assert "+Hello Committed World" in final.implementation_diff.files[0].patch
 
 
+async def test_implementation_diff_captures_new_untracked_files(tmp_path: Path) -> None:
+    store, settings, job = make_env(tmp_path)
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch=ticket_key,
+                commit_sha="h" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def implement_create_new_file(job: Job, workspace_path: Path) -> ImplementationStepResult:
+        del job
+        # The real implement agent has no Bash tool, so a brand-new file it
+        # writes is never `git add`-ed — it stays untracked, which `git diff`
+        # ignores unless something stages it first.
+        (workspace_path / "new_module.py").write_text(
+            "def greet() -> str:\n    return 'hello'\n", encoding="utf-8"
+        )
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Added a new greeting module.",
+                changed_files=[
+                    ImplementationChange(
+                        path="new_module.py",
+                        action="create",
+                        rationale="New module requested by the ticket.",
+                    )
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=0.3),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=local_clone,
+        implement_plan=implement_create_new_file,
+    )
+    await run_job(job.id, store, settings, steps)
+
+    planned = store.get(job.id)
+    assert planned is not None
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_READY
+    assert final.implementation_diff is not None
+    assert "new_module.py" in final.implementation_diff.overall_patch
+    assert any(f.path == "new_module.py" for f in final.implementation_diff.files)
+    new_file = next(f for f in final.implementation_diff.files if f.path == "new_module.py")
+    assert "+def greet" in new_file.patch
+
+
 async def test_implementation_app_error_yields_typed_failure_with_stage(tmp_path: Path) -> None:
     store, settings, job = make_env(tmp_path)
 
