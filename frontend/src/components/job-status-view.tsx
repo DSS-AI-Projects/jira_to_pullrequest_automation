@@ -58,6 +58,9 @@ export function JobStatusView(props: { jobId: string }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [implementing, setImplementing] = useState(false);
   const [clarifications, setClarifications] = useState("");
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
+    "idle",
+  );
 
   const loadJob = useCallback(
     async (signal: AbortSignal) => {
@@ -142,6 +145,33 @@ export function JobStatusView(props: { jobId: string }) {
     } finally {
       setImplementing(false);
     }
+  }
+
+  async function handleCopyPatch(patch: string) {
+    try {
+      await navigator.clipboard.writeText(patch);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("error");
+    } finally {
+      setTimeout(() => setCopyStatus("idle"), 2000);
+    }
+  }
+
+  function handleDownloadPatch(
+    patch: string,
+    jobId: string,
+    ticketKey: string,
+  ) {
+    const blob = new Blob([patch], { type: "text/x-diff" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${ticketKey}-${jobId.slice(0, 8)}.patch`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -410,6 +440,36 @@ export function JobStatusView(props: { jobId: string }) {
                     This patch is captured from the isolated workspace after
                     implementation.
                   </p>
+                  <div className="actions">
+                    <button
+                      className="pill-button"
+                      onClick={() =>
+                        void handleCopyPatch(
+                          job.implementation_diff?.overall_patch ?? "",
+                        )
+                      }
+                      type="button"
+                    >
+                      {copyStatus === "copied"
+                        ? "Copied!"
+                        : copyStatus === "error"
+                          ? "Copy failed"
+                          : "Copy patch"}
+                    </button>
+                    <button
+                      className="pill-button"
+                      onClick={() =>
+                        handleDownloadPatch(
+                          job.implementation_diff?.overall_patch ?? "",
+                          job.id,
+                          job.ticket_key,
+                        )
+                      }
+                      type="button"
+                    >
+                      Download patch
+                    </button>
+                  </div>
                   <details>
                     <summary className="pill-button">Show full patch</summary>
                     <pre className="output-block">

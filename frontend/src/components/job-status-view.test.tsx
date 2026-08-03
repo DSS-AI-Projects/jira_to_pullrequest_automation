@@ -171,6 +171,12 @@ describe("JobStatusView", () => {
         updated_at: "2026-07-17T00:02:10Z",
       });
     implementJob.mockResolvedValue({ job_id: "job-123" });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const createObjectURL = vi.fn().mockReturnValue("blob:mock-url");
+    const revokeObjectURL = vi.fn();
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = revokeObjectURL;
 
     render(<JobStatusView jobId="job-123" />);
 
@@ -210,6 +216,18 @@ describe("JobStatusView", () => {
     expect(
       screen.getByText(/Reuse the existing retry helper\./i),
     ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Copy patch/i }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        expect.stringContaining("Hello Back To World"),
+      ),
+    );
+    await screen.findByRole("button", { name: /Copied!/i });
+
+    fireEvent.click(screen.getByRole("button", { name: /Download patch/i }));
+    expect(createObjectURL).toHaveBeenCalled();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
   });
 
   it("explains when implementation approval is unavailable for remote jobs", async () => {
