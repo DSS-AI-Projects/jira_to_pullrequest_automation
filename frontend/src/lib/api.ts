@@ -228,6 +228,36 @@ export type JobCreated = {
   job_id: string;
 };
 
+export type JobSummary = {
+  id: string;
+  ticket_key: string;
+  repo_url: string;
+  state: JobState;
+  created_at: string;
+  updated_at: string;
+  error_code: string | null;
+};
+
+export type JobListResponse = {
+  jobs: JobSummary[];
+  next_cursor: string | null;
+};
+
+export type OwnerCostSummary = {
+  user_id: string | null;
+  email: string | null;
+  display_name: string | null;
+  job_count: number;
+  planning_cost_usd: number;
+  implementation_cost_usd: number;
+  total_cost_usd: number;
+};
+
+export type CostSummaryResponse = {
+  owners: OwnerCostSummary[];
+  grand_total_usd: number;
+};
+
 type LocationLike = {
   origin: string;
   protocol: string;
@@ -271,12 +301,26 @@ export function isAbortError(error: unknown): boolean {
   return false;
 }
 
+export class ApiError extends Error {
+  code: string;
+  status: number;
+
+  constructor(message: string, code: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T | ApiErrorPayload;
   if (!response.ok) {
     const error = body as ApiErrorPayload;
-    throw new Error(
+    throw new ApiError(
       error.error?.message ?? `Request failed with status ${response.status}`,
+      error.error?.code ?? "UNKNOWN",
+      response.status,
     );
   }
   return body as T;
@@ -367,6 +411,35 @@ export async function fetchJob(
     cache: "no-store",
   });
   return normalizeJob(await parseJson<Job>(response));
+}
+
+export async function fetchJobs(
+  params?: { limit?: number; before?: string },
+  signal?: AbortSignal,
+): Promise<JobListResponse> {
+  const search = new URLSearchParams();
+  if (params?.limit) {
+    search.set("limit", String(params.limit));
+  }
+  if (params?.before) {
+    search.set("before", params.before);
+  }
+  const query = search.toString();
+  const response = await apiFetch(`/api/jobs${query ? `?${query}` : ""}`, {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<JobListResponse>(response);
+}
+
+export async function fetchCostSummary(
+  signal?: AbortSignal,
+): Promise<CostSummaryResponse> {
+  const response = await apiFetch("/api/admin/cost-summary", {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<CostSummaryResponse>(response);
 }
 
 export async function implementJob(

@@ -362,6 +362,9 @@ export function JobForm() {
           >
             Sample repository
           </Link>
+          <Link className="secondary-link" href="/jobs">
+            My jobs
+          </Link>
         </div>
       </form>
     </section>

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 
@@ -578,6 +579,14 @@ export function AuthGate(props: { children: ReactNode }) {
               {renderRepoHostingStatus()}
             </div>
             <div className="auth-bar__actions">
+              <Link className="secondary-link" href="/jobs">
+                My jobs
+              </Link>
+              {session.user.role === "ADMIN" ? (
+                <Link className="secondary-link" href="/admin/costs">
+                  Cost usage
+                </Link>
+              ) : null}
               <button
                 className="secondary-link"
                 disabled={

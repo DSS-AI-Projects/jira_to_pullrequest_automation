@@ -186,9 +186,14 @@ export function JobStatusView(props: { jobId: string }) {
               track implementation plus validation through to completion.
             </p>
           </div>
-          <Link className="secondary-link" href="/">
-            New job
-          </Link>
+          <div className="actions">
+            <Link className="secondary-link" href="/">
+              New job
+            </Link>
+            <Link className="secondary-link" href="/jobs">
+              All jobs
+            </Link>
+          </div>
         </div>
 
         {error ? <p className="banner banner-error">{error}</p> : null}
@@ -401,7 +406,9 @@ export function JobStatusView(props: { jobId: string }) {
               </div>
               <span className="pill success-pill">Ready</span>
             </div>
-            <p>{implementationResult.summary}</p>
+            <p className="preserve-whitespace">
+              {implementationResult.summary}
+            </p>
             {job.implementation_clarifications ? (
               <div className="field">
                 <span className="meta-label">
