@@ -188,14 +188,32 @@ beyond the approved plan. The submitted text is echoed back on the job
 (`implementation_clarifications`) so the result view can show what was
 considered.
 
+## Job history and admin cost reporting
+
+`GET /jobs` lists jobs most-recent-first with keyset (`created_at`-cursor)
+pagination, scoped to the requesting user's own jobs — an admin (or a request
+made while `AUTH_ENABLED=false`, which has no ownership concept) sees every
+job instead. The `jobs` table's `owner_user_id` column (added via an additive,
+backfilling migration in `JobStore`, since older rows only had it inside the
+JSON blob) makes this an indexed query rather than a full-table JSON scan.
+The frontend surfaces this as a `/jobs` "My jobs" page.
+
+`GET /admin/cost-summary` (admin-only; `FORBIDDEN` otherwise, including when
+auth is disabled) aggregates `usage.total_cost_usd` and
+`implementation_usage.total_cost_usd` per owner directly in SQLite via
+`json_extract`/`SUM`, then resolves each `owner_user_id` to an email/display
+name for display. Surfaced as an admin-only `/admin/costs` page, linked from
+the header only when the signed-in user's role is `ADMIN`.
+
 ## Scope
 
 **In:** non-secret form; optional multi-user auth (dev login + trusted proxy);
 delegated Jira/GitHub OAuth with encrypted-at-rest tokens; async jobs with SQLite
 store + polling status screen; the plan pipeline (fetch/clone/map/plan); local-repo
 execution with an isolated-clone implement + validate phase; plan and diff review
-screens; typed errors; quality gates; security-invariant tests; a reference
-shared-deployment stack under `deploy/`.
+screens; a paginated job-history list scoped to the owner (admins/no-auth-mode see
+all); an admin-only per-user cost-usage dashboard; typed errors; quality gates;
+security-invariant tests; a reference shared-deployment stack under `deploy/`.
 
 **Out (not built; do not scaffold):** opening a pull request / pushing branches;
 delegated *git* auth (clone still uses ambient credentials); the GitLab OAuth flow;
