@@ -34,7 +34,7 @@ export function PlanView(props: {
         <div className="stack">
           <div>
             <span className="meta-label">Summary</span>
-            <p>{plan.summary}</p>
+            <p className="preserve-whitespace">{plan.summary}</p>
           </div>
           {planningNotes ? (
             <div>
@@ -50,7 +50,7 @@ export function PlanView(props: {
           </div>
           <div>
             <span className="meta-label">Test strategy</span>
-            <p>{plan.test_strategy}</p>
+            <p className="preserve-whitespace">{plan.test_strategy}</p>
           </div>
         </div>
       </div>

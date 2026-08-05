@@ -426,6 +426,11 @@ ol {
   word-break: break-all;
 }
 
+.preserve-whitespace {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .validation-pill.is-passed {
   background: #eafaf1;
   color: var(--success);
