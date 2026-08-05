@@ -9,6 +9,9 @@ import pytest
 from app.core.config import Settings
 from app.core.errors import AppError, ErrorCode
 from app.jobs.models import RepoSourceKind
+from app.steps.repo_clone import (
+    _scrub_origin_url as scrub_origin_url,  # pyright: ignore[reportPrivateUsage]
+)
 from app.steps.repo_clone import build_clone_command, clone_repo
 
 
@@ -179,6 +182,43 @@ async def test_local_repo_branch_mismatch_is_rejected_when_required(
         await clone_repo("job_branch", "KAN-25", str(source), tmp_path / "workdir")
 
     assert excinfo.value.code == ErrorCode.LOCAL_REPO_BRANCH_MISMATCH
+
+
+def test_scrub_origin_url_strips_embedded_credentials() -> None:
+    assert (
+        scrub_origin_url("https://j.joshi:glpat-secrettoken@gitlab.example.com/team/repo.git")
+        == "https://gitlab.example.com/team/repo.git"
+    )
+    assert scrub_origin_url("https://user:pass@host:8443/x.git") == "https://host:8443/x.git"
+
+
+def test_scrub_origin_url_leaves_credential_free_urls_unchanged() -> None:
+    assert (
+        scrub_origin_url("https://github.com/acme/repo.git") == "https://github.com/acme/repo.git"
+    )
+    assert scrub_origin_url("git@github.com:acme/repo.git") == "git@github.com:acme/repo.git"
+    assert scrub_origin_url(None) is None
+
+
+async def test_local_clone_scrubs_credential_from_captured_origin_url(tmp_path: Path) -> None:
+    source = make_source_repo(tmp_path)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "remote",
+            "set-url",
+            "origin",
+            "https://j.joshi:glpat-secrettoken@gitlab.example.com/team/repo.git",
+        ],
+        check=True,
+    )
+
+    result = await clone_repo("job_cred", "PROJ-8", str(source), tmp_path / "workdir")
+
+    assert result.repo_info.origin_url == "https://gitlab.example.com/team/repo.git"
+    assert "glpat-secrettoken" not in (result.repo_info.origin_url or "")
 
 
 async def test_local_repo_branch_match_is_accepted_when_required(

@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
@@ -22,6 +23,29 @@ from app.jobs.runner import CloneResult
 
 logger = get_logger(__name__)
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _scrub_origin_url(url: str | None) -> str | None:
+    """Strip any embedded userinfo (credentials) from a captured git remote
+    URL before it is ever stored or returned to the client (invariant 4).
+
+    For a LOCAL repo, `origin_url` is read from the user's own
+    `git config --get remote.origin.url` — never validated at input time the
+    way a submitted repo URL is, so it can legitimately contain a credential
+    the user configured for their own convenience.
+    """
+    if not url:
+        return url
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return url
+    if not parsed.username and not parsed.password:
+        return url
+    netloc = parsed.hostname or ""
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 def build_clone_command(repo_url: str, dest: Path, *, local_source: bool = False) -> list[str]:
@@ -140,8 +164,8 @@ def _inspect_repo(
 ) -> RepoInfo:
     branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], path, env, timeout_seconds)
     commit_sha = _run_git(["rev-parse", "HEAD"], path, env, timeout_seconds)
-    origin_url = _run_git_optional(
-        ["config", "--get", "remote.origin.url"], path, env, timeout_seconds
+    origin_url = _scrub_origin_url(
+        _run_git_optional(["config", "--get", "remote.origin.url"], path, env, timeout_seconds)
     )
     dirty_output = _run_git(["status", "--porcelain"], path, env, timeout_seconds)
     return RepoInfo(
