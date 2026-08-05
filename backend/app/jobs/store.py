@@ -7,8 +7,10 @@ are synchronous and safe to call from the event loop for this single-user app.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,7 +31,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     state TEXT NOT NULL,
     data TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    owner_user_id TEXT
 )
 """
 
@@ -89,6 +92,14 @@ CREATE TABLE IF NOT EXISTS provider_oauth_states (
 """
 
 
+@dataclass(frozen=True)
+class OwnerCostRow:
+    owner_user_id: str | None
+    job_count: int
+    planning_cost_usd: float
+    implementation_cost_usd: float
+
+
 class JobStore:
     def __init__(self, db_path: Path | str) -> None:
         if isinstance(db_path, Path):
@@ -103,13 +114,39 @@ class JobStore:
             self._conn.execute(_JIRA_OAUTH_STATES_SCHEMA)
             self._conn.execute(_REPO_HOSTING_CONNECTIONS_SCHEMA)
             self._conn.execute(_PROVIDER_OAUTH_STATES_SCHEMA)
+            self._migrate_owner_user_id()
             self._conn.commit()
+
+    def _migrate_owner_user_id(self) -> None:
+        """Additive migration for DBs created before owner_user_id existed.
+
+        A no-op on a fresh DB (the column is already in _SCHEMA, so ADD COLUMN
+        fails harmlessly with "duplicate column"). On an existing DB missing
+        the column, adds it and backfills every row from its JSON blob so
+        jobs created before this migration stay listable/attributable.
+        """
+        with contextlib.suppress(sqlite3.OperationalError):
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN owner_user_id TEXT")
+        self._conn.execute(
+            "UPDATE jobs SET owner_user_id = json_extract(data, '$.owner_user_id') "
+            "WHERE owner_user_id IS NULL"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_owner_created ON jobs (owner_user_id, created_at)"
+        )
 
     def create(self, job: Job) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO jobs (id, state, data, created_at) VALUES (?, ?, ?, ?)",
-                (job.id, job.state.value, job.model_dump_json(), job.created_at.isoformat()),
+                "INSERT INTO jobs (id, state, data, created_at, owner_user_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    job.id,
+                    job.state.value,
+                    job.model_dump_json(),
+                    job.created_at.isoformat(),
+                    job.owner_user_id,
+                ),
             )
             self._conn.commit()
 
@@ -127,6 +164,58 @@ class JobStore:
         with self._lock:
             row = self._conn.execute("SELECT data FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return Job.model_validate_json(row[0]) if row else None
+
+    def list_jobs(
+        self, *, owner_user_id: str | None, limit: int, before: str | None = None
+    ) -> tuple[list[Job], str | None]:
+        """Most-recent-first keyset pagination. `owner_user_id=None` means no
+        ownership filter (admin view, or auth-disabled single-tenant mode)."""
+        conditions: list[str] = []
+        params: list[str | int] = []
+        if owner_user_id is not None:
+            conditions.append("owner_user_id = ?")
+            params.append(owner_user_id)
+        if before is not None:
+            conditions.append("created_at < ?")
+            params.append(before)
+
+        query = "SELECT data, created_at FROM jobs"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit + 1)  # fetch one extra to detect a next page
+
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        jobs = [Job.model_validate_json(row[0]) for row in page_rows]
+        next_cursor = page_rows[-1][1] if has_more and page_rows else None
+        return jobs, next_cursor
+
+    def cost_summary_by_owner(self) -> list[OwnerCostRow]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT
+                    owner_user_id,
+                    COUNT(*),
+                    SUM(COALESCE(json_extract(data, '$.usage.total_cost_usd'), 0)),
+                    SUM(COALESCE(json_extract(data, '$.implementation_usage.total_cost_usd'), 0))
+                FROM jobs
+                GROUP BY owner_user_id
+                """
+            ).fetchall()
+        return [
+            OwnerCostRow(
+                owner_user_id=row[0],
+                job_count=row[1],
+                planning_cost_usd=row[2] or 0.0,
+                implementation_cost_usd=row[3] or 0.0,
+            )
+            for row in rows
+        ]
 
     def upsert_user(
         self,

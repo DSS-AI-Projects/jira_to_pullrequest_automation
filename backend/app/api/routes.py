@@ -7,10 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict
 
-from app.auth.service import ensure_job_access, require_current_user
+from app.auth.models import UserRole
+from app.auth.service import ensure_job_access, require_admin, require_current_user
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger
@@ -59,6 +60,44 @@ class RepoList(BaseModel):
     local_repo_support: LocalRepoSupport
 
 
+class JobSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    ticket_key: str
+    repo_url: str
+    state: JobState
+    created_at: datetime
+    updated_at: datetime
+    error_code: str | None = None
+
+
+class JobListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    jobs: list[JobSummary]
+    next_cursor: str | None
+
+
+class OwnerCostSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str | None
+    email: str | None
+    display_name: str | None
+    job_count: int
+    planning_cost_usd: float
+    implementation_cost_usd: float
+    total_cost_usd: float
+
+
+class CostSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    owners: list[OwnerCostSummary]
+    grand_total_usd: float
+
+
 def _store(request: Request) -> JobStore:
     return cast(JobStore, request.app.state.job_store)
 
@@ -99,6 +138,36 @@ async def get_job(job_id: str, request: Request) -> Job:
         raise AppError(ErrorCode.JOB_NOT_FOUND)
     ensure_job_access(job, user)
     return job
+
+
+@router.get("/jobs", response_model=JobListResponse)
+async def list_jobs(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    before: str | None = None,
+) -> JobListResponse:
+    user = require_current_user(request)
+    # No owner filter (see every job) when auth is disabled (user is None) or
+    # the requester is an admin; otherwise scoped to the requester's own jobs.
+    owner_filter: str | None = None if user is None or user.role == UserRole.ADMIN else user.id
+    jobs, next_cursor = _store(request).list_jobs(
+        owner_user_id=owner_filter, limit=limit, before=before
+    )
+    return JobListResponse(
+        jobs=[
+            JobSummary(
+                id=job.id,
+                ticket_key=job.ticket_key,
+                repo_url=job.repo_url,
+                state=job.state,
+                created_at=job.created_at,
+                updated_at=job.updated_at,
+                error_code=job.error.code.value if job.error else None,
+            )
+            for job in jobs
+        ],
+        next_cursor=next_cursor,
+    )
 
 
 @router.post("/jobs/{job_id}/implement", response_model=JobCreated, status_code=202)
@@ -153,4 +222,32 @@ async def list_repos(request: Request) -> RepoList:
             allow_dirty=settings.allow_dirty_local_repos,
             require_ticket_branch_match=settings.require_local_branch_ticket_match,
         ),
+    )
+
+
+@router.get("/admin/cost-summary", response_model=CostSummaryResponse)
+async def get_cost_summary(request: Request) -> CostSummaryResponse:
+    user = require_current_user(request)
+    require_admin(user)
+    store = _store(request)
+
+    owners: list[OwnerCostSummary] = []
+    for row in store.cost_summary_by_owner():
+        resolved = store.get_user(row.owner_user_id) if row.owner_user_id else None
+        owners.append(
+            OwnerCostSummary(
+                user_id=row.owner_user_id,
+                email=resolved.email if resolved else None,
+                display_name=resolved.display_name if resolved else None,
+                job_count=row.job_count,
+                planning_cost_usd=row.planning_cost_usd,
+                implementation_cost_usd=row.implementation_cost_usd,
+                total_cost_usd=row.planning_cost_usd + row.implementation_cost_usd,
+            )
+        )
+    owners.sort(key=lambda owner: owner.total_cost_usd, reverse=True)
+
+    return CostSummaryResponse(
+        owners=owners,
+        grand_total_usd=sum(owner.total_cost_usd for owner in owners),
     )

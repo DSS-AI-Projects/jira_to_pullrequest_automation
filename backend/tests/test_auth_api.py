@@ -1,3 +1,4 @@
+import time
 from collections.abc import Iterator
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.auth.models import RepoHostingAuthKind, RepoHostingConnection, RepoHostingProvider
 from app.core.config import get_settings
 from app.core.crypto import encrypt_secret
+from app.jobs.models import AgentUsage, Job
 from app.jobs.store import JobStore
 from app.main import create_app
 from tests.fakes import make_fake_steps
@@ -187,6 +189,104 @@ def test_user_cannot_access_another_users_job(auth_client: TestClient) -> None:
     read = auth_client.get(f"/api/jobs/{job_id}")
     assert read.status_code == 403
     assert read.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_list_jobs_requires_authentication(auth_client: TestClient) -> None:
+    response = auth_client.get("/api/jobs")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "UNAUTHENTICATED"
+
+
+def test_list_jobs_scoped_to_owner_for_regular_user(auth_client: TestClient) -> None:
+    login(auth_client, email="user-a@example.com", display_name="A")
+    auth_client.post("/api/jobs", json={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"})
+    auth_client.post("/api/auth/logout")
+
+    login(auth_client, email="user-b@example.com", display_name="B")
+    auth_client.post("/api/jobs", json={"ticket": "PROJ-2", "repo": "git@github.com:acme/repo.git"})
+
+    response = auth_client.get("/api/jobs")
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["ticket_key"] for job in body["jobs"]] == ["PROJ-2"]
+    assert body["next_cursor"] is None
+
+
+def test_admin_sees_every_users_jobs_in_list(auth_client: TestClient) -> None:
+    login(auth_client, email="user-a@example.com", display_name="A")
+    auth_client.post("/api/jobs", json={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"})
+    auth_client.post("/api/auth/logout")
+
+    login(auth_client, email="admin@example.com", display_name="Admin")
+    auth_client.post("/api/jobs", json={"ticket": "PROJ-2", "repo": "git@github.com:acme/repo.git"})
+
+    response = auth_client.get("/api/jobs")
+    assert response.status_code == 200
+    tickets = {job["ticket_key"] for job in response.json()["jobs"]}
+    assert tickets == {"PROJ-1", "PROJ-2"}
+
+
+def test_list_jobs_paginates_via_query_params(auth_client: TestClient) -> None:
+    login(auth_client, email="user-c@example.com", display_name="C")
+    for i in range(3):
+        auth_client.post(
+            "/api/jobs", json={"ticket": f"PROJ-{i}", "repo": "git@github.com:acme/repo.git"}
+        )
+        time.sleep(0.01)
+
+    first = auth_client.get("/api/jobs", params={"limit": 2})
+    assert first.status_code == 200
+    first_body = first.json()
+    assert len(first_body["jobs"]) == 2
+    assert first_body["next_cursor"] is not None
+
+    second = auth_client.get("/api/jobs", params={"limit": 2, "before": first_body["next_cursor"]})
+    assert second.status_code == 200
+    second_body = second.json()
+    assert len(second_body["jobs"]) == 1
+    assert second_body["next_cursor"] is None
+
+    seen = [job["ticket_key"] for job in (*first_body["jobs"], *second_body["jobs"])]
+    assert sorted(seen) == ["PROJ-0", "PROJ-1", "PROJ-2"]
+
+
+def test_cost_summary_requires_admin(auth_client: TestClient) -> None:
+    login(auth_client, email="user@example.com", display_name="Regular User")
+    response = auth_client.get("/api/admin/cost-summary")
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_cost_summary_aggregates_and_resolves_user_identity(
+    auth_client: TestClient, auth_store: JobStore
+) -> None:
+    session = login(auth_client, email="worker@example.com", display_name="Worker")
+    user = cast(dict[str, Any], session["user"])
+
+    job = Job.new(
+        ticket_key="PROJ-1",
+        repo_url="https://github.com/acme/repo",
+        owner_user_id=cast(str, user["id"]),
+    )
+    job.usage = AgentUsage(duration_seconds=1.0, total_cost_usd=0.15)
+    job.implementation_usage = AgentUsage(duration_seconds=2.0, total_cost_usd=0.35)
+    auth_store.create(job)
+
+    auth_client.post("/api/auth/logout")
+    login(auth_client, email="admin@example.com", display_name="Admin")
+
+    response = auth_client.get("/api/admin/cost-summary")
+    assert response.status_code == 200
+    body = response.json()
+
+    worker_row = next(row for row in body["owners"] if row["user_id"] == user["id"])
+    assert worker_row["email"] == "worker@example.com"
+    assert worker_row["display_name"] == "Worker"
+    assert worker_row["job_count"] == 1
+    assert worker_row["planning_cost_usd"] == pytest.approx(0.15)
+    assert worker_row["implementation_cost_usd"] == pytest.approx(0.35)
+    assert worker_row["total_cost_usd"] == pytest.approx(0.50)
+    assert body["grand_total_usd"] == pytest.approx(0.50)
 
 
 def test_logout_revokes_session(auth_client: TestClient) -> None:

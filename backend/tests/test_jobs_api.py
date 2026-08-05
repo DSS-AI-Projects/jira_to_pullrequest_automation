@@ -277,6 +277,23 @@ def test_repos_endpoint_lists_choices_and_hosts(client: TestClient) -> None:
     assert "enabled" in body["local_repo_support"]
 
 
+def test_list_jobs_without_auth_returns_every_job(client: TestClient) -> None:
+    client.post("/api/jobs", json={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"})
+    client.post("/api/jobs", json={"ticket": "PROJ-2", "repo": "git@github.com:acme/repo.git"})
+
+    response = client.get("/api/jobs")
+    assert response.status_code == 200
+    body = response.json()
+    assert {job["ticket_key"] for job in body["jobs"]} == {"PROJ-1", "PROJ-2"}
+    assert body["next_cursor"] is None
+
+
+def test_cost_summary_is_forbidden_without_auth(client: TestClient) -> None:
+    response = client.get("/api/admin/cost-summary")
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+
+
 def test_plan_ready_local_job_can_be_approved_for_implementation(
     local_client: TestClient,
 ) -> None:

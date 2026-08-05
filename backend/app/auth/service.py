@@ -135,6 +135,14 @@ def ensure_job_access(job: Job, user: User | None) -> None:
         raise AppError(ErrorCode.FORBIDDEN)
 
 
+def require_admin(user: User | None) -> None:
+    """Per-user reporting (e.g. cost usage) has no meaning without multi-user
+    auth, and is restricted to admins even when auth is enabled."""
+    settings = get_settings()
+    if not settings.auth_enabled or user is None or user.role != UserRole.ADMIN:
+        raise AppError(ErrorCode.FORBIDDEN)
+
+
 def set_session_cookie(response: Response, session_id: str, settings: Settings) -> None:
     response.set_cookie(
         key=_cookie_name(settings),
