@@ -371,6 +371,75 @@ async def test_implementation_diff_captures_new_untracked_files(tmp_path: Path) 
     assert "+def greet" in new_file.patch
 
 
+async def test_claimed_changes_with_no_actual_diff_is_implementation_invalid(
+    tmp_path: Path,
+) -> None:
+    store, settings, job = make_env(tmp_path)
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch=ticket_key,
+                commit_sha="i" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def implement_without_touching_disk(
+        job: Job, workspace_path: Path
+    ) -> ImplementationStepResult:
+        # Simulates a tool call that silently failed: the agent's structured
+        # output claims a file was changed, but nothing was actually written.
+        del job, workspace_path
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated the README greeting.",
+                changed_files=[
+                    ImplementationChange(
+                        path="README.md",
+                        action="modify",
+                        rationale="Update the greeting text to match the approved plan.",
+                    )
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=0.4),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=local_clone,
+        implement_plan=implement_without_touching_disk,
+    )
+    await run_job(job.id, store, settings, steps)
+
+    planned = store.get(job.id)
+    assert planned is not None
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_FAILED
+    assert final.error is not None
+    assert final.error.code == ErrorCode.IMPLEMENTATION_INVALID
+    assert final.error.stage == JobState.IMPLEMENTING
+    # a failed consistency check must not leave a misleading hollow result
+    assert final.implementation_result is None
+    assert final.implementation_diff is None
+
+
 async def test_implementation_app_error_yields_typed_failure_with_stage(tmp_path: Path) -> None:
     store, settings, job = make_env(tmp_path)
 

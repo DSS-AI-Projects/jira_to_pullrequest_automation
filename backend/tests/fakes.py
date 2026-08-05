@@ -6,7 +6,6 @@ from pathlib import Path
 
 from app.jobs.models import (
     AgentUsage,
-    ImplementationChange,
     ImplementationResult,
     Job,
     RepoInfo,
@@ -65,16 +64,15 @@ def make_fake_steps() -> JobSteps:
         return PlanResult(plan=sample_plan(), usage=AgentUsage(duration_seconds=0.1))
 
     async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepResult:
+        del workspace_path
+        # No file actually changes in this default fake (its clone_repo fake
+        # doesn't create a real workspace on disk), so changed_files must stay
+        # empty — otherwise it trips the "agent claimed changes that never
+        # landed" consistency check in run_implementation.
         return ImplementationStepResult(
             result=ImplementationResult(
                 summary=f"Prepared implementation output for {job.ticket_key}.",
-                changed_files=[
-                    ImplementationChange(
-                        path="a.py",
-                        action="modify",
-                        rationale=f"Placeholder implementation result for {workspace_path.name}.",
-                    )
-                ],
+                changed_files=[],
                 warnings=[],
                 follow_up_questions=[],
             ),

@@ -262,9 +262,25 @@ async def run_implementation(
         job.implementation_started_at = store.save(job).updated_at
         job = _advance(store, job, JobState.IMPLEMENTING)
         implementation = await steps.implement_plan(job, workspace_path)
+        diff = await _collect_implementation_diff(workspace_path, base_ref)
+
+        if implementation.result.changed_files and (diff is None or not diff.files):
+            # The agent's own report doesn't match reality — its structured
+            # output claimed file changes that never actually landed on disk
+            # (most likely a tool call that silently failed and was not
+            # recovered from). Surfacing this as a hollow "success" with an
+            # empty diff would be misleading; fail explicitly instead.
+            raise AppError(
+                ErrorCode.IMPLEMENTATION_INVALID,
+                internal_detail=(
+                    f"agent reported {len(implementation.result.changed_files)} changed "
+                    "file(s) but no working-tree differences were detected against the "
+                    "pre-implementation baseline"
+                ),
+            )
 
         job.implementation_result = implementation.result
-        job.implementation_diff = await _collect_implementation_diff(workspace_path, base_ref)
+        job.implementation_diff = diff
         job.implementation_usage = implementation.usage
         store.save(job)
         job = _advance(store, job, JobState.VALIDATING)
