@@ -34,6 +34,7 @@ describe("JobForm", () => {
     createJob.mockReset();
     fetchGitHubRepositories.mockReset();
     fetchRepos.mockReset();
+    sessionStorage.clear();
   });
 
   it("shows configured repos and submits a job", async () => {
@@ -213,5 +214,44 @@ describe("JobForm", () => {
       }),
     );
     expect(push).toHaveBeenCalledWith("/jobs/job-github");
+  });
+
+  it("prefills from a retry draft left by the job-detail page and clears it", async () => {
+    sessionStorage.setItem(
+      "jira2pullreq:retry-draft",
+      JSON.stringify({
+        ticket: "KAN-29",
+        repo: "D:\\repos\\abtf-membership",
+        repoMode: "local",
+        planningNotes: "Use the shared logger, not print().",
+      }),
+    );
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: true,
+        allowed_roots: ["D:\\repos"],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+
+    render(<JobForm />);
+
+    expect(await screen.findByDisplayValue("KAN-29")).toBeInTheDocument();
+    expect(
+      screen.getByDisplayValue("D:\\repos\\abtf-membership"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByDisplayValue("Use the shared logger, not print()."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Local repo path/i }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(sessionStorage.getItem("jira2pullreq:retry-draft")).toBeNull();
   });
 });

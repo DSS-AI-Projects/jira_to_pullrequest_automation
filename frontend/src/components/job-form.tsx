@@ -13,6 +13,7 @@ import {
   type RepoChoice,
   type RepoList,
 } from "@/lib/api";
+import { consumeRetryDraft } from "@/lib/retry-draft";
 
 const SAMPLE_TICKET = "PROJ-123";
 type RepoMode = "remote" | "local";
@@ -32,6 +33,16 @@ export function JobForm() {
   const [loadingRepos, setLoadingRepos] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const draft = consumeRetryDraft();
+    if (draft) {
+      setTicket(draft.ticket);
+      setRepo(draft.repo);
+      setRepoMode(draft.repoMode);
+      setPlanningNotes(draft.planningNotes);
+    }
+  }, []);
 
   useEffect(() => {
     let active = true;

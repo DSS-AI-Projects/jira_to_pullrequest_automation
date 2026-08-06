@@ -3,15 +3,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobStatusView } from "@/components/job-status-view";
 
-const { fetchJob, implementJob } = vi.hoisted(() => ({
+const { fetchJob, implementJob, push } = vi.hoisted(() => ({
   fetchJob: vi.fn(),
   implementJob: vi.fn(),
+  push: vi.fn(),
 }));
 
 vi.mock("next/link", () => ({
   default: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a {...props} />
   ),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push,
+  }),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -27,6 +34,7 @@ describe("JobStatusView", () => {
   beforeEach(() => {
     fetchJob.mockReset();
     implementJob.mockReset();
+    push.mockReset();
   });
 
   it("shows approve button for local plan-ready jobs and renders implementation results", async () => {
@@ -349,5 +357,110 @@ describe("JobStatusView", () => {
     expect(
       screen.getByText(/Check the filename mismatch/i),
     ).toBeInTheDocument();
+  });
+
+  it("saves a retry draft and navigates home when Retry is clicked on a failed job", async () => {
+    sessionStorage.clear();
+    fetchJob.mockResolvedValue({
+      id: "job-failed",
+      ticket_key: "KAN-29",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: "Use the shared logger, not print().",
+      state: "FAILED",
+      error: {
+        code: "BUDGET_EXCEEDED",
+        message:
+          "The planning agent exceeded its run budget before finishing a plan.",
+        stage: "PLANNING",
+      },
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "KAN-29",
+        commit_sha: "c".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\abtf-membership",
+      },
+      workspace_path: "D:\\workdir\\job-failed\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-05T17:54:02Z",
+      updated_at: "2026-08-05T17:57:53Z",
+    });
+
+    render(<JobStatusView jobId="job-failed" />);
+
+    const retryButton = await screen.findByRole("button", { name: "Retry" });
+    fireEvent.click(retryButton);
+
+    expect(
+      JSON.parse(sessionStorage.getItem("jira2pullreq:retry-draft")!),
+    ).toEqual({
+      ticket: "KAN-29",
+      repo: "D:\\repos\\abtf-membership",
+      repoMode: "local",
+      planningNotes: "Use the shared logger, not print().",
+    });
+    expect(push).toHaveBeenCalledWith("/");
+  });
+
+  it("does not show a Retry button for a job that has not failed", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-remote",
+      ticket_key: "PROJ-1",
+      repo_url: "git@github.com:acme/repo.git",
+      planning_notes: null,
+      state: "PLAN_READY",
+      error: null,
+      repo_info: {
+        source_kind: "REMOTE",
+        branch: "main",
+        commit_sha: "b".repeat(40),
+        origin_url: "https://github.com/acme/repo.git",
+        is_dirty: false,
+        local_path: null,
+      },
+      workspace_path: "D:\\workdir\\job-remote\\repo",
+      plan: {
+        schema_version: 1,
+        summary: "Do the thing.",
+        ticket_type: "feature",
+        impacted_files: [{ path: "a.py", reason: "Entry point" }],
+        proposed_changes: [
+          { file: "a.py", action: "modify", description: "Apply the change." },
+        ],
+        test_strategy: "Run unit tests.",
+        risks: [],
+        open_questions: [],
+      },
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-07-17T00:00:00Z",
+      updated_at: "2026-07-17T00:00:00Z",
+    });
+
+    render(<JobStatusView jobId="job-remote" />);
+
+    await screen.findByText(
+      /Implementation approval is available only for local repository jobs/i,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
@@ -12,6 +13,7 @@ import {
   type ValidationResult,
 } from "@/lib/api";
 import { isTerminalState, JOB_STATES, JOB_STATE_LABELS } from "@/lib/job";
+import { saveRetryDraft } from "@/lib/retry-draft";
 
 import { PlanView } from "./plan-view";
 
@@ -53,6 +55,7 @@ function diffStat(file: ImplementationDiffFile): string {
 }
 
 export function JobStatusView(props: { jobId: string }) {
+  const router = useRouter();
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -127,6 +130,22 @@ export function JobStatusView(props: { jobId: string }) {
   const implementationResult =
     job?.state === "IMPLEMENTATION_READY" ? job.implementation_result : null;
 
+  const canRetry =
+    job?.state === "FAILED" || job?.state === "IMPLEMENTATION_FAILED";
+
+  function handleRetry() {
+    if (!job) {
+      return;
+    }
+    saveRetryDraft({
+      ticket: job.ticket_key,
+      repo: job.repo_url,
+      repoMode: job.repo_info?.source_kind === "LOCAL" ? "local" : "remote",
+      planningNotes: job.planning_notes ?? "",
+    });
+    router.push("/");
+  }
+
   async function handleImplement() {
     if (!job) {
       return;
@@ -187,6 +206,15 @@ export function JobStatusView(props: { jobId: string }) {
             </p>
           </div>
           <div className="actions">
+            {canRetry ? (
+              <button
+                className="secondary-link"
+                onClick={handleRetry}
+                type="button"
+              >
+                Retry
+              </button>
+            ) : null}
             <Link className="secondary-link" href="/">
               New job
             </Link>
