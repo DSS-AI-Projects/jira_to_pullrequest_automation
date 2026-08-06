@@ -114,6 +114,11 @@ export function JobListView() {
                   Created {formatTimestamp(job.created_at)}
                   {job.error_code ? ` · ${job.error_code}` : ""}
                 </p>
+                <div className="actions">
+                  <Link className="secondary-link" href={`/jobs/${job.id}`}>
+                    View details
+                  </Link>
+                </div>
               </li>
             ))}
           </ul>

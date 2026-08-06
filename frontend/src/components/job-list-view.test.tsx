@@ -50,6 +50,10 @@ describe("JobListView", () => {
     expect(
       screen.getByText("https://github.com/acme/repo"),
     ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View details" })).toHaveAttribute(
+      "href",
+      "/jobs/job-1",
+    );
   });
 
   it("always shows a New job link, including in the empty state", async () => {
