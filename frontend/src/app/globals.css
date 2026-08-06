@@ -52,6 +52,7 @@ a {
 
 code {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  overflow-wrap: anywhere;
 }
 
 h1,
