@@ -52,13 +52,13 @@ describe("JobListView", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows an empty state with a link to start a job", async () => {
+  it("always shows a New job link, including in the empty state", async () => {
     fetchJobs.mockResolvedValue({ jobs: [], next_cursor: null });
 
     render(<JobListView />);
 
     await screen.findByText(/No jobs yet/i);
-    expect(screen.getByRole("link", { name: "Start one" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "New job" })).toHaveAttribute(
       "href",
       "/",
     );

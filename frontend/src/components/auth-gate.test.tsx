@@ -127,6 +127,14 @@ describe("AuthGate", () => {
     await waitFor(() => expect(fetchJiraAuthStatus).toHaveBeenCalled());
     await screen.findByText("App content");
     await screen.findByText("sam@example.com");
+    expect(screen.getByRole("link", { name: "New job" })).toHaveAttribute(
+      "href",
+      "/",
+    );
+    expect(screen.getByRole("link", { name: "My jobs" })).toHaveAttribute(
+      "href",
+      "/jobs",
+    );
   });
 
   it("shows Jira connect action for signed-in users without a personal connection", async () => {

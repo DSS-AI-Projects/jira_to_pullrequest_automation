@@ -80,9 +80,14 @@ export function JobListView() {
 
   return (
     <section className="panel">
-      <div className="panel-heading">
-        <h2>My jobs</h2>
-        <p>Every planning job you have submitted, most recent first.</p>
+      <div className="section-heading">
+        <div>
+          <h2>My jobs</h2>
+          <p>Every planning job you have submitted, most recent first.</p>
+        </div>
+        <Link className="secondary-link" href="/">
+          New job
+        </Link>
       </div>
 
       {error ? <p className="banner banner-error">{error}</p> : null}
@@ -90,13 +95,7 @@ export function JobListView() {
       {loading ? (
         <p className="meta-muted">Loading jobs...</p>
       ) : jobs.length === 0 ? (
-        <p className="meta-muted">
-          No jobs yet.{" "}
-          <Link className="secondary-link" href="/">
-            Start one
-          </Link>
-          .
-        </p>
+        <p className="meta-muted">No jobs yet — start one above.</p>
       ) : (
         <>
           <ul className="content-list">

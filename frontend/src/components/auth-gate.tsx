@@ -579,6 +579,9 @@ export function AuthGate(props: { children: ReactNode }) {
               {renderRepoHostingStatus()}
             </div>
             <div className="auth-bar__actions">
+              <Link className="secondary-link" href="/">
+                New job
+              </Link>
               <Link className="secondary-link" href="/jobs">
                 My jobs
               </Link>
