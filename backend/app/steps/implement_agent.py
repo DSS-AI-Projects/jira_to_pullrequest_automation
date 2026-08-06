@@ -23,6 +23,24 @@ logger = get_logger(__name__)
 
 _SECRET_ENV_VARS = ("JIRA_API_TOKEN", "JIRA_EMAIL", "GITHUB_TOKEN", "GH_TOKEN", "GITLAB_TOKEN")
 
+# AGENT_CONFIG_MISSING / AGENT_REQUEST_FAILED / BUDGET_EXCEEDED default to
+# "planning agent" wording (they're shared with plan_agent.py) — override with
+# implementation-accurate messages so a failure here doesn't misreport which
+# stage actually hit the limit.
+_CONFIG_MISSING_MESSAGE = (
+    "The implementation agent is not configured on the server. "
+    "Set ANTHROPIC_API_KEY in backend/.env."
+)
+_REQUEST_FAILED_MESSAGE = (
+    "The implementation agent request failed. Check the Anthropic API key and "
+    "available credits or quota for this environment."
+)
+_BUDGET_EXCEEDED_MESSAGE = (
+    "The implementation agent exceeded its run budget before finishing. Try "
+    "approving implementation again, or raise AGENT_IMPLEMENT_MAX_BUDGET_USD / "
+    "AGENT_IMPLEMENT_MAX_TURNS in backend/.env."
+)
+
 _SYSTEM_PROMPT = """\
 You are a senior software engineer applying an already-approved implementation
 plan inside a checked-out repository workspace.
@@ -196,7 +214,7 @@ async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepRe
     settings = get_settings()
     api_key = secrets.get_anthropic_api_key()
     if not api_key:
-        raise AppError(ErrorCode.AGENT_CONFIG_MISSING)
+        raise AppError(ErrorCode.AGENT_CONFIG_MISSING, user_message=_CONFIG_MISSING_MESSAGE)
 
     prompt = build_prompt(job)
     options = build_options(workspace_path, api_key, settings)
@@ -210,11 +228,13 @@ async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepRe
     except TimeoutError as exc:
         raise AppError(
             ErrorCode.BUDGET_EXCEEDED,
+            user_message=_BUDGET_EXCEEDED_MESSAGE,
             internal_detail=f"wall clock exceeded {settings.agent_timeout_seconds}s",
         ) from exc
     except Exception as exc:
         raise AppError(
             ErrorCode.AGENT_REQUEST_FAILED,
+            user_message=_REQUEST_FAILED_MESSAGE,
             internal_detail=redact(f"{type(exc).__name__}: {exc}"),
         ) from exc
 
@@ -240,11 +260,16 @@ async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepRe
 
     if outcome.subtype == "success" and outcome.structured_output is None:
         detail = redact(f"api_error_status={outcome.api_error_status} errors={outcome.errors}")
-        raise AppError(ErrorCode.AGENT_REQUEST_FAILED, internal_detail=detail)
+        raise AppError(
+            ErrorCode.AGENT_REQUEST_FAILED,
+            user_message=_REQUEST_FAILED_MESSAGE,
+            internal_detail=detail,
+        )
 
     if "max_turns" in outcome.subtype or "budget" in outcome.subtype:
         raise AppError(
             ErrorCode.BUDGET_EXCEEDED,
+            user_message=_BUDGET_EXCEEDED_MESSAGE,
             internal_detail=f"harness stopped: {outcome.subtype}",
         )
 

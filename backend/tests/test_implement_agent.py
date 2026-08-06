@@ -185,6 +185,8 @@ async def test_missing_api_key_is_typed(monkeypatch: pytest.MonkeyPatch, tmp_pat
     with pytest.raises(AppError) as excinfo:
         await implement_plan(implementation_job(), tmp_path)
     assert excinfo.value.code == ErrorCode.AGENT_CONFIG_MISSING
+    assert "implementation agent" in excinfo.value.user_message
+    assert "planning agent" not in excinfo.value.user_message
 
 
 async def test_wall_clock_timeout_is_budget_exceeded(
@@ -201,6 +203,8 @@ async def test_wall_clock_timeout_is_budget_exceeded(
     with pytest.raises(AppError) as excinfo:
         await implement_plan(implementation_job(), tmp_path)
     assert excinfo.value.code == ErrorCode.BUDGET_EXCEEDED
+    assert "implementation agent" in excinfo.value.user_message
+    assert "planning agent" not in excinfo.value.user_message
 
 
 async def test_success_without_structured_output_is_typed_request_failure(
@@ -220,6 +224,8 @@ async def test_success_without_structured_output_is_typed_request_failure(
     with pytest.raises(AppError) as excinfo:
         await implement_plan(implementation_job(), tmp_path)
     assert excinfo.value.code == ErrorCode.AGENT_REQUEST_FAILED
+    assert "implementation agent" in excinfo.value.user_message
+    assert "planning agent" not in excinfo.value.user_message
 
 
 async def test_invalid_structured_output_is_implementation_invalid(
@@ -249,6 +255,9 @@ async def test_harness_budget_stop_is_budget_exceeded(
     with pytest.raises(AppError) as excinfo:
         await implement_plan(implementation_job(), tmp_path)
     assert excinfo.value.code == ErrorCode.BUDGET_EXCEEDED
+    assert "implementation agent" in excinfo.value.user_message
+    assert "planning agent" not in excinfo.value.user_message
+    assert "AGENT_IMPLEMENT_MAX_BUDGET_USD" in excinfo.value.user_message
 
 
 async def test_max_structured_output_retries_is_implementation_invalid(
