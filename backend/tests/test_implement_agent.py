@@ -36,9 +36,11 @@ def implementation_job() -> Job:
     job = Job.new(ticket_key="PROJ-1", repo_url="D:\\repos\\repo")
     job.plan = Plan.model_validate(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "summary": "Update the CLI output text.",
             "ticket_type": "feature",
+            "estimated_story_points": 2,
+            "complexity_level": "low",
             "impacted_files": [{"path": "src/cli.py", "reason": "Contains the greeting text"}],
             "proposed_changes": [
                 {

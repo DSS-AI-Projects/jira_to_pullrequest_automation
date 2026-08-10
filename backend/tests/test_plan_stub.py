@@ -1,6 +1,6 @@
 """Richer offline stub plan generator (AGENT_PLAN_STUB)."""
 
-from app.schemas.plan import ChangeAction, TicketType
+from app.schemas.plan import STORY_POINT_SCALE, ChangeAction, ComplexityLevel, TicketType
 from app.schemas.repomap import RepoMap
 from app.schemas.ticket import TicketData
 from app.steps.plan_stub import build_stub_plan
@@ -55,6 +55,28 @@ def test_schema_valid_for_every_ticket_type() -> None:
         plan = build_stub_plan(ticket(summary=summary), repo_map())
         assert plan.proposed_changes  # min_length=1 satisfied
         assert plan.test_strategy
+
+
+# --- effort estimation ---
+
+
+def test_estimated_story_points_are_on_the_fibonacci_scale() -> None:
+    plan = build_stub_plan(ticket(), repo_map())
+    assert plan.estimated_story_points in STORY_POINT_SCALE
+
+
+def test_complexity_level_is_a_valid_enum_member() -> None:
+    plan = build_stub_plan(ticket(), repo_map())
+    assert plan.complexity_level in ComplexityLevel
+
+
+def test_more_proposed_changes_do_not_lower_the_estimate() -> None:
+    small = build_stub_plan(ticket(summary="Fix login error"), repo_map())
+    larger = build_stub_plan(ticket(key="PROJ-9", summary="Add SSO login support"), repo_map())
+    assert small.estimated_story_points is not None
+    assert larger.estimated_story_points is not None
+    assert len(larger.proposed_changes) >= len(small.proposed_changes)
+    assert larger.estimated_story_points >= small.estimated_story_points
 
 
 # --- ticket-type inference ---

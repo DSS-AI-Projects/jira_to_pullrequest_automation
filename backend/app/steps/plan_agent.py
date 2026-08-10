@@ -68,6 +68,15 @@ what the ticket actually asks for.
 
 Work within your budget: prefer the repo map and targeted reads over broad
 exploration. When you have enough understanding, emit the plan.
+
+Also estimate effort: estimated_story_points on the standard Fibonacci-like
+Scrum scale (1, 2, 3, 5, 8, 13, 21) and complexity_level (low/medium/high/
+very_high), both grounded in the actual scope of proposed_changes you name —
+number of files touched, how many separate subsystems/layers are involved,
+and how much of the change is mechanical versus novel. Use high or very_high
+complexity, and story points at the upper end of the scale, when the ticket
+would benefit from being split into smaller subtasks before implementation
+starts; call that out explicitly as an open question or risk when it applies.
 """
 
 

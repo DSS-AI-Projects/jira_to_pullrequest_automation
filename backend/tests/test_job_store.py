@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,41 @@ def test_create_get_save_roundtrip(tmp_path: Path) -> None:
 def test_get_missing_returns_none(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs.db")
     assert store.get("nope") is None
+
+
+def test_reads_a_job_persisted_before_plan_effort_estimates_existed(
+    tmp_path: Path,
+) -> None:
+    """A job stored with a schema_version 1 plan (no estimated_story_points /
+    complexity_level — those fields did not exist yet) must still load, not
+    raise, when read back through the current Plan model."""
+    store = JobStore(tmp_path / "jobs.db")
+    job = Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo")
+    data = json.loads(job.model_dump_json())
+    data["plan"] = {
+        "schema_version": 1,
+        "summary": "Do the thing.",
+        "ticket_type": "feature",
+        "impacted_files": [],
+        "proposed_changes": [
+            {"file": "a.py", "action": "modify", "description": "Apply the change."}
+        ],
+        "test_strategy": "Unit tests.",
+        "risks": [],
+        "open_questions": [],
+    }
+    store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "INSERT INTO jobs (id, state, data, created_at, owner_user_id) VALUES (?, ?, ?, ?, ?)",
+        (job.id, job.state.value, json.dumps(data), job.created_at.isoformat(), None),
+    )
+    store._conn.commit()  # pyright: ignore[reportPrivateUsage]
+
+    loaded = store.get(job.id)
+    assert loaded is not None
+    assert loaded.plan is not None
+    assert loaded.plan.schema_version == 1
+    assert loaded.plan.estimated_story_points is None
+    assert loaded.plan.complexity_level is None
 
 
 def test_persists_across_reopen(tmp_path: Path) -> None:

@@ -9,9 +9,11 @@ from app.schemas.plan import SCHEMA_VERSION, Plan
 
 def valid_plan_payload() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "summary": "Add a --verbose flag to the CLI.",
         "ticket_type": "feature",
+        "estimated_story_points": 2,
+        "complexity_level": "low",
         "impacted_files": [{"path": "src/cli.py", "reason": "flag parsing lives here"}],
         "proposed_changes": [
             {
@@ -45,10 +47,24 @@ def test_missing_required_field_is_rejected() -> None:
         Plan.model_validate(payload)
 
 
-def test_wrong_schema_version_is_rejected() -> None:
-    payload = valid_plan_payload() | {"schema_version": 2}
+def test_unknown_schema_version_is_rejected() -> None:
+    payload = valid_plan_payload() | {"schema_version": 3}
     with pytest.raises(ValidationError):
         Plan.model_validate(payload)
+
+
+def test_legacy_schema_version_1_plan_without_estimates_still_parses() -> None:
+    """Plans persisted before estimated_story_points/complexity_level existed
+    must keep deserializing (as None on those two fields), or every job stored
+    under schema_version 1 becomes unreadable — see JobStore.get/list_jobs,
+    which round-trip Job (and its nested plan) through model_validate_json."""
+    payload = valid_plan_payload() | {"schema_version": 1}
+    del payload["estimated_story_points"]
+    del payload["complexity_level"]
+    plan = Plan.model_validate(payload)
+    assert plan.schema_version == 1
+    assert plan.estimated_story_points is None
+    assert plan.complexity_level is None
 
 
 def test_empty_proposed_changes_is_rejected() -> None:
@@ -59,6 +75,18 @@ def test_empty_proposed_changes_is_rejected() -> None:
 
 def test_unknown_ticket_type_is_rejected() -> None:
     payload = valid_plan_payload() | {"ticket_type": "epic"}
+    with pytest.raises(ValidationError):
+        Plan.model_validate(payload)
+
+
+def test_unknown_complexity_level_is_rejected() -> None:
+    payload = valid_plan_payload() | {"complexity_level": "extreme"}
+    with pytest.raises(ValidationError):
+        Plan.model_validate(payload)
+
+
+def test_non_fibonacci_story_points_are_rejected() -> None:
+    payload = valid_plan_payload() | {"estimated_story_points": 4}
     with pytest.raises(ValidationError):
         Plan.model_validate(payload)
 

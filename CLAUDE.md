@@ -135,8 +135,13 @@ harness.
 ## The plan schema is a versioned contract
 
 Defined ONCE as a Pydantic model (`backend/app/schemas/plan.py`) with `schema_version`
-and fields: `summary`, `ticket_type`, `impacted_files[]`, `proposed_changes[]`,
-`test_strategy`, `risks[]`, `open_questions[]`. `schema/plan.schema.json` (committed)
+and fields: `summary`, `ticket_type`, `estimated_story_points`, `complexity_level`,
+`impacted_files[]`, `proposed_changes[]`, `test_strategy`, `risks[]`, `open_questions[]`.
+`estimated_story_points` is a standard Fibonacci-like Scrum estimate (1/2/3/5/8/13/21)
+and `complexity_level` is low/medium/high/very_high — both grounded in the scope of
+`proposed_changes`, surfaced on the plan review screen so a developer can judge whether
+a ticket should be split into smaller subtasks before implementation starts (the UI
+flags high/very_high complexity explicitly). `schema/plan.schema.json` (committed)
 is exported from the model; `frontend/src/lib/plan.gen.ts` is generated from it. CI
 regenerates both and fails on any diff. The implementation step consumes this object —
 change it only with a `schema_version` bump.

@@ -23,9 +23,11 @@ from app.schemas.ticket import TicketData
 def sample_plan() -> Plan:
     return Plan.model_validate(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "summary": "Do the thing.",
             "ticket_type": "feature",
+            "estimated_story_points": 3,
+            "complexity_level": "medium",
             "impacted_files": [{"path": "a.py", "reason": "entry point"}],
             "proposed_changes": [
                 {"file": "a.py", "action": "modify", "description": "Add the thing."}

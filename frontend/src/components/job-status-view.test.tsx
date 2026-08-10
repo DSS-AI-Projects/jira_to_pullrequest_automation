@@ -56,9 +56,11 @@ describe("JobStatusView", () => {
         },
         workspace_path: "D:\\workdir\\job-123\\repo",
         plan: {
-          schema_version: 1,
+          schema_version: 2,
           summary: "Update the greeting text.",
           ticket_type: "chore",
+          estimated_story_points: 2,
+          complexity_level: "low",
           impacted_files: [{ path: "README", reason: "Contains the greeting" }],
           proposed_changes: [
             {
@@ -106,9 +108,11 @@ describe("JobStatusView", () => {
         },
         workspace_path: "D:\\workdir\\job-123\\repo",
         plan: {
-          schema_version: 1,
+          schema_version: 2,
           summary: "Update the greeting text.",
           ticket_type: "chore",
+          estimated_story_points: 2,
+          complexity_level: "low",
           impacted_files: [{ path: "README", reason: "Contains the greeting" }],
           proposed_changes: [
             {
@@ -256,9 +260,11 @@ describe("JobStatusView", () => {
       },
       workspace_path: "D:\\workdir\\job-remote\\repo",
       plan: {
-        schema_version: 1,
+        schema_version: 2,
         summary: "Do the thing.",
         ticket_type: "feature",
+        estimated_story_points: 3,
+        complexity_level: "medium",
         impacted_files: [{ path: "a.py", reason: "Entry point" }],
         proposed_changes: [
           { file: "a.py", action: "modify", description: "Apply the change." },
@@ -308,9 +314,11 @@ describe("JobStatusView", () => {
       },
       workspace_path: "D:\\workdir\\job-legacy\\repo",
       plan: {
-        schema_version: 1,
+        schema_version: 2,
         summary: "Update the greeting text.",
         ticket_type: "chore",
+        estimated_story_points: 2,
+        complexity_level: "low",
         impacted_files: [{ path: "README", reason: "Contains the greeting" }],
         proposed_changes: [
           {
@@ -430,9 +438,11 @@ describe("JobStatusView", () => {
       },
       workspace_path: "D:\\workdir\\job-remote\\repo",
       plan: {
-        schema_version: 1,
+        schema_version: 2,
         summary: "Do the thing.",
         ticket_type: "feature",
+        estimated_story_points: 3,
+        complexity_level: "medium",
         impacted_files: [{ path: "a.py", reason: "Entry point" }],
         proposed_changes: [
           { file: "a.py", action: "modify", description: "Apply the change." },

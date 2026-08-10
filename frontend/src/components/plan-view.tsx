@@ -1,6 +1,16 @@
 import type { AgentUsage } from "@/lib/api";
 import type { Plan } from "@/lib/plan.gen";
 
+function complexityClass(level: NonNullable<Plan["complexity_level"]>): string {
+  if (level === "low") {
+    return "is-passed";
+  }
+  if (level === "medium") {
+    return "is-skipped";
+  }
+  return "is-failed";
+}
+
 function currency(value: number | null): string {
   if (value === null) {
     return "Not recorded";
@@ -48,6 +58,33 @@ export function PlanView(props: {
             <span className="meta-label">Ticket type</span>
             <p className="cap">{plan.ticket_type}</p>
           </div>
+          <div className="pill-row">
+            <div>
+              <span className="meta-label">Estimated story points</span>
+              <p>{plan.estimated_story_points ?? "Not estimated"}</p>
+            </div>
+            <div>
+              <span className="meta-label">Complexity</span>
+              <p>
+                {plan.complexity_level ? (
+                  <span
+                    className={`pill validation-pill cap ${complexityClass(plan.complexity_level)}`}
+                  >
+                    {plan.complexity_level.replace("_", " ")}
+                  </span>
+                ) : (
+                  "Not estimated"
+                )}
+              </p>
+            </div>
+          </div>
+          {plan.complexity_level === "high" ||
+          plan.complexity_level === "very_high" ? (
+            <p className="banner banner-info">
+              This ticket looks complex enough to consider breaking into smaller
+              subtasks before starting implementation.
+            </p>
+          ) : null}
           <div>
             <span className="meta-label">Test strategy</span>
             <p className="preserve-whitespace">{plan.test_strategy}</p>

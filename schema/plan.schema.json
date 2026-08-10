@@ -9,6 +9,16 @@
       "title": "ChangeAction",
       "type": "string"
     },
+    "ComplexityLevel": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "very_high"
+      ],
+      "title": "ComplexityLevel",
+      "type": "string"
+    },
     "ImpactedFile": {
       "additionalProperties": false,
       "properties": {
@@ -74,6 +84,40 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "complexity_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ComplexityLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Overall implementation complexity. HIGH or VERY_HIGH signals this ticket should likely be broken into smaller subtasks before starting"
+    },
+    "estimated_story_points": {
+      "anyOf": [
+        {
+          "enum": [
+            1,
+            2,
+            3,
+            5,
+            8,
+            13,
+            21
+          ],
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Effort estimate on the standard Fibonacci-like Scrum scale (1=trivial, 21=very large), based on the scope of proposed_changes",
+      "title": "Estimated Story Points"
+    },
     "impacted_files": {
       "items": {
         "$ref": "#/$defs/ImpactedFile"
@@ -105,8 +149,11 @@
       "type": "array"
     },
     "schema_version": {
-      "const": 1,
-      "default": 1,
+      "default": 2,
+      "enum": [
+        1,
+        2
+      ],
       "title": "Schema Version",
       "type": "integer"
     },

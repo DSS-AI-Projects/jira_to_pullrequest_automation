@@ -160,7 +160,7 @@ def test_submit_returns_job_id_and_job_reaches_plan_ready(client: TestClient) ->
     assert repo_info["branch"] == "main"
     plan = body["plan"]
     assert isinstance(plan, dict)
-    assert plan["schema_version"] == 1
+    assert plan["schema_version"] == 2
 
 
 def test_submit_persists_planning_notes_and_surfaces_them_on_the_job(

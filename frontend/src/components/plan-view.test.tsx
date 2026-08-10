@@ -8,9 +8,11 @@ describe("PlanView", () => {
     render(
       <PlanView
         plan={{
-          schema_version: 1,
+          schema_version: 2,
           summary: "Update the CLI to support verbose mode.",
           ticket_type: "feature",
+          estimated_story_points: 13,
+          complexity_level: "high",
           impacted_files: [
             {
               path: "src/cli.ts",
@@ -54,6 +56,11 @@ describe("PlanView", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("$0.12")).toBeInTheDocument();
+    expect(screen.getByText("13")).toBeInTheDocument();
+    expect(screen.getByText("high")).toBeInTheDocument();
+    expect(
+      screen.getByText(/consider breaking into smaller subtasks/i),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText(/Technical considerations you provided/i),
     ).not.toBeInTheDocument();
@@ -63,9 +70,11 @@ describe("PlanView", () => {
     render(
       <PlanView
         plan={{
-          schema_version: 1,
+          schema_version: 2,
           summary: "Update the CLI to support verbose mode.",
           ticket_type: "feature",
+          estimated_story_points: 3,
+          complexity_level: "low",
           impacted_files: [],
           proposed_changes: [
             {
@@ -89,5 +98,8 @@ describe("PlanView", () => {
     expect(
       screen.getByText("Reuse the existing retry helper in src/http.py."),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/consider breaking into smaller subtasks/i),
+    ).not.toBeInTheDocument();
   });
 });

@@ -17,7 +17,16 @@ import random
 import re
 from pathlib import PurePosixPath
 
-from app.schemas.plan import ChangeAction, ImpactedFile, Plan, ProposedChange, TicketType
+from app.schemas.plan import (
+    STORY_POINT_SCALE,
+    ChangeAction,
+    ComplexityLevel,
+    ImpactedFile,
+    Plan,
+    ProposedChange,
+    StoryPoints,
+    TicketType,
+)
 from app.schemas.repomap import RepoMap
 from app.schemas.ticket import TicketData
 from app.steps.repo_digest import parse_repo_map_files
@@ -240,6 +249,36 @@ def _select_changes(
     return impacted_files, proposed_changes
 
 
+def _estimate_effort(
+    ticket_type: TicketType, proposed_changes: list[ProposedChange]
+) -> tuple[StoryPoints, ComplexityLevel]:
+    """Deterministic effort estimate: scales with how many files the stub
+    proposes touching, nudged up for refactors (wider ripple effects)."""
+    change_count = len(proposed_changes)
+    if change_count <= 1:
+        scale_index = 0
+    elif change_count == 2:
+        scale_index = 1
+    elif change_count == 3:
+        scale_index = 2
+    else:
+        scale_index = 3
+    if ticket_type == TicketType.REFACTOR:
+        scale_index += 1
+    scale_index = min(scale_index, len(STORY_POINT_SCALE) - 1)
+
+    if scale_index <= 0:
+        complexity = ComplexityLevel.LOW
+    elif scale_index <= 2:
+        complexity = ComplexityLevel.MEDIUM
+    elif scale_index <= 4:
+        complexity = ComplexityLevel.HIGH
+    else:
+        complexity = ComplexityLevel.VERY_HIGH
+
+    return STORY_POINT_SCALE[scale_index], complexity
+
+
 def build_stub_plan(
     ticket: TicketData, repo_map: RepoMap, planning_notes: str | None = None
 ) -> Plan:
@@ -279,10 +318,14 @@ def build_stub_plan(
         _OPEN_QUESTION_POOL, k=min(open_question_count, len(_OPEN_QUESTION_POOL))
     )
 
+    estimated_story_points, complexity_level = _estimate_effort(ticket_type, proposed_changes)
+
     summary = ticket.summary.strip() or ticket.key
     return Plan(
         summary=f"{_STUB_MARKER} ({ticket_type.value}) {summary}",
         ticket_type=ticket_type,
+        estimated_story_points=estimated_story_points,
+        complexity_level=complexity_level,
         impacted_files=impacted_files,
         proposed_changes=proposed_changes,
         test_strategy=test_strategy,

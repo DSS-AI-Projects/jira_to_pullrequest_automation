@@ -163,7 +163,7 @@ async def test_success_returns_plan_and_usage(
 ) -> None:
     install_fake_agent(monkeypatch, [success_outcome()])
     result = await generate_plan(ticket(), repo_map(), tmp_path)
-    assert result.plan.schema_version == 1
+    assert result.plan.schema_version == 2
     assert isinstance(result.usage, AgentUsage)
     assert result.usage.input_tokens == 1000
     assert result.usage.total_cost_usd == 0.05
