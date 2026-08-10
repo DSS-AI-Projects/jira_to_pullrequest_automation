@@ -93,7 +93,8 @@ class Settings(BaseSettings):
     agent_plan_max_turns: int = 20
     agent_implement_max_turns: int = 40
     agent_plan_max_budget_usd: float = 1.0
-    agent_implement_max_budget_usd: float = 3.0
+    # None disables the implementation-phase budget cap entirely (SDK default).
+    agent_implement_max_budget_usd: float | None = None
     agent_timeout_seconds: int = 600
     # Token-saving controls (see docs). Stub returns a canned plan with NO API
     # call (pipeline testing without credits). Cache reuses a prior plan for the
