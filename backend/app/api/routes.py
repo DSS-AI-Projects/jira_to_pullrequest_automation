@@ -50,6 +50,7 @@ class LocalRepoSupport(BaseModel):
     allowed_roots: list[str]
     allow_dirty: bool
     require_ticket_branch_match: bool
+    allow_non_git_folders: bool
 
 
 class RepoList(BaseModel):
@@ -182,7 +183,10 @@ async def implement_job(
     ensure_job_access(job, user)
     if job.state != JobState.PLAN_READY or job.plan is None:
         raise AppError(ErrorCode.IMPLEMENTATION_NOT_READY)
-    if job.repo_info is None or job.repo_info.source_kind != RepoSourceKind.LOCAL:
+    if job.repo_info is None or job.repo_info.source_kind not in (
+        RepoSourceKind.LOCAL,
+        RepoSourceKind.LOCAL_FOLDER,
+    ):
         raise AppError(ErrorCode.IMPLEMENTATION_NOT_SUPPORTED)
     if not job.workspace_path or not Path(job.workspace_path).exists():
         raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
@@ -221,6 +225,7 @@ async def list_repos(request: Request) -> RepoList:
             allowed_roots=[str(root) for root in settings.allowed_local_repo_roots],
             allow_dirty=settings.allow_dirty_local_repos,
             require_ticket_branch_match=settings.require_local_branch_ticket_match,
+            allow_non_git_folders=settings.allow_local_non_git_folders,
         ),
     )
 

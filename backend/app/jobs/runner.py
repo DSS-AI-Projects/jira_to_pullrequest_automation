@@ -245,7 +245,10 @@ async def run_implementation(
     try:
         if job.state != JobState.IMPLEMENTATION_QUEUED or job.plan is None:
             raise AppError(ErrorCode.IMPLEMENTATION_NOT_READY)
-        if job.repo_info is None or job.repo_info.source_kind != RepoSourceKind.LOCAL:
+        if job.repo_info is None or job.repo_info.source_kind not in (
+            RepoSourceKind.LOCAL,
+            RepoSourceKind.LOCAL_FOLDER,
+        ):
             raise AppError(ErrorCode.IMPLEMENTATION_NOT_SUPPORTED)
         if not job.workspace_path:
             raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)

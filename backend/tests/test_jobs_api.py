@@ -130,6 +130,85 @@ def local_client(store: JobStore) -> Iterator[TestClient]:
         yield test_client
 
 
+@pytest.fixture
+def local_folder_client(store: JobStore) -> Iterator[TestClient]:
+    """Same as local_client, but simulates a LOCAL_FOLDER source (a plain,
+    non-git folder populated via ALLOW_LOCAL_NON_GIT_FOLDERS) — no branch."""
+
+    def init_git_workspace(path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "README.md").write_text("Hello AI Agentic World\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "add", "README.md"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "-m", "jira2pullreq: baseline snapshot"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    async def folder_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        del ticket_key
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL_FOLDER,
+                branch=None,
+                commit_sha="f" * 40,
+                origin_url=None,
+                is_dirty=False,
+                local_path=repo_url,
+            ),
+        )
+
+    async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepResult:
+        del job
+        (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated the README greeting.",
+                changed_files=[
+                    ImplementationChange(
+                        path="README.md", action="modify", rationale="Match the approved plan."
+                    )
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=1.0),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=folder_clone,
+        implement_plan=implement_plan,
+    )
+    app = create_app(store=store, steps=steps)
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
+
+
 def poll_until_terminal(
     client: TestClient,
     job_id: str,
@@ -450,6 +529,31 @@ def test_implement_rejects_remote_repo_jobs(client: TestClient) -> None:
     response = client.post(f"/api/jobs/{job_id}/implement")
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "IMPLEMENTATION_NOT_SUPPORTED"
+
+
+def test_implement_accepts_local_folder_repo_jobs(local_folder_client: TestClient) -> None:
+    create = local_folder_client.post(
+        "/api/jobs",
+        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/plain-folder.git"},
+    )
+    assert create.status_code == 202
+    job_id = create.json()["job_id"]
+
+    body = poll_until_terminal(local_folder_client, job_id)
+    assert body["state"] == "PLAN_READY"
+    repo_info = cast(dict[str, object], body["repo_info"])
+    assert repo_info is not None
+    assert repo_info["source_kind"] == "LOCAL_FOLDER"
+    assert repo_info["branch"] is None
+
+    implement = local_folder_client.post(f"/api/jobs/{job_id}/implement")
+    assert implement.status_code == 202
+    final = poll_until_terminal(
+        local_folder_client,
+        job_id,
+        terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED"),
+    )
+    assert final["state"] == "IMPLEMENTATION_READY"
 
 
 def test_extra_credential_field_is_rejected_never_stored_never_logged(

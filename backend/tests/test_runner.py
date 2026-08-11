@@ -237,6 +237,71 @@ async def test_implementation_happy_path_reaches_implementation_ready(tmp_path: 
     assert final.implementation_finished_at is not None
 
 
+async def test_implementation_is_supported_for_local_folder_sources(tmp_path: Path) -> None:
+    """LOCAL_FOLDER (a plain, non-git source folder populated via
+    ALLOW_LOCAL_NON_GIT_FOLDERS) must be accepted by the implement-phase gate
+    the same as LOCAL — only REMOTE is excluded."""
+    store, settings, job = make_env(tmp_path)
+
+    async def folder_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL_FOLDER,
+                branch=None,
+                commit_sha="d" * 40,
+                origin_url=None,
+                is_dirty=False,
+                local_path="D:\\repos\\plain-folder",
+            ),
+        )
+
+    async def implement_changes(job: Job, workspace_path: Path) -> ImplementationStepResult:
+        del job
+        (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated the README greeting.",
+                changed_files=[
+                    ImplementationChange(
+                        path="README.md",
+                        action="modify",
+                        rationale="Update the greeting text to match the approved plan.",
+                    )
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=1.0),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=folder_clone,
+        implement_plan=implement_changes,
+    )
+    await run_job(job.id, store, settings, steps)
+
+    planned = store.get(job.id)
+    assert planned is not None
+    assert planned.repo_info is not None
+    assert planned.repo_info.branch is None
+
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_READY
+    assert final.error is None
+
+
 async def test_implementation_diff_is_captured_even_when_changes_are_committed(
     tmp_path: Path,
 ) -> None:

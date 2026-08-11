@@ -48,13 +48,15 @@ class JobError(BaseModel):
 class RepoSourceKind(StrEnum):
     REMOTE = "REMOTE"
     LOCAL = "LOCAL"
+    LOCAL_FOLDER = "LOCAL_FOLDER"  # plain folder, no .git — see repo_clone.py
 
 
 class RepoInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_kind: RepoSourceKind
-    branch: str
+    # None for LOCAL_FOLDER: a plain folder has no git branch to report.
+    branch: str | None
     commit_sha: str
     origin_url: str | None = None
     is_dirty: bool

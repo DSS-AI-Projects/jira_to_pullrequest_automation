@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     allowed_local_repo_roots: list[Path] = []
     allow_dirty_local_repos: bool = False
     require_local_branch_ticket_match: bool = False
+    # Separate opt-in from allow_local_repos: a plain folder (no .git) has no
+    # branch/dirty history to check, so accepting one is a materially weaker
+    # guarantee than a real git work tree.
+    allow_local_non_git_folders: bool = False
 
     # Runtime data
     workdir: Path = BACKEND_ROOT / "var" / "workdir"

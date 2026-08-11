@@ -221,6 +221,112 @@ async def test_local_clone_scrubs_credential_from_captured_origin_url(tmp_path: 
     assert "glpat-secrettoken" not in (result.repo_info.origin_url or "")
 
 
+def _with_non_git_folders_allowed() -> Settings:
+    return Settings(_env_file=None, allow_local_non_git_folders=True)  # type: ignore[arg-type]
+
+
+async def test_non_git_folder_is_populated_and_git_initialized_when_allowed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "plain-folder"
+    source.mkdir()
+    (source / "app.py").write_text("print('hi')\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.steps.repo_clone.get_settings", _with_non_git_folders_allowed)
+
+    result = await clone_repo("job_folder", "PROJ-10", str(source), tmp_path / "workdir")
+
+    assert (result.clone_path / "app.py").exists()
+    assert result.repo_info.source_kind == RepoSourceKind.LOCAL_FOLDER
+    assert result.repo_info.branch is None
+    assert result.repo_info.origin_url is None
+    assert result.repo_info.is_dirty is False
+    assert result.repo_info.local_path == str(source.resolve())
+    # the workspace copy has its own git history for the implement step's diff
+    log = subprocess.run(
+        ["git", "-C", str(result.clone_path), "rev-list", "--count", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert log.stdout.strip() == "1"
+    status = subprocess.run(
+        ["git", "-C", str(result.clone_path), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout.strip() == ""
+
+
+async def test_non_git_folder_original_source_is_never_mutated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "plain-folder"
+    source.mkdir()
+    (source / "app.py").write_text("print('hi')\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.steps.repo_clone.get_settings", _with_non_git_folders_allowed)
+
+    await clone_repo("job_folder_isolation", "PROJ-11", str(source), tmp_path / "workdir")
+
+    assert not (source / ".git").exists()
+
+
+async def test_empty_non_git_folder_still_produces_a_valid_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "empty-folder"
+    source.mkdir()
+
+    monkeypatch.setattr("app.steps.repo_clone.get_settings", _with_non_git_folders_allowed)
+
+    result = await clone_repo("job_folder_empty", "PROJ-12", str(source), tmp_path / "workdir")
+
+    assert result.repo_info.source_kind == RepoSourceKind.LOCAL_FOLDER
+    assert result.repo_info.commit_sha
+
+
+async def test_non_git_folder_copy_excludes_env_shaped_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Invariant 3: a plain folder has no .gitignore-enforced protection, so a
+    stray secret file must never reach the workspace the agent can read."""
+    source = tmp_path / "plain-folder"
+    source.mkdir()
+    (source / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (source / ".env").write_text("SECRET=xyz\n", encoding="utf-8")
+    (source / ".env.local").write_text("SECRET=xyz\n", encoding="utf-8")
+    (source / "node_modules").mkdir()
+    (source / "node_modules" / "pkg.js").write_text("// dep\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.steps.repo_clone.get_settings", _with_non_git_folders_allowed)
+
+    result = await clone_repo("job_folder_secrets", "PROJ-13", str(source), tmp_path / "workdir")
+
+    assert (result.clone_path / "app.py").exists()
+    assert not (result.clone_path / ".env").exists()
+    assert not (result.clone_path / ".env.local").exists()
+    assert not (result.clone_path / "node_modules").exists()
+
+
+async def test_non_git_folder_copy_honors_gitignore(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "plain-folder"
+    source.mkdir()
+    (source / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (source / "secrets.txt").write_text("shh\n", encoding="utf-8")
+    (source / ".gitignore").write_text("secrets.txt\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.steps.repo_clone.get_settings", _with_non_git_folders_allowed)
+
+    result = await clone_repo("job_folder_gitignore", "PROJ-14", str(source), tmp_path / "workdir")
+
+    assert (result.clone_path / "app.py").exists()
+    assert not (result.clone_path / "secrets.txt").exists()
+
+
 async def test_local_repo_branch_match_is_accepted_when_required(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
