@@ -19,6 +19,13 @@ import { PlanView } from "./plan-view";
 
 const POLL_INTERVAL_MS = 2000;
 
+function isLocalSource(job: Job): boolean {
+  return (
+    job.repo_info?.source_kind === "LOCAL" ||
+    job.repo_info?.source_kind === "LOCAL_FOLDER"
+  );
+}
+
 function currency(value: number | null): string {
   if (value === null) {
     return "Not recorded";
@@ -124,8 +131,9 @@ export function JobStatusView(props: { jobId: string }) {
     return JOB_STATES.findIndex((state) => state === job.state);
   }, [job]);
 
-  const canImplement =
-    job?.state === "PLAN_READY" && job.repo_info?.source_kind === "LOCAL";
+  const canImplement = job
+    ? job.state === "PLAN_READY" && isLocalSource(job)
+    : false;
 
   const implementationResult =
     job?.state === "IMPLEMENTATION_READY" ? job.implementation_result : null;
@@ -140,7 +148,7 @@ export function JobStatusView(props: { jobId: string }) {
     saveRetryDraft({
       ticket: job.ticket_key,
       repo: job.repo_url,
-      repoMode: job.repo_info?.source_kind === "LOCAL" ? "local" : "remote",
+      repoMode: isLocalSource(job) ? "local" : "remote",
       planningNotes: job.planning_notes ?? "",
     });
     router.push("/");
@@ -278,12 +286,16 @@ export function JobStatusView(props: { jobId: string }) {
                 <strong>
                   {job.repo_info.source_kind === "LOCAL"
                     ? "Local repo"
-                    : "Remote repo"}
+                    : job.repo_info.source_kind === "LOCAL_FOLDER"
+                      ? "Local folder (no git)"
+                      : "Remote repo"}
                 </strong>
               </div>
               <div className="summary-card">
                 <span className="meta-label">Branch</span>
-                <strong className="break-all">{job.repo_info.branch}</strong>
+                <strong className="break-all">
+                  {job.repo_info.branch ?? "Not applicable"}
+                </strong>
               </div>
               <div className="summary-card">
                 <span className="meta-label">Commit</span>

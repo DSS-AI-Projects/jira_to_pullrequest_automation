@@ -51,6 +51,7 @@ describe("JobForm", () => {
         allowed_roots: ["D:\\repos"],
         allow_dirty: false,
         require_ticket_branch_match: true,
+        allow_non_git_folders: false,
       },
     });
     fetchGitHubRepositories.mockRejectedValue(
@@ -99,6 +100,7 @@ describe("JobForm", () => {
         allowed_roots: [],
         allow_dirty: false,
         require_ticket_branch_match: false,
+        allow_non_git_folders: false,
       },
     });
     fetchGitHubRepositories.mockRejectedValue(
@@ -137,6 +139,7 @@ describe("JobForm", () => {
         allowed_roots: ["D:\\repos", "D:\\workspaces"],
         allow_dirty: false,
         require_ticket_branch_match: true,
+        allow_non_git_folders: false,
       },
     });
     fetchGitHubRepositories.mockRejectedValue(
@@ -168,6 +171,35 @@ describe("JobForm", () => {
     expect(push).toHaveBeenCalledWith("/jobs/job-local");
   });
 
+  it("mentions plain source folders when the server allows them", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: true,
+        allowed_roots: ["D:\\repos"],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: true,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+
+    render(<JobForm />);
+
+    await screen.findByText("D:\\repos");
+    fireEvent.click(screen.getByRole("button", { name: /Local repo path/i }));
+
+    await screen.findByText(/plain source folder \(no \.git required\)/i);
+    expect(
+      screen.getByText(
+        /Non-git folders:\s*allowed \(no branch\/dirty check\)/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("shows connected GitHub repos and submits the selected clone url", async () => {
     fetchRepos.mockResolvedValue({
       repos: [],
@@ -177,6 +209,7 @@ describe("JobForm", () => {
         allowed_roots: [],
         allow_dirty: false,
         require_ticket_branch_match: false,
+        allow_non_git_folders: false,
       },
     });
     fetchGitHubRepositories.mockResolvedValue({
@@ -234,6 +267,7 @@ describe("JobForm", () => {
         allowed_roots: ["D:\\repos"],
         allow_dirty: false,
         require_ticket_branch_match: false,
+        allow_non_git_folders: false,
       },
     });
     fetchGitHubRepositories.mockRejectedValue(

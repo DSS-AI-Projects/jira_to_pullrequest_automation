@@ -296,6 +296,57 @@ describe("JobStatusView", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("allows implementation and renders folder-source metadata for a LOCAL_FOLDER job", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-folder",
+      ticket_key: "PROJ-9",
+      repo_url: "D:\\repos\\plain-folder",
+      planning_notes: null,
+      state: "PLAN_READY",
+      error: null,
+      repo_info: {
+        source_kind: "LOCAL_FOLDER",
+        branch: null,
+        commit_sha: "c".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\plain-folder",
+      },
+      workspace_path: "D:\\workdir\\job-folder\\repo",
+      plan: {
+        schema_version: 2,
+        summary: "Do the thing.",
+        ticket_type: "feature",
+        estimated_story_points: 3,
+        complexity_level: "medium",
+        impacted_files: [{ path: "a.py", reason: "Entry point" }],
+        proposed_changes: [
+          { file: "a.py", action: "modify", description: "Apply the change." },
+        ],
+        test_strategy: "Run unit tests.",
+        risks: [],
+        open_questions: [],
+      },
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-07-17T00:00:00Z",
+      updated_at: "2026-07-17T00:00:00Z",
+    });
+
+    render(<JobStatusView jobId="job-folder" />);
+
+    await screen.findByRole("button", { name: /Approve and Implement/i });
+    expect(screen.getByText("Local folder (no git)")).toBeInTheDocument();
+    expect(screen.getByText("Not applicable")).toBeInTheDocument();
+  });
+
   it("renders legacy implementation-ready jobs that omit validation results", async () => {
     fetchJob.mockResolvedValue({
       id: "job-legacy",
@@ -418,6 +469,57 @@ describe("JobStatusView", () => {
       planningNotes: "Use the shared logger, not print().",
     });
     expect(push).toHaveBeenCalledWith("/");
+  });
+
+  it("maps a LOCAL_FOLDER source to repoMode local in the retry draft", async () => {
+    sessionStorage.clear();
+    fetchJob.mockResolvedValue({
+      id: "job-folder-failed",
+      ticket_key: "KAN-30",
+      repo_url: "D:\\repos\\plain-folder",
+      planning_notes: null,
+      state: "FAILED",
+      error: {
+        code: "TICKET_NOT_FOUND",
+        message: "That Jira ticket could not be found (or is not visible).",
+        stage: "FETCHING_TICKET",
+      },
+      repo_info: {
+        source_kind: "LOCAL_FOLDER",
+        branch: null,
+        commit_sha: "d".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\plain-folder",
+      },
+      workspace_path: "D:\\workdir\\job-folder-failed\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-05T17:54:02Z",
+      updated_at: "2026-08-05T17:57:53Z",
+    });
+
+    render(<JobStatusView jobId="job-folder-failed" />);
+
+    const retryButton = await screen.findByRole("button", { name: "Retry" });
+    fireEvent.click(retryButton);
+
+    expect(
+      JSON.parse(sessionStorage.getItem("jira2pullreq:retry-draft")!),
+    ).toEqual({
+      ticket: "KAN-30",
+      repo: "D:\\repos\\plain-folder",
+      repoMode: "local",
+      planningNotes: "",
+    });
   });
 
   it("does not show a Retry button for a job that has not failed", async () => {

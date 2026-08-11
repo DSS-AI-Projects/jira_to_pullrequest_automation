@@ -130,11 +130,12 @@ export type JobError = {
   stage: JobState;
 };
 
-export type RepoSourceKind = "REMOTE" | "LOCAL";
+export type RepoSourceKind = "REMOTE" | "LOCAL" | "LOCAL_FOLDER";
 
 export type RepoInfo = {
   source_kind: RepoSourceKind;
-  branch: string;
+  // null for LOCAL_FOLDER: a plain folder has no git branch to report.
+  branch: string | null;
   commit_sha: string;
   origin_url: string | null;
   is_dirty: boolean;
@@ -221,6 +222,7 @@ export type RepoList = {
     allowed_roots: string[];
     allow_dirty: boolean;
     require_ticket_branch_match: boolean;
+    allow_non_git_folders: boolean;
   };
 };
 

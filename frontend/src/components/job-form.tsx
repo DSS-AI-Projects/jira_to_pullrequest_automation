@@ -104,7 +104,9 @@ export function JobForm() {
 
   const repoHelper = useMemo(() => {
     if (repoMode === "local") {
-      return "Enter an approved absolute local path to a Git working tree.";
+      return localRepoSupport?.allow_non_git_folders
+        ? "Enter an approved absolute local path to a Git working tree, or a plain source folder (no .git required)."
+        : "Enter an approved absolute local path to a Git working tree.";
     }
     if (githubRepos.length > 0 && repos.length > 0) {
       return "Pick a connected GitHub repo, use a pre-configured repo, or enter an allowed repository URL.";
@@ -116,7 +118,7 @@ export function JobForm() {
       return "Enter an allowed repository URL or pre-configured repo name.";
     }
     return "Pick a pre-configured repo below or enter an allowed repository URL.";
-  }, [githubRepos.length, repoMode, repos.length]);
+  }, [githubRepos.length, localRepoSupport, repoMode, repos.length]);
 
   const repoLabel =
     repoMode === "local"
@@ -329,6 +331,12 @@ export function JobForm() {
                 {localRepoSupport.require_ticket_branch_match
                   ? "must include the Jira key"
                   : "not enforced"}
+              </span>
+              <span>
+                Non-git folders:{" "}
+                {localRepoSupport.allow_non_git_folders
+                  ? "allowed (no branch/dirty check)"
+                  : "not enabled"}
               </span>
             </div>
           </div>
