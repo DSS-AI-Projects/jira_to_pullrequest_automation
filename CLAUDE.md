@@ -172,17 +172,32 @@ Every job ends in a terminal state. Two async pipelines drive it:
 
 The `repo` field accepts a pre-configured repo name, a remote Git URL (host
 allowlist), or — when `ALLOW_LOCAL_REPOS=true` — an absolute local path. Local paths
-must be under an allowlisted root (`ALLOWED_LOCAL_REPO_ROOTS`), point to a Git work
-tree, and are **cloned into a per-job workspace** (never mutated in place). Dirty
-repos are rejected unless `ALLOW_DIRTY_LOCAL_REPOS`; `REQUIRE_LOCAL_BRANCH_TICKET_MATCH`
-optionally requires the branch name contain the ticket key. `RepoInfo` (source kind,
-branch, commit SHA, origin URL, dirty flag) is captured on the job.
+must be under an allowlisted root (`ALLOWED_LOCAL_REPO_ROOTS`) and are **cloned (or,
+for a non-git folder, copied) into a per-job workspace** (never mutated in place).
+By default a local path must point to a Git work tree; dirty repos are rejected
+unless `ALLOW_DIRTY_LOCAL_REPOS`, and `REQUIRE_LOCAL_BRANCH_TICKET_MATCH` optionally
+requires the branch name contain the ticket key. `RepoInfo` (source kind, branch,
+commit SHA, origin URL, dirty flag) is captured on the job.
 
-The implement phase is **gated to local repos**. It records a pre-implementation
-baseline git SHA, runs the implementation agent, diffs the workspace against the
-baseline (`ImplementationDiff`, per-file patches + numstat), then runs the validation
-runner. Diff collection and validation are best-effort — their failures degrade
-gracefully rather than crashing the job.
+A separate opt-in, `ALLOW_LOCAL_NON_GIT_FOLDERS`, additionally accepts a plain source
+folder with no `.git` (`RepoSourceKind.LOCAL_FOLDER`) — e.g. an unpacked source tree
+with no version control. Since there is no git history to check, dirty-state and
+branch/ticket-match checks don't apply; `RepoInfo.branch` is `None` for this source
+kind. The workspace copy is `git init` + committed *inside the isolated workspace
+only* (never in the original folder) so the implement phase's diff/validation
+pipeline — which only ever inspects the workspace's own git state — works unchanged.
+The copy step is a security control, not just a convenience: a plain folder has no
+`.gitignore` enforcement, so `.env`-shaped files, `node_modules`, `.venv`, and similar
+are always excluded, and the source's own `.gitignore` (if present) is additionally
+honored on a best-effort basis — this keeps stray secrets out of the workspace the
+planning/implementation agent can Read/Grep (invariant 3).
+
+The implement phase is **gated to local sources** (`LOCAL` or `LOCAL_FOLDER`; `REMOTE`
+is excluded). It records a pre-implementation baseline git SHA, runs the
+implementation agent, diffs the workspace against the baseline (`ImplementationDiff`,
+per-file patches + numstat), then runs the validation runner. Diff collection and
+validation are best-effort — their failures degrade gracefully rather than crashing
+the job.
 
 Approving implementation may include optional free-text **clarifications** —
 answers to the plan's `open_questions` or other guidance — submitted alongside
