@@ -15,17 +15,21 @@ validation. Opening a pull request is still out of scope.
 ## Definition of done (per change)
 
 A signed-in user (or, with auth off, any local user) submits a real Jira ticket key
-(or URL) and a repo identifier, and gets back a valid, schema-conforming plan JSON
-rendered on the review screen. For an approved local repo they may run the implement
-phase and get back a diff + validation results. Every failure path returns a typed,
-user-safe error, and all quality gates (types, lint, tests, secret scan) are green.
+(or URL) — or, alternatively, uploads a PDF requirement document — plus a repo
+identifier, and gets back a valid, schema-conforming plan JSON rendered on the
+review screen. For an approved local repo they may run the implement phase and get
+back a diff + validation results. Every failure path returns a typed, user-safe
+error, and all quality gates (types, lint, tests, secret scan) are green.
 
 ## Hard security principle: the app NEVER custodies user secrets *typed into the UI*
 
 The web form collects **only non-secret identifiers** (ticket key/URL, repo
-identifier). No credential field exists or will be added. Credentials reach the
-server only through env config or an OAuth redirect the user completes with the
-provider — never by typing a secret into this app's forms. Sources:
+identifier) — or, as an alternative to a Jira ticket, an uploaded PDF requirement
+document, whose extracted text is treated as untrusted DATA exactly like ticket
+content (see **Requirement source: Jira ticket or uploaded document** below). No
+credential field exists or will be added. Credentials reach the server only through
+env config or an OAuth redirect the user completes with the provider — never by
+typing a secret into this app's forms. Sources:
 
 - **Jira — two coexisting modes:**
   - *Shared server credentials:* `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`
@@ -81,9 +85,10 @@ enabled (`backend/app/auth/`, `backend/app/api/auth.py`):
    `<user_clarifications>` tag, never treated as instructions and never able to
    widen scope beyond the approved plan. A second, distinct entry point exists
    earlier in the flow: optional **planning notes** submitted alongside the ticket
-   and repo on the job-creation form (`JobCreateRequest.planning_notes`, same
-   `extra="forbid"` + length/credential-shape checks), stored as `Job.planning_notes`
-   and quoted into the planning prompt inside a `<user_technical_notes>` tag —
+   and repo on the job-creation form (the `planning_notes` form field, same
+   length/credential-shape checks as every other free-text field), stored as
+   `Job.planning_notes` and quoted into the planning prompt inside a
+   `<user_technical_notes>` tag —
    technical constraints or context to shape the generated plan itself, not just
    the later implementation. It also participates in the plan cache key, since that
    key hashes the full rendered prompt.
@@ -152,7 +157,9 @@ Every step fails with a typed, user-safe error the status screen can display. Th
 catalog (`backend/app/core/errors.py`) currently covers, among others: `INPUT_INVALID`;
 auth — `UNAUTHENTICATED`, `FORBIDDEN`, `AUTH_NOT_AVAILABLE`; Jira — `JIRA_CONFIG_MISSING`,
 `JIRA_AUTH_FAILED`, `JIRA_UNREACHABLE`, `JIRA_OAUTH_*`, `JIRA_SITE_NOT_ACCESSIBLE`,
-`TICKET_NOT_FOUND`, `TICKET_EMPTY`; repo providers — `REPO_PROVIDER_*`; repo/clone —
+`TICKET_NOT_FOUND`, `TICKET_EMPTY`; requirement document — `DOCUMENT_NOT_PDF`,
+`DOCUMENT_TOO_LARGE`, `DOCUMENT_UNREADABLE`, `DOCUMENT_EMPTY`; repo providers —
+`REPO_PROVIDER_*`; repo/clone —
 `REPO_HOST_NOT_ALLOWED`, `LOCAL_REPO_*` (not-allowed / not-found / not-directory /
 outside-root / not-git / dirty / branch-mismatch), `CLONE_FAILED`, `REPO_MAP_FAILED`;
 planning — `AGENT_CONFIG_MISSING`, `AGENT_REQUEST_FAILED`, `PLAN_INVALID`,
@@ -167,6 +174,41 @@ Every job ends in a terminal state. Two async pipelines drive it:
 - **Implement** (`run_implementation`, opt-in, local repos only): `PLAN_READY →
   IMPLEMENTATION_QUEUED → IMPLEMENTING → VALIDATING → IMPLEMENTATION_READY |
   IMPLEMENTATION_FAILED`.
+
+## Requirement source: Jira ticket or uploaded document
+
+`POST /api/jobs` accepts **exactly one** of `ticket` (a Jira key/URL) or an uploaded
+`requirement_document` (PDF) — enforced server-side (`INPUT_INVALID` if both or
+neither are present), mirrored client-side by a toggle on the job form. This is a
+multipart request, not JSON, so the endpoint declares individual `Form()`/`File()`
+parameters rather than a single Pydantic body model (mixing a Pydantic `Form()`
+model with a sibling `File()` field does not bind correctly in this FastAPI
+version — verified empirically, not assumed); the smuggled-extra-field protection
+`extra="forbid"` normally gives up is reconstructed by checking the raw
+`request.form()` keys against an explicit allowlist
+(`reject_unknown_form_fields`).
+
+A document-sourced job gets a synthetic `DOC-XXXXXXXX` ticket key (`Job.new()`,
+`RequirementSource.DOCUMENT`) rather than a real Jira key, and skips
+`REQUIRE_LOCAL_BRANCH_TICKET_MATCH` (a synthetic key can never appear in a real
+branch name). Text extraction (`backend/app/steps/document_fetch.py`, `pypdf`) is
+deterministic and LLM-free, exactly like the Jira fetch step, and produces the same
+`TicketData` shape — the planner never knows or cares which source was used. A
+small dispatcher (`app/steps/fetch_requirement`) routes to one step or the other
+based on `Job.requirement_source`, so `JobSteps.fetch_ticket`'s signature and every
+existing fake-step test are untouched. The extracted text is quoted into the
+planning prompt as untrusted data via the same `<ticket_data>` block Jira content
+uses — no new prompt-injection surface.
+
+Upload safeguards: a magic-byte check (`%PDF-`) rather than trusting the
+client-supplied filename/content-type, a size cap (`DOCUMENT_MAX_UPLOAD_BYTES`,
+10MB default), a parse timeout, and a truncation cap on extracted text
+(`DOCUMENT_MAX_EXTRACTED_CHARS`) so a huge PDF can't blow the planning budget. The
+uploaded file is saved to `var/uploads/<job_id>/requirement.pdf` before the
+background job starts (mirroring how `var/workdir/` holds clone workspaces) and is
+never re-used across jobs — retrying a failed document-sourced job requires
+re-uploading the file (sessionStorage can't persist a `File` object across the
+Retry redirect; the job form shows which filename to re-upload).
 
 ## Repository input & local execution
 
@@ -227,7 +269,8 @@ the header only when the signed-in user's role is `ADMIN`.
 
 ## Scope
 
-**In:** non-secret form; optional multi-user auth (dev login + trusted proxy);
+**In:** non-secret form; a Jira ticket or an uploaded PDF requirement document as
+alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
 delegated Jira/GitHub OAuth with encrypted-at-rest tokens; async jobs with SQLite
 store + polling status screen; the plan pipeline (fetch/clone/map/plan); local-repo
 execution with an isolated-clone implement + validate phase; plan and diff review
@@ -249,6 +292,8 @@ sandbox; an embeddings/vector index.
 - Repo map: tree-sitter via `tree-sitter-language-pack` (Python, TS/JS, Java, Go,
   C#, Rust; other files appear in the tree without symbols).
 - Jira: Cloud REST API v3 — Basic auth (shared) or OAuth bearer (delegated).
+- Requirement documents: `pypdf` for PDF text extraction; `python-multipart` for
+  the job-create endpoint's multipart form/file handling.
 - Crypto: Fernet for provider tokens at rest.
 - Deploy: `deploy/` holds an nginx + oauth2-proxy reference stack, Dockerfiles, and
   provider setup docs (e.g. Azure Entra ID).
