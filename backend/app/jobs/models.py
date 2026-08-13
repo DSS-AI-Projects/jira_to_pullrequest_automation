@@ -45,6 +45,11 @@ class JobError(BaseModel):
     stage: JobState  # which step failed
 
 
+class RequirementSource(StrEnum):
+    JIRA = "JIRA"
+    DOCUMENT = "DOCUMENT"  # uploaded PDF — see document_fetch.py
+
+
 class RepoSourceKind(StrEnum):
     REMOTE = "REMOTE"
     LOCAL = "LOCAL"
@@ -132,6 +137,8 @@ class Job(BaseModel):
     id: str
     owner_user_id: str | None = None
     ticket_key: str
+    requirement_source: RequirementSource = RequirementSource.JIRA
+    requirement_document_name: str | None = None
     repo_url: str
     planning_notes: str | None = None
     state: JobState = JobState.QUEUED
@@ -158,12 +165,16 @@ class Job(BaseModel):
         repo_url: str,
         owner_user_id: str | None = None,
         planning_notes: str | None = None,
+        requirement_source: RequirementSource = RequirementSource.JIRA,
+        requirement_document_name: str | None = None,
     ) -> Job:
         now = datetime.now(UTC)
         return cls(
             id=uuid.uuid4().hex,
             owner_user_id=owner_user_id,
             ticket_key=ticket_key,
+            requirement_source=requirement_source,
+            requirement_document_name=requirement_document_name,
             repo_url=repo_url,
             planning_notes=planning_notes,
             created_at=now,

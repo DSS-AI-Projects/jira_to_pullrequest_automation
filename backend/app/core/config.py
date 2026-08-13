@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     workdir: Path = BACKEND_ROOT / "var" / "workdir"
     db_path: Path = BACKEND_ROOT / "var" / "jobs.db"
 
+    # Requirement document upload (alternative to a Jira ticket) — PDF only
+    document_upload_dir: Path = BACKEND_ROOT / "var" / "uploads"
+    document_max_upload_bytes: int = 10_000_000
+    document_max_extracted_chars: int = 40_000
+    document_parse_timeout_seconds: int = 20
+
     # App authentication
     auth_enabled: bool = False
     auth_allow_dev_login: bool = True

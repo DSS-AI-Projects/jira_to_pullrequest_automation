@@ -158,7 +158,7 @@ def test_authenticated_user_can_create_and_read_own_job(
     session = login(auth_client)
     create = auth_client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
     )
     assert create.status_code == 202
     job_id = create.json()["job_id"]
@@ -177,7 +177,7 @@ def test_user_cannot_access_another_users_job(auth_client: TestClient) -> None:
     login(auth_client, email="owner@example.com", display_name="Owner")
     create = auth_client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
     )
     assert create.status_code == 202
     job_id = create.json()["job_id"]
@@ -199,11 +199,11 @@ def test_list_jobs_requires_authentication(auth_client: TestClient) -> None:
 
 def test_list_jobs_scoped_to_owner_for_regular_user(auth_client: TestClient) -> None:
     login(auth_client, email="user-a@example.com", display_name="A")
-    auth_client.post("/api/jobs", json={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"})
+    auth_client.post("/api/jobs", data={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"})
     auth_client.post("/api/auth/logout")
 
     login(auth_client, email="user-b@example.com", display_name="B")
-    auth_client.post("/api/jobs", json={"ticket": "PROJ-2", "repo": "git@github.com:acme/repo.git"})
+    auth_client.post("/api/jobs", data={"ticket": "PROJ-2", "repo": "git@github.com:acme/repo.git"})
 
     response = auth_client.get("/api/jobs")
     assert response.status_code == 200
@@ -214,11 +214,11 @@ def test_list_jobs_scoped_to_owner_for_regular_user(auth_client: TestClient) -> 
 
 def test_admin_sees_every_users_jobs_in_list(auth_client: TestClient) -> None:
     login(auth_client, email="user-a@example.com", display_name="A")
-    auth_client.post("/api/jobs", json={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"})
+    auth_client.post("/api/jobs", data={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"})
     auth_client.post("/api/auth/logout")
 
     login(auth_client, email="admin@example.com", display_name="Admin")
-    auth_client.post("/api/jobs", json={"ticket": "PROJ-2", "repo": "git@github.com:acme/repo.git"})
+    auth_client.post("/api/jobs", data={"ticket": "PROJ-2", "repo": "git@github.com:acme/repo.git"})
 
     response = auth_client.get("/api/jobs")
     assert response.status_code == 200
@@ -230,7 +230,7 @@ def test_list_jobs_paginates_via_query_params(auth_client: TestClient) -> None:
     login(auth_client, email="user-c@example.com", display_name="C")
     for i in range(3):
         auth_client.post(
-            "/api/jobs", json={"ticket": f"PROJ-{i}", "repo": "git@github.com:acme/repo.git"}
+            "/api/jobs", data={"ticket": f"PROJ-{i}", "repo": "git@github.com:acme/repo.git"}
         )
         time.sleep(0.01)
 

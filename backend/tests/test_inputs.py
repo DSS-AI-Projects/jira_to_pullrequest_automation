@@ -7,7 +7,15 @@ import pytest
 
 from app.core.config import Settings
 from app.core.errors import AppError, ErrorCode
-from app.schemas.inputs import normalize_planning_notes, normalize_repo, normalize_ticket
+from app.schemas.inputs import (
+    JOB_CREATE_FORM_FIELDS,
+    normalize_planning_notes,
+    normalize_repo,
+    normalize_ticket,
+    reject_unknown_form_fields,
+    require_exactly_one_requirement_source,
+    validate_uploaded_document,
+)
 
 FAKE_TOKEN = "ATATT" + "3xF" + "a" * 27
 
@@ -209,3 +217,75 @@ def test_planning_notes_token_shaped_is_rejected_without_echoing_value() -> None
         normalize_planning_notes(FAKE_TOKEN)
     assert excinfo.value.code == ErrorCode.INPUT_INVALID
     assert FAKE_TOKEN not in excinfo.value.user_message
+
+
+# --- requirement source (ticket xor uploaded document) ---
+
+
+def test_ticket_only_is_accepted() -> None:
+    require_exactly_one_requirement_source("PROJ-123", has_document=False)
+
+
+def test_document_only_is_accepted() -> None:
+    require_exactly_one_requirement_source(None, has_document=True)
+
+
+def test_neither_ticket_nor_document_is_rejected() -> None:
+    with pytest.raises(AppError) as excinfo:
+        require_exactly_one_requirement_source(None, has_document=False)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+def test_blank_ticket_and_no_document_is_rejected() -> None:
+    with pytest.raises(AppError) as excinfo:
+        require_exactly_one_requirement_source("   ", has_document=False)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+def test_both_ticket_and_document_is_rejected() -> None:
+    with pytest.raises(AppError) as excinfo:
+        require_exactly_one_requirement_source("PROJ-123", has_document=True)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+# --- uploaded document validation ---
+
+
+def test_valid_pdf_bytes_are_accepted(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    validate_uploaded_document(b"%PDF-1.4 minimal content", settings)
+
+
+def test_non_pdf_bytes_are_rejected(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    with pytest.raises(AppError) as excinfo:
+        validate_uploaded_document(b"not a pdf at all", settings)
+    assert excinfo.value.code == ErrorCode.DOCUMENT_NOT_PDF
+
+
+def test_empty_upload_is_rejected_as_not_pdf(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    with pytest.raises(AppError) as excinfo:
+        validate_uploaded_document(b"", settings)
+    assert excinfo.value.code == ErrorCode.DOCUMENT_NOT_PDF
+
+
+def test_oversized_upload_is_rejected(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, document_max_upload_bytes=10)
+    with pytest.raises(AppError) as excinfo:
+        validate_uploaded_document(b"%PDF-1.4 way more than ten bytes", settings)
+    assert excinfo.value.code == ErrorCode.DOCUMENT_TOO_LARGE
+
+
+# --- unknown form fields (invariant 1, multipart edition) ---
+
+
+def test_known_fields_are_accepted() -> None:
+    reject_unknown_form_fields({"ticket", "repo"}, JOB_CREATE_FORM_FIELDS)
+
+
+def test_unknown_field_is_rejected_without_echoing_value() -> None:
+    with pytest.raises(AppError) as excinfo:
+        reject_unknown_form_fields({"ticket", "repo", "jira_token"}, JOB_CREATE_FORM_FIELDS)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    assert "jira_token" not in excinfo.value.user_message

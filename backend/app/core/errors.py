@@ -28,6 +28,10 @@ class ErrorCode(StrEnum):
     REPO_PROVIDER_CALLBACK_FAILED = "REPO_PROVIDER_CALLBACK_FAILED"
     TICKET_NOT_FOUND = "TICKET_NOT_FOUND"
     TICKET_EMPTY = "TICKET_EMPTY"
+    DOCUMENT_NOT_PDF = "DOCUMENT_NOT_PDF"
+    DOCUMENT_TOO_LARGE = "DOCUMENT_TOO_LARGE"
+    DOCUMENT_UNREADABLE = "DOCUMENT_UNREADABLE"
+    DOCUMENT_EMPTY = "DOCUMENT_EMPTY"
     REPO_HOST_NOT_ALLOWED = "REPO_HOST_NOT_ALLOWED"
     LOCAL_REPO_NOT_ALLOWED = "LOCAL_REPO_NOT_ALLOWED"
     LOCAL_REPO_NOT_FOUND = "LOCAL_REPO_NOT_FOUND"
@@ -89,6 +93,15 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ),
     ErrorCode.TICKET_NOT_FOUND: "That Jira ticket could not be found (or is not visible).",
     ErrorCode.TICKET_EMPTY: "The ticket has no usable content (empty summary and description).",
+    ErrorCode.DOCUMENT_NOT_PDF: "The uploaded requirement document must be a PDF file.",
+    ErrorCode.DOCUMENT_TOO_LARGE: (
+        "The uploaded requirement document exceeds the maximum allowed size."
+    ),
+    ErrorCode.DOCUMENT_UNREADABLE: (
+        "The uploaded requirement document could not be read. "
+        "It may be corrupted or password-protected."
+    ),
+    ErrorCode.DOCUMENT_EMPTY: "The uploaded requirement document has no extractable text.",
     ErrorCode.REPO_HOST_NOT_ALLOWED: "That repository host is not on the allowed list.",
     ErrorCode.LOCAL_REPO_NOT_ALLOWED: (
         "Local repository paths are not enabled in this environment."
@@ -150,6 +163,10 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.REPO_PROVIDER_NOT_AVAILABLE: 400,
     ErrorCode.REPO_PROVIDER_STATE_INVALID: 400,
     ErrorCode.REPO_PROVIDER_CALLBACK_FAILED: 400,
+    ErrorCode.DOCUMENT_NOT_PDF: 400,
+    ErrorCode.DOCUMENT_TOO_LARGE: 400,
+    ErrorCode.DOCUMENT_UNREADABLE: 400,
+    ErrorCode.DOCUMENT_EMPTY: 400,
     ErrorCode.REPO_HOST_NOT_ALLOWED: 400,
     ErrorCode.LOCAL_REPO_NOT_ALLOWED: 400,
     ErrorCode.LOCAL_REPO_NOT_FOUND: 400,

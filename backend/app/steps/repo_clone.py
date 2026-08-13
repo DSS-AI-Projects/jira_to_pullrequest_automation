@@ -317,8 +317,13 @@ async def clone_repo(job_id: str, ticket_key: str, repo_url: str, workdir: Path)
         )
         if source_info.is_dirty and not settings.allow_dirty_local_repos:
             raise AppError(ErrorCode.LOCAL_REPO_DIRTY)
-        if settings.require_local_branch_ticket_match and not _branch_matches_ticket(
-            source_info.branch or "", ticket_key
+        # A synthetic "DOC-..." key (requirement uploaded as a document, not a
+        # real Jira ticket) never appears in a branch name — nothing to check.
+        is_synthetic_document_key = ticket_key.startswith("DOC-")
+        if (
+            settings.require_local_branch_ticket_match
+            and not is_synthetic_document_key
+            and not _branch_matches_ticket(source_info.branch or "", ticket_key)
         ):
             raise AppError(
                 ErrorCode.LOCAL_REPO_BRANCH_MISMATCH,

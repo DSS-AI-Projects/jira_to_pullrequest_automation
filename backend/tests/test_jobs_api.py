@@ -12,6 +12,7 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import Settings
 from app.core.logging import RedactionFilter
 from app.jobs.models import (
     AgentUsage,
@@ -25,6 +26,7 @@ from app.jobs.runner import CloneResult, ImplementationStepResult
 from app.jobs.store import JobStore
 from app.main import create_app
 from tests.fakes import make_fake_steps
+from tests.pdf_fixtures import make_pdf_bytes
 
 FAKE_TOKEN = "ATATT" + "3xZ" + "b" * 27
 
@@ -226,7 +228,7 @@ def poll_until_terminal(
 
 def test_submit_returns_job_id_and_job_reaches_plan_ready(client: TestClient) -> None:
     response = client.post(
-        "/api/jobs", json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"}
+        "/api/jobs", data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"}
     )
     assert response.status_code == 202
     job_id = response.json()["job_id"]
@@ -247,7 +249,7 @@ def test_submit_persists_planning_notes_and_surfaces_them_on_the_job(
 ) -> None:
     response = client.post(
         "/api/jobs",
-        json={
+        data={
             "ticket": "PROJ-123",
             "repo": "git@github.com:acme/repo.git",
             "planning_notes": "  Reuse the existing retry helper.  ",
@@ -264,7 +266,7 @@ def test_submit_persists_planning_notes_and_surfaces_them_on_the_job(
 def test_submit_blank_planning_notes_normalizes_to_none(client: TestClient) -> None:
     response = client.post(
         "/api/jobs",
-        json={
+        data={
             "ticket": "PROJ-123",
             "repo": "git@github.com:acme/repo.git",
             "planning_notes": "   ",
@@ -279,7 +281,7 @@ def test_submit_blank_planning_notes_normalizes_to_none(client: TestClient) -> N
 
 def test_submit_omitted_planning_notes_stays_backward_compatible(client: TestClient) -> None:
     response = client.post(
-        "/api/jobs", json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"}
+        "/api/jobs", data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"}
     )
     assert response.status_code == 202
     job_id = response.json()["job_id"]
@@ -293,7 +295,7 @@ def test_submit_rejects_credential_shaped_planning_notes_never_echoed(
 ) -> None:
     response = client.post(
         "/api/jobs",
-        json={
+        data={
             "ticket": "PROJ-123",
             "repo": "git@github.com:acme/repo.git",
             "planning_notes": FAKE_TOKEN,
@@ -312,7 +314,7 @@ def test_submit_rejects_credential_shaped_planning_notes_never_echoed(
 def test_submit_rejects_overlong_planning_notes(client: TestClient) -> None:
     response = client.post(
         "/api/jobs",
-        json={
+        data={
             "ticket": "PROJ-123",
             "repo": "git@github.com:acme/repo.git",
             "planning_notes": "x" * 4001,
@@ -335,17 +337,96 @@ def test_implement_unknown_job_returns_typed_404(client: TestClient) -> None:
 
 
 def test_invalid_ticket_is_typed_400(client: TestClient) -> None:
-    response = client.post("/api/jobs", json={"ticket": "garbage", "repo": "git@github.com:a/b"})
+    response = client.post("/api/jobs", data={"ticket": "garbage", "repo": "git@github.com:a/b"})
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INPUT_INVALID"
 
 
 def test_disallowed_repo_host_is_typed_400(client: TestClient) -> None:
     response = client.post(
-        "/api/jobs", json={"ticket": "PROJ-1", "repo": "https://evil.example.com/a/b"}
+        "/api/jobs", data={"ticket": "PROJ-1", "repo": "https://evil.example.com/a/b"}
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "REPO_HOST_NOT_ALLOWED"
+
+
+# --- requirement document upload (alternative to a Jira ticket) ---
+
+
+def test_submit_with_neither_ticket_nor_document_is_rejected(client: TestClient) -> None:
+    response = client.post("/api/jobs", data={"repo": "git@github.com:acme/repo.git"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+
+
+def test_submit_with_both_ticket_and_document_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"},
+        files={"requirement_document": ("req.pdf", make_pdf_bytes("Some text"), "application/pdf")},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+
+
+def test_submit_with_non_pdf_upload_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={"repo": "git@github.com:acme/repo.git"},
+        files={"requirement_document": ("req.pdf", b"not a pdf", "application/pdf")},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "DOCUMENT_NOT_PDF"
+
+
+def test_submit_with_oversized_upload_is_rejected(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.get_settings",
+        lambda: Settings(_env_file=None, document_max_upload_bytes=1),  # type: ignore[call-arg]
+    )
+    response = client.post(
+        "/api/jobs",
+        data={"repo": "git@github.com:acme/repo.git"},
+        files={
+            "requirement_document": (
+                "req.pdf",
+                make_pdf_bytes("more than one byte"),
+                "application/pdf",
+            )
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "DOCUMENT_TOO_LARGE"
+
+
+def test_submit_with_document_reaches_plan_ready_with_synthetic_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.get_settings",
+        lambda: Settings(_env_file=None, document_upload_dir=tmp_path),  # type: ignore[call-arg]
+    )
+    response = client.post(
+        "/api/jobs",
+        data={"repo": "git@github.com:acme/repo.git"},
+        files={
+            "requirement_document": (
+                "requirements.pdf",
+                make_pdf_bytes("The system shall support single sign-on."),
+                "application/pdf",
+            )
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    body = poll_until_terminal(client, job_id)
+
+    assert body["state"] == "PLAN_READY"
+    assert body["ticket_key"].startswith("DOC-")
+    assert (tmp_path / job_id / "requirement.pdf").exists()
 
 
 def test_repos_endpoint_lists_choices_and_hosts(client: TestClient) -> None:
@@ -357,8 +438,8 @@ def test_repos_endpoint_lists_choices_and_hosts(client: TestClient) -> None:
 
 
 def test_list_jobs_without_auth_returns_every_job(client: TestClient) -> None:
-    client.post("/api/jobs", json={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"})
-    client.post("/api/jobs", json={"ticket": "PROJ-2", "repo": "git@github.com:acme/repo.git"})
+    client.post("/api/jobs", data={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git"})
+    client.post("/api/jobs", data={"ticket": "PROJ-2", "repo": "git@github.com:acme/repo.git"})
 
     response = client.get("/api/jobs")
     assert response.status_code == 200
@@ -378,7 +459,7 @@ def test_plan_ready_local_job_can_be_approved_for_implementation(
 ) -> None:
     response = local_client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
     )
     assert response.status_code == 202
     job_id = response.json()["job_id"]
@@ -409,7 +490,7 @@ def test_implement_persists_clarifications_and_surfaces_them_on_the_job(
 ) -> None:
     create = local_client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
     )
     job_id = create.json()["job_id"]
     poll_until_terminal(local_client, job_id)
@@ -432,7 +513,7 @@ def test_implement_persists_clarifications_and_surfaces_them_on_the_job(
 def test_implement_blank_clarifications_normalize_to_none(local_client: TestClient) -> None:
     create = local_client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
     )
     job_id = create.json()["job_id"]
     poll_until_terminal(local_client, job_id)
@@ -451,7 +532,7 @@ def test_implement_blank_clarifications_normalize_to_none(local_client: TestClie
 def test_implement_omitted_body_stays_backward_compatible(local_client: TestClient) -> None:
     create = local_client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
     )
     job_id = create.json()["job_id"]
     poll_until_terminal(local_client, job_id)
@@ -473,7 +554,7 @@ def test_implement_rejects_credential_shaped_clarifications_never_echoed(
 ) -> None:
     create = local_client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
     )
     job_id = create.json()["job_id"]
     poll_until_terminal(local_client, job_id)
@@ -494,7 +575,7 @@ def test_implement_rejects_credential_shaped_clarifications_never_echoed(
 def test_implement_rejects_overlong_clarifications(local_client: TestClient) -> None:
     create = local_client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
     )
     job_id = create.json()["job_id"]
     poll_until_terminal(local_client, job_id)
@@ -518,7 +599,7 @@ def test_implement_rejects_job_not_in_plan_ready_state(client: TestClient, store
 def test_implement_rejects_remote_repo_jobs(client: TestClient) -> None:
     create = client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
     )
     assert create.status_code == 202
     job_id = create.json()["job_id"]
@@ -534,7 +615,7 @@ def test_implement_rejects_remote_repo_jobs(client: TestClient) -> None:
 def test_implement_accepts_local_folder_repo_jobs(local_folder_client: TestClient) -> None:
     create = local_folder_client.post(
         "/api/jobs",
-        json={"ticket": "PROJ-123", "repo": "git@github.com:acme/plain-folder.git"},
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/plain-folder.git"},
     )
     assert create.status_code == 202
     job_id = create.json()["job_id"]
@@ -569,7 +650,7 @@ def test_extra_credential_field_is_rejected_never_stored_never_logged(
     try:
         response = client.post(
             "/api/jobs",
-            json={
+            data={
                 "ticket": "PROJ-123",
                 "repo": "git@github.com:acme/repo.git",
                 "jira_token": FAKE_TOKEN,
@@ -592,7 +673,7 @@ def test_extra_credential_field_is_rejected_never_stored_never_logged(
 
 def test_credential_shaped_ticket_value_is_rejected(client: TestClient) -> None:
     response = client.post(
-        "/api/jobs", json={"ticket": FAKE_TOKEN, "repo": "git@github.com:acme/repo.git"}
+        "/api/jobs", data={"ticket": FAKE_TOKEN, "repo": "git@github.com:acme/repo.git"}
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INPUT_INVALID"

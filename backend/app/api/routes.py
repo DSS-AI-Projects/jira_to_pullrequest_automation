@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from pydantic import BaseModel, ConfigDict
 
 from app.auth.models import UserRole
@@ -15,19 +16,23 @@ from app.auth.service import ensure_job_access, require_admin, require_current_u
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger
-from app.jobs.models import Job, JobState, RepoSourceKind
+from app.jobs.models import Job, JobState, RepoSourceKind, RequirementSource
 from app.jobs.runner import JobSteps, run_implementation, run_job
 from app.jobs.store import JobStore
 from app.schemas.inputs import (
+    JOB_CREATE_FORM_FIELDS,
     ImplementRequest,
-    JobCreateRequest,
     RepoChoice,
     load_preconfigured_repos,
     normalize_clarifications,
     normalize_planning_notes,
     normalize_repo,
     normalize_ticket,
+    reject_unknown_form_fields,
+    require_exactly_one_requirement_source,
+    validate_uploaded_document,
 )
+from app.steps.document_fetch import requirement_document_path
 
 logger = get_logger(__name__)
 
@@ -108,22 +113,58 @@ def _steps(request: Request) -> JobSteps:
 
 
 @router.post("/jobs", response_model=JobCreated, status_code=202)
-async def create_job(payload: JobCreateRequest, request: Request) -> JobCreated:
+async def create_job(
+    request: Request,
+    ticket: str | None = Form(default=None, max_length=2000),
+    repo: str = Form(..., min_length=1, max_length=2000),
+    planning_notes: str | None = Form(default=None, max_length=4000),
+    requirement_document: UploadFile | None = File(default=None),  # noqa: B008
+) -> JobCreated:
     user = require_current_user(request)
     settings: Settings = get_settings()
-    ticket_key = normalize_ticket(payload.ticket, settings)
-    repo_url = normalize_repo(payload.repo, settings)
-    planning_notes = normalize_planning_notes(payload.planning_notes)
+    form = await request.form()
+    reject_unknown_form_fields(set(form.keys()), JOB_CREATE_FORM_FIELDS)
+    require_exactly_one_requirement_source(ticket, requirement_document is not None)
+    repo_url = normalize_repo(repo, settings)
+    planning_notes_normalized = normalize_planning_notes(planning_notes)
+
+    document_content: bytes | None = None
+    if requirement_document is not None:
+        document_content = await requirement_document.read()
+        validate_uploaded_document(document_content, settings)
+        ticket_key = f"DOC-{uuid.uuid4().hex[:8].upper()}"
+        requirement_source = RequirementSource.DOCUMENT
+        requirement_document_name = requirement_document.filename or "requirement.pdf"
+    elif ticket:
+        ticket_key = normalize_ticket(ticket, settings)
+        requirement_source = RequirementSource.JIRA
+        requirement_document_name = None
+    else:  # pragma: no cover - require_exactly_one_requirement_source already raised
+        raise AppError(ErrorCode.INPUT_INVALID)
 
     job = Job.new(
         ticket_key=ticket_key,
         repo_url=repo_url,
         owner_user_id=user.id if user else None,
-        planning_notes=planning_notes,
+        planning_notes=planning_notes_normalized,
+        requirement_source=requirement_source,
+        requirement_document_name=requirement_document_name,
     )
+
+    if document_content is not None:
+        document_path = requirement_document_path(job.id, settings.document_upload_dir)
+        document_path.parent.mkdir(parents=True, exist_ok=True)
+        document_path.write_bytes(document_content)
+
     store = _store(request)
     store.create(job)
-    logger.info("job %s created: ticket=%s repo=%s", job.id, ticket_key, repo_url)
+    logger.info(
+        "job %s created: ticket=%s source=%s repo=%s",
+        job.id,
+        ticket_key,
+        requirement_source.value,
+        repo_url,
+    )
 
     task = asyncio.create_task(run_job(job.id, store, settings, _steps(request)))
     _background_tasks.add(task)

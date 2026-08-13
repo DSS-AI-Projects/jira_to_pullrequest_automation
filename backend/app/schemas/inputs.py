@@ -1,8 +1,9 @@
 """Form input validation — security invariants 1 and 5.
 
-The submit payload has exactly two non-secret fields; anything extra is
-rejected by extra="forbid" before it reaches application code. Field values
-that look like credentials are rejected without ever being logged or stored.
+The job-create submission is a small set of non-secret fields — exactly one
+of a Jira ticket identifier or an uploaded PDF, plus a repo identifier and
+optional planning notes. Field values that look like credentials are
+rejected without ever being logged or stored.
 """
 
 from __future__ import annotations
@@ -23,24 +24,7 @@ _BROWSE_PATH_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9_]{1,63}-\d{1,10})(?:$
 _SELECTED_ISSUE_RE = re.compile(r"selectedIssue=([A-Za-z][A-Za-z0-9_]{1,63}-\d{1,10})")
 _SCP_LIKE_RE = re.compile(r"^git@([A-Za-z0-9.-]+):([A-Za-z0-9._/~-]+?)(?:\.git)?/?$")
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
-
-
-class JobCreateRequest(BaseModel):
-    # extra="forbid": a request smuggling any additional field (a token, a
-    # password, anything) fails validation and is never processed (invariant 1).
-    model_config = ConfigDict(extra="forbid")
-
-    ticket: str = Field(min_length=1, max_length=2000, description="Jira ticket key or URL")
-    repo: str = Field(
-        min_length=1,
-        max_length=2000,
-        description="Repo URL, pre-configured repo name, or approved local path",
-    )
-    planning_notes: str | None = Field(
-        default=None,
-        max_length=4000,
-        description="Optional technical guidance to shape the generated plan",
-    )
+_PDF_MAGIC = b"%PDF-"
 
 
 class RepoChoice(BaseModel):
@@ -99,6 +83,48 @@ def normalize_ticket(raw: str, settings: Settings) -> str:
         ErrorCode.INPUT_INVALID,
         user_message="Enter a Jira ticket key like PROJ-123, or a ticket URL from your Jira.",
     )
+
+
+JOB_CREATE_FORM_FIELDS = frozenset({"ticket", "repo", "planning_notes", "requirement_document"})
+
+
+def reject_unknown_form_fields(field_names: set[str], allowed: frozenset[str]) -> None:
+    """extra="forbid", multipart edition: a Pydantic body model can't mix
+    Form fields with a File field in this FastAPI version (verified: the
+    file upload silently breaks the model's binding), so the create-job
+    route declares individual Form()/File() params instead of a model.
+    This restores the same "smuggled field never processed" guarantee
+    (invariant 1) by checking the raw form directly."""
+    extra = field_names - allowed
+    if extra:
+        raise AppError(
+            ErrorCode.INPUT_INVALID,
+            user_message="The submission contained an unexpected field.",
+        )
+
+
+def require_exactly_one_requirement_source(ticket: str | None, has_document: bool) -> None:
+    """Exactly one of a Jira ticket or an uploaded document must be provided."""
+    ticket_provided = bool(ticket and ticket.strip())
+    if ticket_provided and has_document:
+        raise AppError(
+            ErrorCode.INPUT_INVALID,
+            user_message=("Provide either a Jira ticket or a requirement document, not both."),
+        )
+    if not ticket_provided and not has_document:
+        raise AppError(
+            ErrorCode.INPUT_INVALID,
+            user_message="Provide a Jira ticket key/URL or upload a requirement document.",
+        )
+
+
+def validate_uploaded_document(content: bytes, settings: Settings) -> None:
+    """Validate raw uploaded bytes before they are ever saved to disk. The
+    client-supplied filename/content-type are never trusted for this check."""
+    if len(content) > settings.document_max_upload_bytes:
+        raise AppError(ErrorCode.DOCUMENT_TOO_LARGE)
+    if not content.startswith(_PDF_MAGIC):
+        raise AppError(ErrorCode.DOCUMENT_NOT_PDF)
 
 
 def _normalize_free_text(raw: str | None, field: str) -> str | None:
