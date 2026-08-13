@@ -522,6 +522,61 @@ describe("JobStatusView", () => {
     });
   });
 
+  it("clears the ticket and flags the document source when retrying a DOCUMENT job", async () => {
+    sessionStorage.clear();
+    fetchJob.mockResolvedValue({
+      id: "job-doc-failed",
+      ticket_key: "DOC-A1B2C3D4",
+      requirement_source: "DOCUMENT",
+      requirement_document_name: "requirements.pdf",
+      repo_url: "https://github.com/acme/repo.git",
+      planning_notes: null,
+      state: "FAILED",
+      error: {
+        code: "DOCUMENT_EMPTY",
+        message: "The uploaded requirement document has no extractable text.",
+        stage: "FETCHING_TICKET",
+      },
+      repo_info: {
+        source_kind: "REMOTE",
+        branch: "main",
+        commit_sha: "e".repeat(40),
+        origin_url: "https://github.com/acme/repo.git",
+        is_dirty: false,
+        local_path: null,
+      },
+      workspace_path: "D:\\workdir\\job-doc-failed\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-05T17:54:02Z",
+      updated_at: "2026-08-05T17:57:53Z",
+    });
+
+    render(<JobStatusView jobId="job-doc-failed" />);
+
+    const retryButton = await screen.findByRole("button", { name: "Retry" });
+    fireEvent.click(retryButton);
+
+    expect(
+      JSON.parse(sessionStorage.getItem("jira2pullreq:retry-draft")!),
+    ).toEqual({
+      ticket: "",
+      repo: "https://github.com/acme/repo.git",
+      repoMode: "remote",
+      planningNotes: "",
+      requirementSource: "DOCUMENT",
+      requirementDocumentName: "requirements.pdf",
+    });
+  });
+
   it("does not show a Retry button for a job that has not failed", async () => {
     fetchJob.mockResolvedValue({
       id: "job-remote",

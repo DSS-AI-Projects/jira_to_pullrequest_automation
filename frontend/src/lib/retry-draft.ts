@@ -9,6 +9,11 @@ export type RetryDraft = {
   repo: string;
   repoMode: "remote" | "local";
   planningNotes: string;
+  // A document upload can't be carried forward (files aren't persisted in
+  // sessionStorage) — requirementDocumentName is shown so the user knows
+  // what to re-upload; the file input itself always starts empty.
+  requirementSource: "JIRA" | "DOCUMENT";
+  requirementDocumentName: string | null;
 };
 
 const STORAGE_KEY = "jira2pullreq:retry-draft";

@@ -186,9 +186,13 @@ export type ValidationResult = {
   output_excerpt: string | null;
 };
 
+export type RequirementSource = "JIRA" | "DOCUMENT";
+
 export type Job = {
   id: string;
   ticket_key: string;
+  requirement_source: RequirementSource;
+  requirement_document_name: string | null;
   repo_url: string;
   planning_notes: string | null;
   state: JobState;
@@ -387,18 +391,30 @@ export async function fetchRepos(signal?: AbortSignal): Promise<RepoList> {
 
 export async function createJob(
   payload: {
-    ticket: string;
+    ticket?: string;
     repo: string;
     planning_notes?: string;
+    requirement_document?: File;
   },
   signal?: AbortSignal,
 ): Promise<JobCreated> {
+  // FormData, not JSON: a requirement document upload requires a multipart
+  // body. Never set Content-Type manually here — the browser must supply
+  // the multipart boundary itself.
+  const formData = new FormData();
+  if (payload.ticket !== undefined) {
+    formData.append("ticket", payload.ticket);
+  }
+  formData.append("repo", payload.repo);
+  if (payload.planning_notes !== undefined) {
+    formData.append("planning_notes", payload.planning_notes);
+  }
+  if (payload.requirement_document) {
+    formData.append("requirement_document", payload.requirement_document);
+  }
   const response = await apiFetch("/api/jobs", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    body: formData,
     signal,
   });
   return parseJson<JobCreated>(response);

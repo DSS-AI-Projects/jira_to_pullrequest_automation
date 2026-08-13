@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobForm } from "@/components/job-form";
@@ -287,5 +288,124 @@ describe("JobForm", () => {
       screen.getByRole("button", { name: /Local repo path/i }),
     ).toHaveAttribute("aria-selected", "true");
     expect(sessionStorage.getItem("jira2pullreq:retry-draft")).toBeNull();
+  });
+
+  it("switches to a file upload when Upload document is selected", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+
+    render(<JobForm />);
+
+    await screen.findByText("github.com");
+    expect(
+      screen.getByLabelText(/Jira ticket key or URL/i),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Upload document" }));
+
+    expect(
+      screen.queryByLabelText(/Jira ticket key or URL/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/Requirement document \(PDF\)/i),
+    ).toBeInTheDocument();
+  });
+
+  it("submits a job with an uploaded requirement document instead of a ticket", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+    createJob.mockResolvedValue({ job_id: "job-doc" });
+
+    render(<JobForm />);
+
+    await screen.findByText("github.com");
+    fireEvent.click(screen.getByRole("button", { name: "Upload document" }));
+    fireEvent.change(
+      screen.getByLabelText(/Repository URL or pre-configured name/i),
+      { target: { value: "hello-world-sample" } },
+    );
+    const file = new File(["%PDF-1.4 fake content"], "requirements.pdf", {
+      type: "application/pdf",
+    });
+    const fileInput = screen.getByLabelText(/Requirement document \(PDF\)/i);
+    await userEvent.upload(fileInput, file);
+    // jsdom does not correctly compute constraint validity for a required
+    // file input even once populated (a known jsdom limitation, not a real
+    // browser behavior) — dispatch the submit event directly rather than
+    // clicking the button, which would otherwise be blocked by jsdom's
+    // (incorrect) native validation.
+    fireEvent.submit(fileInput.closest("form")!);
+
+    await waitFor(() =>
+      expect(createJob).toHaveBeenCalledWith({
+        ticket: undefined,
+        repo: "hello-world-sample",
+        planning_notes: "",
+        requirement_document: file,
+      }),
+    );
+    expect(push).toHaveBeenCalledWith("/jobs/job-doc");
+  });
+
+  it("prefills document mode from a retry draft for a document-sourced job", async () => {
+    sessionStorage.setItem(
+      "jira2pullreq:retry-draft",
+      JSON.stringify({
+        ticket: "",
+        repo: "https://github.com/acme/repo.git",
+        repoMode: "remote",
+        planningNotes: "",
+        requirementSource: "DOCUMENT",
+        requirementDocumentName: "requirements.pdf",
+      }),
+    );
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+
+    render(<JobForm />);
+
+    await screen.findByText("github.com");
+    expect(
+      screen.getByRole("button", { name: "Upload document" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.getByText(/Re-upload requirements\.pdf/i),
+    ).toBeInTheDocument();
   });
 });

@@ -17,6 +17,7 @@ import { consumeRetryDraft } from "@/lib/retry-draft";
 
 const SAMPLE_TICKET = "PROJ-123";
 type RepoMode = "remote" | "local";
+type RequirementMode = "jira" | "document";
 
 export function JobForm() {
   const router = useRouter();
@@ -24,6 +25,14 @@ export function JobForm() {
   const [repo, setRepo] = useState("");
   const [planningNotes, setPlanningNotes] = useState("");
   const [repoMode, setRepoMode] = useState<RepoMode>("remote");
+  const [requirementMode, setRequirementMode] =
+    useState<RequirementMode>("jira");
+  const [requirementDocument, setRequirementDocument] = useState<File | null>(
+    null,
+  );
+  const [retriedDocumentName, setRetriedDocumentName] = useState<string | null>(
+    null,
+  );
   const [repos, setRepos] = useState<RepoChoice[]>([]);
   const [githubRepos, setGitHubRepos] = useState<GitHubRepositorySummary[]>([]);
   const [allowedHosts, setAllowedHosts] = useState<string[]>([]);
@@ -41,6 +50,10 @@ export function JobForm() {
       setRepo(draft.repo);
       setRepoMode(draft.repoMode);
       setPlanningNotes(draft.planningNotes);
+      if (draft.requirementSource === "DOCUMENT") {
+        setRequirementMode("document");
+        setRetriedDocumentName(draft.requirementDocumentName);
+      }
     }
   }, []);
 
@@ -138,9 +151,13 @@ export function JobForm() {
     void (async () => {
       try {
         const result = await createJob({
-          ticket,
+          ticket: requirementMode === "jira" ? ticket : undefined,
           repo,
           planning_notes: planningNotes,
+          requirement_document:
+            requirementMode === "document"
+              ? (requirementDocument ?? undefined)
+              : undefined,
         });
         router.push(`/jobs/${result.job_id}`);
       } catch (submitError) {
@@ -160,25 +177,89 @@ export function JobForm() {
       <div className="panel-heading">
         <h2>Start a planning job</h2>
         <p>
-          Submit only a Jira identifier and repository identifier. Jira, git,
-          and Anthropic credentials stay on the server.
+          Submit a Jira ticket (or upload a requirement document) and a
+          repository identifier. Jira, git, and Anthropic credentials stay on
+          the server.
         </p>
       </div>
 
       <form className="job-form" onSubmit={handleSubmit}>
         <label className="field">
-          <span>Jira ticket key or URL</span>
-          <input
-            autoComplete="off"
-            className="text-input"
-            name="ticket"
-            onChange={(event) => setTicket(event.target.value)}
-            placeholder={SAMPLE_TICKET}
-            required
-            value={ticket}
-          />
-          <small>Example: {SAMPLE_TICKET} or your Jira ticket URL.</small>
+          <span>Requirement source</span>
+          <div
+            className="source-toggle"
+            role="tablist"
+            aria-label="Requirement source"
+          >
+            <button
+              aria-selected={requirementMode === "jira"}
+              className={[
+                "pill-button",
+                requirementMode === "jira" ? "is-selected" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              onClick={() => {
+                setRequirementMode("jira");
+                setRequirementDocument(null);
+              }}
+              type="button"
+            >
+              Jira ticket
+            </button>
+            <button
+              aria-selected={requirementMode === "document"}
+              className={[
+                "pill-button",
+                requirementMode === "document" ? "is-selected" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              onClick={() => {
+                setRequirementMode("document");
+                setTicket("");
+              }}
+              type="button"
+            >
+              Upload document
+            </button>
+          </div>
         </label>
+
+        {requirementMode === "jira" ? (
+          <label className="field" key="ticket-field">
+            <span>Jira ticket key or URL</span>
+            <input
+              autoComplete="off"
+              className="text-input"
+              name="ticket"
+              onChange={(event) => setTicket(event.target.value)}
+              placeholder={SAMPLE_TICKET}
+              required
+              value={ticket}
+            />
+            <small>Example: {SAMPLE_TICKET} or your Jira ticket URL.</small>
+          </label>
+        ) : (
+          <label className="field" key="document-field">
+            <span>Requirement document (PDF)</span>
+            <input
+              accept="application/pdf"
+              className="text-input"
+              name="requirementDocument"
+              onChange={(event) =>
+                setRequirementDocument(event.target.files?.[0] ?? null)
+              }
+              required
+              type="file"
+            />
+            <small>
+              {retriedDocumentName
+                ? `Re-upload ${retriedDocumentName} — the original file isn't kept between attempts.`
+                : "Upload a PDF describing the requirement instead of a Jira ticket. Text is extracted and analyzed the same way a ticket description would be."}
+            </small>
+          </label>
+        )}
 
         <label className="field">
           <span>Repository source</span>

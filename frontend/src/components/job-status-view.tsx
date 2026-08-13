@@ -146,10 +146,14 @@ export function JobStatusView(props: { jobId: string }) {
       return;
     }
     saveRetryDraft({
-      ticket: job.ticket_key,
+      // A DOCUMENT job's ticket_key is a synthetic "DOC-..." id, not a real
+      // Jira ticket — never prefill it as if it were one.
+      ticket: job.requirement_source === "DOCUMENT" ? "" : job.ticket_key,
       repo: job.repo_url,
       repoMode: isLocalSource(job) ? "local" : "remote",
       planningNotes: job.planning_notes ?? "",
+      requirementSource: job.requirement_source,
+      requirementDocumentName: job.requirement_document_name,
     });
     router.push("/");
   }
