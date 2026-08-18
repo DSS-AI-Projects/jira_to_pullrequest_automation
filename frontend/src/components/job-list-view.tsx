@@ -82,7 +82,8 @@ export function JobListView() {
     <section className="panel">
       <div className="section-heading">
         <div>
-          <h2>My jobs</h2>
+          <span className="eyebrow">Jobs</span>
+          <h1>My jobs</h1>
           <p>Every planning job you have submitted, most recent first.</p>
         </div>
         <Link className="secondary-link" href="/">

@@ -299,32 +299,28 @@ export function AuthGate(props: { children: ReactNode }) {
     }
     if (!jiraStatus) {
       return (
-        <div className="jira-access">
+        <div className="jira-access connection-card--skeleton">
           <span className="eyebrow">Jira access</span>
-          <p className="meta-muted">Loading Jira access...</p>
+          <div className="skeleton-line skeleton-line--wide" />
+          <div className="skeleton-line skeleton-line--narrow" />
         </div>
       );
     }
 
     if (jiraStatus.connected && jiraStatus.connection) {
       return (
-        <div className="jira-access">
-          <span className="eyebrow">Jira access</span>
+        <div className="connection-line">
+          <span className="connection-line__dot connection-line__dot--ok" />
+          <span className="connection-line__label">Jira</span>
           <strong>Connected to {jiraStatus.connection.site.name}</strong>
-          <p className="meta-muted">{jiraStatus.connection.site.url}</p>
-          <p className="meta-muted">
-            Your personal Jira connection is active for ticket fetches.
-          </p>
-          <div className="actions">
-            <button
-              className="secondary-link"
-              disabled={jiraSubmitting}
-              onClick={() => void handleJiraDisconnect()}
-              type="button"
-            >
-              {jiraSubmitting ? "Disconnecting..." : "Disconnect Jira"}
-            </button>
-          </div>
+          <button
+            className="secondary-link"
+            disabled={jiraSubmitting}
+            onClick={() => void handleJiraDisconnect()}
+            type="button"
+          >
+            {jiraSubmitting ? "Disconnecting..." : "Disconnect Jira"}
+          </button>
         </div>
       );
     }
@@ -355,25 +351,21 @@ export function AuthGate(props: { children: ReactNode }) {
 
     if (jiraStatus.shared_configured) {
       return (
-        <div className="jira-access">
-          <span className="eyebrow">Jira access</span>
-          <strong>Using shared Jira access</strong>
-          <p className="meta-muted">
-            This environment is currently using the server&apos;s shared Jira
-            credentials.
-          </p>
+        <div className="connection-line">
+          <span className="connection-line__dot" />
+          <span className="connection-line__label">Jira</span>
+          <span className="meta-muted">
+            Using the server&apos;s shared Jira credentials.
+          </span>
         </div>
       );
     }
 
     return (
-      <div className="jira-access">
-        <span className="eyebrow">Jira access</span>
-        <strong>Jira is not configured</strong>
-        <p className="meta-muted">
-          Configure shared Jira credentials or enable delegated Jira OAuth for
-          this environment.
-        </p>
+      <div className="connection-line">
+        <span className="connection-line__dot connection-line__dot--warn" />
+        <span className="connection-line__label">Jira</span>
+        <span className="meta-muted">Not configured on this server.</span>
       </div>
     );
   }
@@ -387,9 +379,10 @@ export function AuthGate(props: { children: ReactNode }) {
     }
     if (!repoHostingStatus) {
       return (
-        <div className="jira-access">
+        <div className="jira-access connection-card--skeleton">
           <span className="eyebrow">Repository access</span>
-          <p className="meta-muted">Loading repository provider status...</p>
+          <div className="skeleton-line skeleton-line--wide" />
+          <div className="skeleton-line skeleton-line--narrow" />
         </div>
       );
     }
@@ -397,38 +390,13 @@ export function AuthGate(props: { children: ReactNode }) {
     return (
       <div className="jira-access">
         <span className="eyebrow">Repository access</span>
-        {repoHostingStatus.providers.map((provider) => (
-          <div className="provider-access" key={provider.provider}>
-            <strong>{provider.display_name}</strong>
-            {provider.connected && provider.connection ? (
-              <>
-                <p className="meta-muted">
-                  Connected as{" "}
-                  <a
-                    href={provider.connection.account_url}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    {provider.connection.account_name}
-                  </a>
-                </p>
-                <div className="actions">
-                  <button
-                    className="secondary-link"
-                    disabled={repoSubmitting === provider.provider}
-                    onClick={() =>
-                      void handleRepoProviderDisconnect(provider.provider)
-                    }
-                    type="button"
-                  >
-                    {repoSubmitting === provider.provider
-                      ? `Disconnecting ${provider.display_name}...`
-                      : `Disconnect ${provider.display_name}`}
-                  </button>
-                </div>
-              </>
-            ) : provider.configured ? (
-              <>
+        {repoHostingStatus.providers.map((provider) => {
+          const needsConnect = provider.configured && !provider.connected;
+
+          if (needsConnect) {
+            return (
+              <div className="provider-access" key={provider.provider}>
+                <strong>{provider.display_name}</strong>
                 <p className="meta-muted">
                   {provider.display_name} is configured on this server but not
                   connected for this user yet.
@@ -453,20 +421,57 @@ export function AuthGate(props: { children: ReactNode }) {
                     added in a later slice.
                   </p>
                 ) : null}
-              </>
-            ) : provider.enabled ? (
-              <p className="meta-muted">
-                {provider.display_name} is enabled but still missing required
-                server config.
-              </p>
-            ) : (
-              <p className="meta-muted">
-                {provider.display_name} connections are not enabled in this
-                environment.
-              </p>
-            )}
-          </div>
-        ))}
+              </div>
+            );
+          }
+
+          if (provider.connected && provider.connection) {
+            return (
+              <div className="connection-line" key={provider.provider}>
+                <span className="connection-line__dot connection-line__dot--ok" />
+                <span className="connection-line__label">
+                  {provider.display_name}
+                </span>
+                <p className="meta-muted">
+                  Connected as{" "}
+                  <a
+                    href={provider.connection.account_url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {provider.connection.account_name}
+                  </a>
+                </p>
+                <button
+                  className="secondary-link"
+                  disabled={repoSubmitting === provider.provider}
+                  onClick={() =>
+                    void handleRepoProviderDisconnect(provider.provider)
+                  }
+                  type="button"
+                >
+                  {repoSubmitting === provider.provider
+                    ? `Disconnecting ${provider.display_name}...`
+                    : `Disconnect ${provider.display_name}`}
+                </button>
+              </div>
+            );
+          }
+
+          return (
+            <div className="connection-line" key={provider.provider}>
+              <span className="connection-line__dot" />
+              <span className="connection-line__label">
+                {provider.display_name}
+              </span>
+              <span className="meta-muted">
+                {provider.enabled
+                  ? "missing required server config."
+                  : `${provider.display_name} connections are not enabled in this environment.`}
+              </span>
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -569,37 +574,39 @@ export function AuthGate(props: { children: ReactNode }) {
       {session?.auth_enabled && session.user ? (
         <header className="auth-bar">
           <div className="auth-bar__content">
-            <div className="auth-bar__identity">
-              <div>
+            <div className="auth-bar__top">
+              <div className="auth-bar__identity">
                 <span className="eyebrow">Signed in</span>
                 <strong>{session.user.display_name}</strong>
                 <p className="meta-muted">{session.user.email}</p>
               </div>
+              <div className="auth-bar__actions">
+                <Link className="secondary-link" href="/">
+                  New job
+                </Link>
+                <Link className="secondary-link" href="/jobs">
+                  My jobs
+                </Link>
+                {session.user.role === "ADMIN" ? (
+                  <Link className="secondary-link" href="/admin/costs">
+                    Cost usage
+                  </Link>
+                ) : null}
+                <button
+                  className="secondary-link"
+                  disabled={
+                    submitting || jiraSubmitting || repoSubmitting !== null
+                  }
+                  onClick={() => void handleLogout()}
+                  type="button"
+                >
+                  Sign out
+                </button>
+              </div>
+            </div>
+            <div className="auth-bar__connections">
               {renderJiraStatus()}
               {renderRepoHostingStatus()}
-            </div>
-            <div className="auth-bar__actions">
-              <Link className="secondary-link" href="/">
-                New job
-              </Link>
-              <Link className="secondary-link" href="/jobs">
-                My jobs
-              </Link>
-              {session.user.role === "ADMIN" ? (
-                <Link className="secondary-link" href="/admin/costs">
-                  Cost usage
-                </Link>
-              ) : null}
-              <button
-                className="secondary-link"
-                disabled={
-                  submitting || jiraSubmitting || repoSubmitting !== null
-                }
-                onClick={() => void handleLogout()}
-                type="button"
-              >
-                Sign out
-              </button>
             </div>
           </div>
         </header>

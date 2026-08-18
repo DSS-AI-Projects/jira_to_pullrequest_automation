@@ -183,267 +183,292 @@ export function JobForm() {
         </p>
       </div>
 
-      <form className="job-form" onSubmit={handleSubmit}>
-        <label className="field">
-          <span>Requirement source</span>
-          <div
-            className="source-toggle"
-            role="tablist"
-            aria-label="Requirement source"
-          >
-            <button
-              aria-selected={requirementMode === "jira"}
-              className={[
-                "pill-button",
-                requirementMode === "jira" ? "is-selected" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              onClick={() => {
-                setRequirementMode("jira");
-                setRequirementDocument(null);
-              }}
-              type="button"
-            >
-              Jira ticket
-            </button>
-            <button
-              aria-selected={requirementMode === "document"}
-              className={[
-                "pill-button",
-                requirementMode === "document" ? "is-selected" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              onClick={() => {
-                setRequirementMode("document");
-                setTicket("");
-              }}
-              type="button"
-            >
-              Upload document
-            </button>
-          </div>
-        </label>
+      <div className="security-badge">
+        <span className="security-badge__label">
+          Secrets never touch this form
+        </span>
+        <p>
+          Only identifiers are collected here — ticket keys, repo URLs, file
+          uploads. Anything that looks like a token, password, or API key is
+          rejected before it reaches the server.
+        </p>
+      </div>
 
-        {requirementMode === "jira" ? (
-          <label className="field" key="ticket-field">
-            <span>Jira ticket key or URL</span>
+      <form className="job-form" onSubmit={handleSubmit}>
+        <div className="form-step">
+          <h3 className="form-step__legend">
+            <span className="form-step__number">1</span>
+            <span>What needs to change</span>
+          </h3>
+          <label className="field">
+            <span>Requirement source</span>
+            <div
+              className="source-toggle"
+              role="tablist"
+              aria-label="Requirement source"
+            >
+              <button
+                aria-selected={requirementMode === "jira"}
+                className={[
+                  "pill-button",
+                  requirementMode === "jira" ? "is-selected" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                onClick={() => {
+                  setRequirementMode("jira");
+                  setRequirementDocument(null);
+                }}
+                type="button"
+              >
+                Jira ticket
+              </button>
+              <button
+                aria-selected={requirementMode === "document"}
+                className={[
+                  "pill-button",
+                  requirementMode === "document" ? "is-selected" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                onClick={() => {
+                  setRequirementMode("document");
+                  setTicket("");
+                }}
+                type="button"
+              >
+                Upload document
+              </button>
+            </div>
+          </label>
+
+          {requirementMode === "jira" ? (
+            <label className="field" key="ticket-field">
+              <span>Jira ticket key or URL</span>
+              <input
+                autoComplete="off"
+                className="text-input"
+                name="ticket"
+                onChange={(event) => setTicket(event.target.value)}
+                placeholder={SAMPLE_TICKET}
+                required
+                value={ticket}
+              />
+              <small>Example: {SAMPLE_TICKET} or your Jira ticket URL.</small>
+            </label>
+          ) : (
+            <label className="field" key="document-field">
+              <span>Requirement document (PDF)</span>
+              <input
+                accept="application/pdf"
+                className="text-input"
+                name="requirementDocument"
+                onChange={(event) =>
+                  setRequirementDocument(event.target.files?.[0] ?? null)
+                }
+                required
+                type="file"
+              />
+              <small>
+                {retriedDocumentName
+                  ? `Re-upload ${retriedDocumentName} — the original file isn't kept between attempts.`
+                  : "Upload a PDF describing the requirement instead of a Jira ticket. Text is extracted and analyzed the same way a ticket description would be."}
+              </small>
+            </label>
+          )}
+        </div>
+
+        <div className="form-step">
+          <h3 className="form-step__legend">
+            <span className="form-step__number">2</span>
+            <span>Where</span>
+          </h3>
+          <label className="field">
+            <span>Repository source</span>
+            <div
+              className="source-toggle"
+              role="tablist"
+              aria-label="Repository source"
+            >
+              <button
+                aria-selected={repoMode === "remote"}
+                className={[
+                  "pill-button",
+                  repoMode === "remote" ? "is-selected" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                onClick={() => {
+                  setRepoMode("remote");
+                  setRepo("");
+                }}
+                type="button"
+              >
+                Remote or pre-configured
+              </button>
+              <button
+                aria-selected={repoMode === "local"}
+                className={[
+                  "pill-button",
+                  repoMode === "local" ? "is-selected" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                disabled={!localRepoSupport?.enabled}
+                onClick={() => {
+                  setRepoMode("local");
+                  setRepo("");
+                }}
+                type="button"
+              >
+                Local repo path
+              </button>
+            </div>
+            {!localRepoSupport?.enabled ? (
+              <small>Local repo mode is not enabled on this server.</small>
+            ) : null}
+          </label>
+
+          <label className="field">
+            <span>{repoLabel}</span>
             <input
               autoComplete="off"
               className="text-input"
-              name="ticket"
-              onChange={(event) => setTicket(event.target.value)}
-              placeholder={SAMPLE_TICKET}
+              list="repo-suggestions"
+              name="repo"
+              onChange={(event) => setRepo(event.target.value)}
+              placeholder={repoPlaceholder}
               required
-              value={ticket}
+              value={repo}
             />
-            <small>Example: {SAMPLE_TICKET} or your Jira ticket URL.</small>
+            <small>{repoHelper}</small>
           </label>
-        ) : (
-          <label className="field" key="document-field">
-            <span>Requirement document (PDF)</span>
-            <input
-              accept="application/pdf"
-              className="text-input"
-              name="requirementDocument"
-              onChange={(event) =>
-                setRequirementDocument(event.target.files?.[0] ?? null)
-              }
-              required
-              type="file"
-            />
-            <small>
-              {retriedDocumentName
-                ? `Re-upload ${retriedDocumentName} — the original file isn't kept between attempts.`
-                : "Upload a PDF describing the requirement instead of a Jira ticket. Text is extracted and analyzed the same way a ticket description would be."}
-            </small>
-          </label>
-        )}
 
-        <label className="field">
-          <span>Repository source</span>
-          <div
-            className="source-toggle"
-            role="tablist"
-            aria-label="Repository source"
-          >
-            <button
-              aria-selected={repoMode === "remote"}
-              className={[
-                "pill-button",
-                repoMode === "remote" ? "is-selected" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              onClick={() => {
-                setRepoMode("remote");
-                setRepo("");
-              }}
-              type="button"
-            >
-              Remote or pre-configured
-            </button>
-            <button
-              aria-selected={repoMode === "local"}
-              className={[
-                "pill-button",
-                repoMode === "local" ? "is-selected" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              disabled={!localRepoSupport?.enabled}
-              onClick={() => {
-                setRepoMode("local");
-                setRepo("");
-              }}
-              type="button"
-            >
-              Local repo path
-            </button>
-          </div>
-          {!localRepoSupport?.enabled ? (
-            <small>Local repo mode is not enabled on this server.</small>
-          ) : null}
-        </label>
-
-        <label className="field">
-          <span>{repoLabel}</span>
-          <input
-            autoComplete="off"
-            className="text-input"
-            list="repo-suggestions"
-            name="repo"
-            onChange={(event) => setRepo(event.target.value)}
-            placeholder={repoPlaceholder}
-            required
-            value={repo}
-          />
-          <small>{repoHelper}</small>
-        </label>
-
-        <datalist id="repo-suggestions">
-          {githubRepos.map((repoOption) => (
-            <option key={repoOption.id} value={repoOption.clone_url}>
-              {repoOption.full_name}
-            </option>
-          ))}
-          {repos.map((repoOption) => (
-            <option key={repoOption.name} value={repoOption.name}>
-              {repoOption.url}
-            </option>
-          ))}
-        </datalist>
-
-        {repoMode === "remote" && githubRepos.length > 0 ? (
-          <div className="quick-picks">
-            <span className="quick-picks-label">Connected GitHub repos</span>
-            <div className="pill-row">
-              {githubRepos.map((repoOption) => (
-                <button
-                  className="pill-button"
-                  key={repoOption.id}
-                  onClick={() => setRepo(repoOption.clone_url)}
-                  type="button"
-                >
-                  {repoOption.full_name}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {repoMode === "remote" && repos.length > 0 ? (
-          <div className="quick-picks">
-            <span className="quick-picks-label">Pre-configured repos</span>
-            <div className="pill-row">
-              {repos.map((repoOption) => (
-                <button
-                  className="pill-button"
-                  key={repoOption.name}
-                  onClick={() => setRepo(repoOption.name)}
-                  type="button"
-                >
-                  {repoOption.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        <div className="meta-block">
-          <span className="meta-label">Allowed hosts</span>
-          <div className="pill-row">
-            {allowedHosts.map((host) => (
-              <span className="pill" key={host}>
-                {host}
-              </span>
+          <datalist id="repo-suggestions">
+            {githubRepos.map((repoOption) => (
+              <option key={repoOption.id} value={repoOption.clone_url}>
+                {repoOption.full_name}
+              </option>
             ))}
-            {allowedHosts.length === 0 && !loadingRepos ? (
-              <span className="meta-muted">
-                No hosts are currently configured.
-              </span>
-            ) : null}
-          </div>
-        </div>
+            {repos.map((repoOption) => (
+              <option key={repoOption.name} value={repoOption.name}>
+                {repoOption.url}
+              </option>
+            ))}
+          </datalist>
 
-        {localRepoSupport?.enabled ? (
+          {repoMode === "remote" && githubRepos.length > 0 ? (
+            <div className="quick-picks">
+              <span className="quick-picks-label">Connected GitHub repos</span>
+              <div className="pill-row">
+                {githubRepos.map((repoOption) => (
+                  <button
+                    className="pill-button"
+                    key={repoOption.id}
+                    onClick={() => setRepo(repoOption.clone_url)}
+                    type="button"
+                  >
+                    {repoOption.full_name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {repoMode === "remote" && repos.length > 0 ? (
+            <div className="quick-picks">
+              <span className="quick-picks-label">Pre-configured repos</span>
+              <div className="pill-row">
+                {repos.map((repoOption) => (
+                  <button
+                    className="pill-button"
+                    key={repoOption.name}
+                    onClick={() => setRepo(repoOption.name)}
+                    type="button"
+                  >
+                    {repoOption.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           <div className="meta-block">
-            <span className="meta-label">Local repo policy</span>
+            <span className="meta-label">Allowed hosts</span>
             <div className="pill-row">
-              {localRepoSupport.allowed_roots.map((root) => (
-                <span className="pill break-all" key={root}>
-                  {root}
+              {allowedHosts.map((host) => (
+                <span className="pill" key={host}>
+                  {host}
                 </span>
               ))}
-              {localRepoSupport.allowed_roots.length === 0 ? (
-                <span className="meta-muted">No local roots configured.</span>
+              {allowedHosts.length === 0 && !loadingRepos ? (
+                <span className="meta-muted">
+                  No hosts are currently configured.
+                </span>
               ) : null}
             </div>
-            <div className="policy-list">
-              <span>
-                Dirty repos:{" "}
-                {localRepoSupport.allow_dirty
-                  ? "allowed by config"
-                  : "rejected by default"}
-              </span>
-              <span>
-                Branch match:{" "}
-                {localRepoSupport.require_ticket_branch_match
-                  ? "must include the Jira key"
-                  : "not enforced"}
-              </span>
-              <span>
-                Non-git folders:{" "}
-                {localRepoSupport.allow_non_git_folders
-                  ? "allowed (no branch/dirty check)"
-                  : "not enabled"}
-              </span>
-            </div>
           </div>
-        ) : null}
 
-        <label className="field">
-          <span>Additional technical considerations (optional)</span>
-          <small>
-            Add constraints, preferred approaches, or context not captured in
-            the ticket description — this shapes the generated plan, not just
-            the implementation.
-          </small>
-          <textarea
-            className="text-input"
-            rows={4}
-            maxLength={4000}
-            name="planningNotes"
-            onChange={(event) => setPlanningNotes(event.target.value)}
-            placeholder="e.g. Reuse the existing retry helper in src/http.py; avoid adding new dependencies."
-            value={planningNotes}
-          />
-        </label>
+          {localRepoSupport?.enabled ? (
+            <div className="meta-block">
+              <span className="meta-label">Local repo policy</span>
+              <div className="pill-row">
+                {localRepoSupport.allowed_roots.map((root) => (
+                  <span className="pill break-all" key={root}>
+                    {root}
+                  </span>
+                ))}
+                {localRepoSupport.allowed_roots.length === 0 ? (
+                  <span className="meta-muted">No local roots configured.</span>
+                ) : null}
+              </div>
+              <div className="policy-list">
+                <span>
+                  Dirty repos:{" "}
+                  {localRepoSupport.allow_dirty
+                    ? "allowed by config"
+                    : "rejected by default"}
+                </span>
+                <span>
+                  Branch match:{" "}
+                  {localRepoSupport.require_ticket_branch_match
+                    ? "must include the Jira key"
+                    : "not enforced"}
+                </span>
+                <span>
+                  Non-git folders:{" "}
+                  {localRepoSupport.allow_non_git_folders
+                    ? "allowed (no branch/dirty check)"
+                    : "not enabled"}
+                </span>
+              </div>
+            </div>
+          ) : null}
+        </div>
 
-        <div className="meta-note">
-          <strong>Security:</strong> this app never accepts secrets in the form.
-          If a value looks like a token, the backend will reject it.
+        <div className="form-step">
+          <h3 className="form-step__legend">
+            <span className="form-step__number">3</span>
+            <span>Anything else</span>
+            <span className="form-step__optional">(optional)</span>
+          </h3>
+          <label className="field">
+            <span>Additional technical considerations</span>
+            <small>
+              Add constraints, preferred approaches, or context not captured in
+              the ticket description — this shapes the generated plan, not just
+              the implementation.
+            </small>
+            <textarea
+              className="text-input"
+              rows={4}
+              maxLength={4000}
+              name="planningNotes"
+              onChange={(event) => setPlanningNotes(event.target.value)}
+              placeholder="e.g. Reuse the existing retry helper in src/http.py; avoid adding new dependencies."
+              value={planningNotes}
+            />
+          </label>
         </div>
 
         {error ? <p className="banner banner-error">{error}</p> : null}

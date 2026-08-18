@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import {
@@ -61,8 +62,14 @@ export function CostUsageView() {
   if (forbidden) {
     return (
       <section className="panel">
-        <div className="panel-heading">
-          <h2>Cost usage</h2>
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow">Admin</span>
+            <h1>Cost usage</h1>
+          </div>
+          <Link className="secondary-link" href="/">
+            New job
+          </Link>
         </div>
         <p className="meta-muted">
           Admins only. Sign in with an admin account to view per-user cost
@@ -74,9 +81,15 @@ export function CostUsageView() {
 
   return (
     <section className="panel">
-      <div className="panel-heading">
-        <h2>Cost usage by user</h2>
-        <p>Planning and implementation spend, grouped by job owner.</p>
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">Admin</span>
+          <h1>Cost usage by user</h1>
+          <p>Planning and implementation spend, grouped by job owner.</p>
+        </div>
+        <Link className="secondary-link" href="/">
+          New job
+        </Link>
       </div>
 
       {error ? <p className="banner banner-error">{error}</p> : null}
