@@ -15,12 +15,14 @@ Design constraints (see CLAUDE.md):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+from claude_agent_sdk import ClaudeAgentOptions, Message, ResultMessage, query
 from pydantic import ValidationError
 
 from app.core import secrets
@@ -220,20 +222,27 @@ class AgentRunOutcome:
 
 async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOutcome:
     """Run one harness query to completion. Module-level so tests can fake it."""
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, ResultMessage):
-            return AgentRunOutcome(
-                subtype=message.subtype,
-                structured_output=message.structured_output,
-                usage=message.usage,
-                total_cost_usd=message.total_cost_usd,
-                num_turns=message.num_turns,
-                duration_ms=message.duration_ms,
-                api_error_status=message.api_error_status,
-                errors=message.errors or ([message.result] if message.result else None),
-            )
-    else:
-        raise AppError(ErrorCode.INTERNAL, internal_detail="agent run produced no result message")
+    # Close the stream explicitly rather than relying on GC to aclose() it
+    # after an early `return` out of `async for` — the implicit close can
+    # race the SDK's own internal teardown and raise
+    # "aclose(): asynchronous generator is already running". query() is a
+    # real async generator at runtime; the SDK just types it as the
+    # narrower AsyncIterator.
+    stream = cast(AsyncGenerator[Message, None], query(prompt=prompt, options=options))
+    async with contextlib.aclosing(stream) as messages:
+        async for message in messages:
+            if isinstance(message, ResultMessage):
+                return AgentRunOutcome(
+                    subtype=message.subtype,
+                    structured_output=message.structured_output,
+                    usage=message.usage,
+                    total_cost_usd=message.total_cost_usd,
+                    num_turns=message.num_turns,
+                    duration_ms=message.duration_ms,
+                    api_error_status=message.api_error_status,
+                    errors=message.errors or ([message.result] if message.result else None),
+                )
+    raise AppError(ErrorCode.INTERNAL, internal_detail="agent run produced no result message")
 
 
 def _run_execute_agent_sync(prompt: str, options: ClaudeAgentOptions) -> AgentRunOutcome:
