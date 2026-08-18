@@ -142,7 +142,18 @@ async def list_github_repositories(user: User, store: JobStore) -> GitHubReposit
             user_message="Connect your GitHub account before loading repositories.",
         )
 
-    access_token = decrypt_secret(connection.access_token_encrypted, provider="github")
+    try:
+        access_token = decrypt_secret(connection.access_token_encrypted, provider="github")
+    except AppError as exc:
+        # A stored token that can no longer be decrypted (e.g. the encryption
+        # key rotated since it was saved) is functionally the same as never
+        # having connected — surface the same actionable, user-safe message
+        # instead of a bare INTERNAL error.
+        raise AppError(
+            ErrorCode.REPO_PROVIDER_NOT_AVAILABLE,
+            user_message="Connect your GitHub account before loading repositories.",
+            internal_detail=exc.internal_detail,
+        ) from exc
     repos = await _fetch_user_repositories(access_token)
     return GitHubRepositoryListResponse(repos=repos)
 

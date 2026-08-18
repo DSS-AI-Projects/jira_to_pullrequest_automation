@@ -634,3 +634,38 @@ def test_github_repo_listing_requires_connected_account(auth_client: TestClient)
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "REPO_PROVIDER_NOT_AVAILABLE"
+
+
+def test_github_repo_listing_treats_undecryptable_token_as_not_connected(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A stored token encrypted under a key that no longer matches
+    # GITHUB_OAUTH_ENCRYPTION_KEY (e.g. after a key rotation) must degrade to
+    # the same "not connected" response the UI already knows how to show,
+    # never a bare INTERNAL error.
+    monkeypatch.setenv("GITHUB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+    auth_store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id=user["id"],
+            provider=RepoHostingProvider.GITHUB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="12345",
+            account_url="https://github.com/octocat",
+            scopes=["repo", "read:user"],
+            access_token_encrypted=encrypt_secret("github-access-token", provider="github"),
+        )
+    )
+
+    monkeypatch.setenv("GITHUB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+
+    response = auth_client.get("/api/auth/repo-hosting/github/repos")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "REPO_PROVIDER_NOT_AVAILABLE"
+    assert body["error"]["message"] == "Connect your GitHub account before loading repositories."
