@@ -3,7 +3,7 @@ import { JobForm } from "@/components/job-form";
 export default function HomePage() {
   return (
     <main className="page-shell">
-      <section className="hero-card">
+      <section className="hero-card home-hero">
         <div className="hero-copy">
           <span className="eyebrow">Milestone 1</span>
           <h1>Jira ticket to implementation plan</h1>

@@ -238,6 +238,14 @@ ol {
   align-items: start;
 }
 
+@media (min-width: 901px) {
+  /* Job-form panel on the home page: 20% wider than the default 0.9fr
+     share (45% of the row -> 54%), with the copy column taking the rest. */
+  .hero-card.home-hero {
+    grid-template-columns: 23fr 27fr;
+  }
+}
+
 .hero-copy {
   padding: 2rem 0.5rem 0.5rem;
 }
