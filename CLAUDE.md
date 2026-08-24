@@ -210,6 +210,35 @@ never re-used across jobs — retrying a failed document-sourced job requires
 re-uploading the file (sessionStorage can't persist a `File` object across the
 Retry redirect; the job form shows which filename to re-upload).
 
+## Jira ticket attachments (PDF only)
+
+Opt-in (`JIRA_ATTACHMENT_FETCH_ENABLED`, off by default) text extraction from PDF
+attachments on the Jira ticket itself, feeding the same token-saving front-loading
+philosophy as the repo digest: the planner sees attachment content without the
+agent needing to discover and read it via tools. Deliberately scoped to PDF only,
+matching the document-upload feature's own v1 scoping decision — no images, Word,
+or Excel parsing.
+
+`jira_fetch.py` requests the `attachment` field alongside the existing
+`summary,description,comment` fields, then `fetch_attachment_texts()` downloads
+and extracts up to `JIRA_ATTACHMENT_MAX_COUNT` PDFs (each capped at
+`JIRA_ATTACHMENT_MAX_BYTES_PER_FILE`, combined extracted text capped at
+`JIRA_ATTACHMENT_MAX_TOTAL_CHARS`), reusing `document_fetch.extract_pdf_text()`
+directly rather than duplicating PDF-parsing logic. Jira's `mimeType` metadata is
+never trusted alone — every downloaded attachment is still magic-byte checked
+(`%PDF-`) before parsing, the same principle as the uploaded-document path.
+
+Attachment fetching is **best-effort and never fails the job**: a network error,
+a non-PDF attachment, an oversized file, or a corrupt PDF is logged and simply
+excluded, since attachments are supplementary context, not required input (the
+one exception remains `TICKET_EMPTY` if the ticket has neither summary nor
+description — attachments don't change that check). Extracted text lands on
+`TicketData.attachments` (a `list[str]`, same shape as `comments`) and is quoted
+into the planning prompt inside a `<ticket_attachments>` tag — untrusted data,
+exactly like every other ticket-derived content. No plan-cache changes were
+needed: the cache key already hashes the full rendered prompt, so attachment
+content is automatically covered.
+
 ## Repository input & local execution
 
 The `repo` field accepts a pre-configured repo name, a remote Git URL (host

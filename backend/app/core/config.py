@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     document_max_extracted_chars: int = 40_000
     document_parse_timeout_seconds: int = 20
 
+    # Jira ticket attachments (PDF only) — off by default; a broken attachment
+    # never fails the job, so these caps just bound cost/prompt size.
+    jira_attachment_fetch_enabled: bool = False
+    jira_attachment_max_count: int = 5
+    jira_attachment_max_bytes_per_file: int = 10_000_000
+    jira_attachment_max_total_chars: int = 40_000
+    jira_attachment_parse_timeout_seconds: int = 20
+
     # App authentication
     auth_enabled: bool = False
     auth_allow_dev_login: bool = True

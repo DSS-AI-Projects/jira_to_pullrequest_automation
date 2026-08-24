@@ -21,6 +21,7 @@ from app.jobs.models import Job
 from app.jobs.store import JobStore
 from app.steps.jira_auth import get_shared_jira_auth
 from app.steps.jira_fetch import adf_to_text, fetch_ticket, split_acceptance_criteria
+from tests.pdf_fixtures import make_pdf_bytes
 
 BASE = "https://acme.atlassian.net"
 FAKE_TOKEN = "ATATT" + "3xM" + "c" * 27
@@ -328,3 +329,138 @@ def test_split_acceptance_criteria_without_heading() -> None:
     description, acceptance = split_acceptance_criteria("just a description")
     assert description == "just a description"
     assert acceptance is None
+
+
+ATTACHMENT_CONTENT_URL = f"{BASE}/rest/api/3/attachment/content/10001"
+
+
+def issue_payload_with_attachment(
+    *, mime_type: str = "application/pdf", size: int = 1000, content_url: str | None = None
+) -> dict[str, Any]:
+    payload = issue_payload()
+    payload["fields"]["attachment"] = [
+        {
+            "id": "10001",
+            "filename": "spec.pdf",
+            "size": size,
+            "mimeType": mime_type,
+            "content": content_url if content_url is not None else ATTACHMENT_CONTENT_URL,
+        }
+    ]
+    return payload
+
+
+@respx.mock
+async def test_attachments_not_fetched_when_disabled(jira_env: None, jira_store: JobStore) -> None:
+    respx.get(ISSUE_URL).mock(
+        return_value=httpx.Response(200, json=issue_payload_with_attachment())
+    )
+    content_route = respx.get(ATTACHMENT_CONTENT_URL).mock(
+        return_value=httpx.Response(200, content=make_pdf_bytes("Attachment text"))
+    )
+    ticket = await fetch_ticket(
+        Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo"),
+        jira_store,
+    )
+    assert ticket.attachments == []
+    assert content_route.call_count == 0
+
+
+@respx.mock
+async def test_pdf_attachment_is_fetched_when_enabled(
+    jira_env: None, jira_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JIRA_ATTACHMENT_FETCH_ENABLED", "true")
+    get_settings.cache_clear()
+    respx.get(ISSUE_URL).mock(
+        return_value=httpx.Response(200, json=issue_payload_with_attachment())
+    )
+    respx.get(ATTACHMENT_CONTENT_URL).mock(
+        return_value=httpx.Response(200, content=make_pdf_bytes("Attachment text"))
+    )
+    ticket = await fetch_ticket(
+        Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo"),
+        jira_store,
+    )
+    assert len(ticket.attachments) == 1
+    assert ticket.attachments[0].startswith("spec.pdf:")
+    assert "Attachment text" in ticket.attachments[0]
+
+
+@respx.mock
+async def test_non_pdf_attachment_is_skipped(
+    jira_env: None, jira_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JIRA_ATTACHMENT_FETCH_ENABLED", "true")
+    get_settings.cache_clear()
+    respx.get(ISSUE_URL).mock(
+        return_value=httpx.Response(200, json=issue_payload_with_attachment(mime_type="image/png"))
+    )
+    content_route = respx.get(ATTACHMENT_CONTENT_URL).mock(
+        return_value=httpx.Response(200, content=b"not a pdf")
+    )
+    ticket = await fetch_ticket(
+        Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo"),
+        jira_store,
+    )
+    assert ticket.attachments == []
+    assert content_route.call_count == 0  # skipped before ever downloading
+
+
+@respx.mock
+async def test_oversized_attachment_is_skipped(
+    jira_env: None, jira_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JIRA_ATTACHMENT_FETCH_ENABLED", "true")
+    monkeypatch.setenv("JIRA_ATTACHMENT_MAX_BYTES_PER_FILE", "100")
+    get_settings.cache_clear()
+    respx.get(ISSUE_URL).mock(
+        return_value=httpx.Response(200, json=issue_payload_with_attachment(size=1_000_000))
+    )
+    content_route = respx.get(ATTACHMENT_CONTENT_URL).mock(
+        return_value=httpx.Response(200, content=make_pdf_bytes("too big"))
+    )
+    ticket = await fetch_ticket(
+        Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo"),
+        jira_store,
+    )
+    assert ticket.attachments == []
+    assert content_route.call_count == 0
+
+
+@respx.mock
+async def test_mislabeled_attachment_fails_magic_byte_check(
+    jira_env: None, jira_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Jira's mimeType is metadata, not verified content — never trust it alone."""
+    monkeypatch.setenv("JIRA_ATTACHMENT_FETCH_ENABLED", "true")
+    get_settings.cache_clear()
+    respx.get(ISSUE_URL).mock(
+        return_value=httpx.Response(200, json=issue_payload_with_attachment())
+    )
+    respx.get(ATTACHMENT_CONTENT_URL).mock(
+        return_value=httpx.Response(200, content=b"not actually a pdf despite the mimeType")
+    )
+    ticket = await fetch_ticket(
+        Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo"),
+        jira_store,
+    )
+    assert ticket.attachments == []
+
+
+@respx.mock
+async def test_attachment_download_failure_does_not_fail_the_job(
+    jira_env: None, jira_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JIRA_ATTACHMENT_FETCH_ENABLED", "true")
+    get_settings.cache_clear()
+    respx.get(ISSUE_URL).mock(
+        return_value=httpx.Response(200, json=issue_payload_with_attachment())
+    )
+    respx.get(ATTACHMENT_CONTENT_URL).mock(side_effect=httpx.ConnectError("nope"))
+    ticket = await fetch_ticket(
+        Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo"),
+        jira_store,
+    )
+    assert ticket.summary == "Add a verbose flag"
+    assert ticket.attachments == []

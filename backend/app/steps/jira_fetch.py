@@ -6,22 +6,27 @@ to plain text here and treated as untrusted data from then on.
 
 from __future__ import annotations
 
+import asyncio
 import re
+import tempfile
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger
 from app.jobs.models import Job
 from app.jobs.store import JobStore
 from app.schemas.ticket import TicketData
-from app.steps.jira_auth import get_jira_auth
+from app.steps.document_fetch import extract_pdf_text
+from app.steps.jira_auth import JiraAuth, get_jira_auth
 
 logger = get_logger(__name__)
 
 _ACCEPTANCE_HEADING_RE = re.compile(r"(?im)^\s*acceptance criteria\s*:?\s*$")
+_PDF_MAGIC = b"%PDF-"
 
 
 def adf_to_text(node: Any) -> str:
@@ -75,6 +80,99 @@ def split_acceptance_criteria(description: str) -> tuple[str, str | None]:
     return before, after or None
 
 
+async def _fetch_one_pdf_attachment(
+    client: httpx.AsyncClient,
+    attachment: dict[str, Any],
+    auth: JiraAuth,
+    settings: Settings,
+    max_chars: int,
+) -> str | None:
+    """Fetch + extract one attachment's text, or None if it isn't usable.
+
+    Best-effort: any failure here (network, non-PDF, corrupt, timeout) is
+    logged and treated as "skip this attachment" — never raised, since an
+    attachment is supplementary context, not required input.
+    """
+    filename = str(attachment.get("filename") or "attachment")
+    mime_type = str(attachment.get("mimeType") or "")
+    size = int(attachment.get("size") or 0)
+    content_url = attachment.get("content")
+
+    if mime_type != "application/pdf" or not content_url:
+        logger.info(
+            "skipping non-PDF Jira attachment %s (%s)", filename, mime_type or "unknown type"
+        )
+        return None
+    if size > settings.jira_attachment_max_bytes_per_file:
+        logger.info("skipping oversized Jira attachment %s (%d bytes)", filename, size)
+        return None
+
+    try:
+        response = await client.get(
+            str(content_url),
+            headers={"Authorization": auth.auth_header},
+            follow_redirects=True,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("failed to download Jira attachment %s: %s", filename, exc)
+        return None
+    if response.status_code != 200:
+        logger.warning(
+            "failed to download Jira attachment %s: status %d", filename, response.status_code
+        )
+        return None
+
+    content = response.content
+    if content[: len(_PDF_MAGIC)] != _PDF_MAGIC:
+        logger.warning("Jira attachment %s claimed PDF but failed the magic-byte check", filename)
+        return None
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        try:
+            text = await asyncio.wait_for(
+                asyncio.to_thread(extract_pdf_text, tmp_path, max_chars),
+                timeout=settings.jira_attachment_parse_timeout_seconds,
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+    except Exception as exc:  # pypdf raises assorted errors on malformed PDFs
+        logger.warning("failed to parse Jira attachment %s: %s", filename, exc)
+        return None
+
+    if not text.strip():
+        return None
+    return f"{filename}:\n{text}"
+
+
+async def fetch_attachment_texts(
+    fields: dict[str, Any], auth: JiraAuth, settings: Settings
+) -> list[str]:
+    """Fetch and extract text from up to jira_attachment_max_count PDF
+    attachments, capped at jira_attachment_max_total_chars combined."""
+    if not settings.jira_attachment_fetch_enabled:
+        return []
+    attachment_list: list[dict[str, Any]] = fields.get("attachment") or []
+    if not attachment_list:
+        return []
+
+    results: list[str] = []
+    remaining_chars = settings.jira_attachment_max_total_chars
+    async with httpx.AsyncClient(timeout=30) as client:
+        for attachment in attachment_list[: settings.jira_attachment_max_count]:
+            if remaining_chars <= 0:
+                break
+            text = await _fetch_one_pdf_attachment(
+                client, attachment, auth, settings, remaining_chars
+            )
+            if text:
+                results.append(text)
+                remaining_chars -= len(text)
+    return results
+
+
 async def fetch_ticket(job: Job, store: JobStore) -> TicketData:
     settings = get_settings()
     auth = await get_jira_auth(job, store, settings)
@@ -84,7 +182,7 @@ async def fetch_ticket(job: Job, store: JobStore) -> TicketData:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
                 url,
-                params={"fields": "summary,description,comment"},
+                params={"fields": "summary,description,comment,attachment"},
                 headers={"Authorization": auth.auth_header, "Accept": "application/json"},
             )
     except httpx.HTTPError as exc:
@@ -120,11 +218,23 @@ async def fetch_ticket(job: Job, store: JobStore) -> TicketData:
     if not summary and not description:
         raise AppError(ErrorCode.TICKET_EMPTY)
 
-    logger.info("fetched ticket %s (%d comments)", job.ticket_key, len(comments))
+    try:
+        attachments = await fetch_attachment_texts(fields, auth, settings)
+    except Exception as exc:  # attachments are supplementary, never fail the fetch
+        logger.warning("attachment fetch failed for %s: %s", job.ticket_key, exc)
+        attachments = []
+
+    logger.info(
+        "fetched ticket %s (%d comments, %d attachments)",
+        job.ticket_key,
+        len(comments),
+        len(attachments),
+    )
     return TicketData(
         key=str(payload.get("key") or job.ticket_key),
         summary=summary,
         description=description,
         acceptance_criteria=acceptance,
         comments=comments,
+        attachments=attachments,
     )

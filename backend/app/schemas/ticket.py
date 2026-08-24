@@ -17,3 +17,4 @@ class TicketData(BaseModel):
     description: str
     acceptance_criteria: str | None = None
     comments: list[str] = []
+    attachments: list[str] = []
