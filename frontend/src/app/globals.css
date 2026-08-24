@@ -558,6 +558,28 @@ ol {
   background: var(--success);
 }
 
+.timeline-item.is-failed {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+}
+
+.timeline-item.is-failed .timeline-badge {
+  background: var(--danger);
+}
+
+.timeline-item.is-failed strong {
+  color: var(--danger);
+}
+
+.timeline-item p.timeline-failed-label {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.state-failed {
+  color: var(--danger);
+}
+
 .timeline-badge {
   width: 2rem;
   height: 2rem;

@@ -240,7 +240,10 @@ export function JobStatusView(props: { jobId: string }) {
 
         <ol className="status-timeline">
           {JOB_STATES.map((state, index) => {
-            const isActive = index === activeIndex;
+            const jobFailed =
+              job?.state === "FAILED" || job?.state === "IMPLEMENTATION_FAILED";
+            const isFailed = jobFailed && job?.error?.stage === state;
+            const isActive = index === activeIndex && !isFailed;
             const isComplete = job
               ? index < activeIndex || job.state === "IMPLEMENTATION_READY"
               : false;
@@ -250,6 +253,7 @@ export function JobStatusView(props: { jobId: string }) {
                   "timeline-item",
                   isActive ? "is-active" : "",
                   isComplete ? "is-complete" : "",
+                  isFailed ? "is-failed" : "",
                 ]
                   .filter(Boolean)
                   .join(" ")}
@@ -259,8 +263,8 @@ export function JobStatusView(props: { jobId: string }) {
                 <div>
                   <strong>{JOB_STATE_LABELS[state]}</strong>
                   {job?.state === state ? <p>Current step</p> : null}
-                  {job?.state === "FAILED" && job.error?.stage === state ? (
-                    <p>Failed here</p>
+                  {isFailed ? (
+                    <p className="timeline-failed-label">Failed here</p>
                   ) : null}
                 </div>
               </li>
@@ -281,7 +285,15 @@ export function JobStatusView(props: { jobId: string }) {
           </div>
           <div className="summary-card">
             <span className="meta-label">State</span>
-            <strong>{JOB_STATE_LABELS[job.state]}</strong>
+            <strong
+              className={
+                job.state === "FAILED" || job.state === "IMPLEMENTATION_FAILED"
+                  ? "state-failed"
+                  : undefined
+              }
+            >
+              {JOB_STATE_LABELS[job.state]}
+            </strong>
           </div>
           {job.repo_info ? (
             <>

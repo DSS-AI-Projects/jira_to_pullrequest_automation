@@ -471,6 +471,53 @@ describe("JobStatusView", () => {
     expect(push).toHaveBeenCalledWith("/");
   });
 
+  it("highlights the failed step in red for an IMPLEMENTATION_FAILED job", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-impl-failed",
+      ticket_key: "KAN-31",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: null,
+      state: "IMPLEMENTATION_FAILED",
+      error: {
+        code: "IMPLEMENTATION_INVALID",
+        message:
+          "The implementation agent could not produce a valid result for this plan. " +
+          "Try approving implementation again, or add clarifications to help it succeed.",
+        stage: "IMPLEMENTING",
+      },
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "jira_to_code_test",
+        commit_sha: "f".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\abtf-membership",
+      },
+      workspace_path: "D:\\workdir\\job-impl-failed\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-20T09:00:00Z",
+      updated_at: "2026-08-20T09:05:00Z",
+    });
+
+    render(<JobStatusView jobId="job-impl-failed" />);
+
+    const failedLabel = await screen.findByText("Failed here");
+    expect(failedLabel).toHaveClass("timeline-failed-label");
+    expect(failedLabel.closest("li")).toHaveClass("is-failed");
+
+    const stateValue = await screen.findByText("Implementation failed");
+    expect(stateValue).toHaveClass("state-failed");
+  });
+
   it("maps a LOCAL_FOLDER source to repoMode local in the retry draft", async () => {
     sessionStorage.clear();
     fetchJob.mockResolvedValue({
