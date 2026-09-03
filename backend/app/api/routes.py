@@ -17,14 +17,17 @@ from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger
 from app.jobs.models import Job, JobState, RepoSourceKind, RequirementSource
-from app.jobs.runner import JobSteps, run_implementation, run_job
+from app.jobs.runner import JobSteps, run_implementation, run_job, run_validation_correction
 from app.jobs.store import JobStore
 from app.schemas.inputs import (
     JOB_CREATE_FORM_FIELDS,
+    CreateBranchRequest,
     ImplementRequest,
     RepoChoice,
     load_preconfigured_repos,
+    normalize_branch_name,
     normalize_clarifications,
+    normalize_commit_message,
     normalize_planning_notes,
     normalize_repo,
     normalize_ticket,
@@ -33,6 +36,7 @@ from app.schemas.inputs import (
     validate_uploaded_document,
 )
 from app.steps.document_fetch import requirement_document_path
+from app.steps.validation_runner import correctable_failures
 
 logger = get_logger(__name__)
 
@@ -46,6 +50,13 @@ class JobCreated(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     job_id: str
+
+
+class BranchCreated(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    branch_name: str
+    commit_sha: str
 
 
 class LocalRepoSupport(BaseModel):
@@ -252,6 +263,73 @@ async def implement_job(
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return JobCreated(job_id=job.id)
+
+
+@router.post("/jobs/{job_id}/correct-validation", response_model=JobCreated, status_code=202)
+async def correct_validation(job_id: str, request: Request) -> JobCreated:
+    user = require_current_user(request)
+    store = _store(request)
+    job = store.get(job_id)
+    if job is None:
+        raise AppError(ErrorCode.JOB_NOT_FOUND)
+    ensure_job_access(job, user)
+    if (
+        job.state != JobState.IMPLEMENTATION_READY
+        or job.implementation_correction_attempted
+        or not correctable_failures(job.validation_results)
+    ):
+        raise AppError(ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE)
+    if not job.workspace_path or not Path(job.workspace_path).exists():
+        raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+
+    job.state = JobState.CORRECTING
+    store.save(job)
+    logger.info("job %s validation correction started", job.id)
+
+    task = asyncio.create_task(
+        run_validation_correction(job.id, store, get_settings(), _steps(request))
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return JobCreated(job_id=job.id)
+
+
+@router.post("/jobs/{job_id}/create-branch", response_model=BranchCreated)
+async def create_branch(
+    job_id: str, request: Request, payload: CreateBranchRequest | None = None
+) -> BranchCreated:
+    """Create a branch and commit the reviewed diff inside the isolated
+    workspace. Synchronous (plain git plumbing, no LLM call, typically
+    sub-second) — unlike implement/validate/correct this needs no background
+    task or polling state. Never pushes anywhere; see CLAUDE.md's "Branch
+    preparation" section.
+    """
+    user = require_current_user(request)
+    store = _store(request)
+    job = store.get(job_id)
+    if job is None:
+        raise AppError(ErrorCode.JOB_NOT_FOUND)
+    ensure_job_access(job, user)
+    if job.state != JobState.IMPLEMENTATION_READY or job.branch_name is not None:
+        raise AppError(ErrorCode.BRANCH_CREATION_NOT_AVAILABLE)
+    if not job.workspace_path or not Path(job.workspace_path).exists():
+        raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+
+    branch_name = normalize_branch_name(payload.branch_name if payload is not None else None)
+    commit_message = normalize_commit_message(
+        payload.commit_message if payload is not None else None
+    )
+
+    result = await _steps(request).create_branch(
+        job, Path(job.workspace_path), branch_name, commit_message
+    )
+
+    job.branch_name = result.branch_name
+    job.branch_commit_sha = result.commit_sha
+    job.branch_created_at = datetime.now(UTC)
+    store.save(job)
+    logger.info("job %s: branch %s created", job.id, result.branch_name)
+    return BranchCreated(branch_name=result.branch_name, commit_sha=result.commit_sha)
 
 
 @router.get("/repos", response_model=RepoList)

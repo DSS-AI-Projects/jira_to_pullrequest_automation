@@ -3,11 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobStatusView } from "@/components/job-status-view";
 
-const { fetchJob, implementJob, push } = vi.hoisted(() => ({
-  fetchJob: vi.fn(),
-  implementJob: vi.fn(),
-  push: vi.fn(),
-}));
+const { correctValidation, createBranch, fetchJob, implementJob, push } =
+  vi.hoisted(() => ({
+    correctValidation: vi.fn(),
+    createBranch: vi.fn(),
+    fetchJob: vi.fn(),
+    implementJob: vi.fn(),
+    push: vi.fn(),
+  }));
 
 vi.mock("next/link", () => ({
   default: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
@@ -25,6 +28,8 @@ vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
   return {
     ...actual,
+    correctValidation,
+    createBranch,
     fetchJob,
     implementJob,
   };
@@ -32,6 +37,8 @@ vi.mock("@/lib/api", async () => {
 
 describe("JobStatusView", () => {
   beforeEach(() => {
+    correctValidation.mockReset();
+    createBranch.mockReset();
     fetchJob.mockReset();
     implementJob.mockReset();
     push.mockReset();
@@ -467,8 +474,123 @@ describe("JobStatusView", () => {
       repo: "D:\\repos\\abtf-membership",
       repoMode: "local",
       planningNotes: "Use the shared logger, not print().",
+      implementationClarifications: "",
     });
     expect(push).toHaveBeenCalledWith("/");
+  });
+
+  it("carries implementation clarifications into the retry draft for a failed implementation job", async () => {
+    sessionStorage.clear();
+    fetchJob.mockResolvedValue({
+      id: "job-impl-failed-clarified",
+      ticket_key: "KAN-34",
+      repo_url: "D:\\repos\\j5-frontend",
+      planning_notes: null,
+      state: "IMPLEMENTATION_FAILED",
+      error: {
+        code: "VALIDATION_FAILED",
+        message: "Running post-implementation validation failed unexpectedly.",
+        stage: "VALIDATING",
+      },
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "KAN-34",
+        commit_sha: "a".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\j5-frontend",
+      },
+      workspace_path: "D:\\workdir\\job-impl-failed-clarified\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications:
+        "Stuff Type will be form based field i.e. F=factory, D=dock.",
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-31T11:33:26Z",
+      updated_at: "2026-08-31T12:18:42Z",
+    });
+
+    render(<JobStatusView jobId="job-impl-failed-clarified" />);
+
+    const retryButton = await screen.findByRole("button", { name: "Retry" });
+    fireEvent.click(retryButton);
+
+    expect(
+      JSON.parse(sessionStorage.getItem("jira2pullreq:retry-draft")!),
+    ).toEqual({
+      ticket: "KAN-34",
+      repo: "D:\\repos\\j5-frontend",
+      repoMode: "local",
+      planningNotes: "",
+      implementationClarifications:
+        "Stuff Type will be form based field i.e. F=factory, D=dock.",
+    });
+    expect(push).toHaveBeenCalledWith("/");
+  });
+
+  it("prefills clarifications left by a retried job's creation flow and consumes them once", async () => {
+    sessionStorage.setItem(
+      "jira2pullreq:pending-clarifications:job-123",
+      "Stuff Type will be form based field i.e. F=factory, D=dock.",
+    );
+    fetchJob.mockResolvedValue({
+      id: "job-123",
+      ticket_key: "KAN-34",
+      repo_url: "D:\\repos\\j5-frontend",
+      planning_notes: null,
+      state: "PLAN_READY",
+      error: null,
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "KAN-34",
+        commit_sha: "a".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\j5-frontend",
+      },
+      workspace_path: "D:\\workdir\\job-123\\repo",
+      plan: {
+        schema_version: 2,
+        summary: "Add the Stuff Type field.",
+        ticket_type: "feature",
+        estimated_story_points: 3,
+        complexity_level: "medium",
+        impacted_files: [],
+        proposed_changes: [],
+        test_strategy: "n/a",
+        risks: [],
+        open_questions: [],
+      },
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-31T11:33:26Z",
+      updated_at: "2026-08-31T11:33:26Z",
+    });
+
+    render(<JobStatusView jobId="job-123" />);
+
+    const textarea = await screen.findByPlaceholderText(
+      /Use British spelling for user-facing copy/i,
+    );
+    expect(textarea).toHaveValue(
+      "Stuff Type will be form based field i.e. F=factory, D=dock.",
+    );
+    expect(
+      sessionStorage.getItem("jira2pullreq:pending-clarifications:job-123"),
+    ).toBeNull();
   });
 
   it("highlights the failed step in red for an IMPLEMENTATION_FAILED job", async () => {
@@ -516,6 +638,214 @@ describe("JobStatusView", () => {
 
     const stateValue = await screen.findByText("Implementation failed");
     expect(stateValue).toHaveClass("state-failed");
+  });
+
+  function readyJobWithValidation(overrides: Record<string, unknown>) {
+    return {
+      id: "job-correction",
+      ticket_key: "KAN-31",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: null,
+      state: "IMPLEMENTATION_READY",
+      error: null,
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "jira_to_code_test",
+        commit_sha: "f".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\abtf-membership",
+      },
+      workspace_path: "D:\\workdir\\job-correction\\repo",
+      plan: {
+        schema_version: 2,
+        summary: "Add a Program Type filter.",
+        ticket_type: "feature",
+        estimated_story_points: 3,
+        complexity_level: "medium",
+        impacted_files: [],
+        proposed_changes: [],
+        test_strategy: "n/a",
+        risks: [],
+        open_questions: [],
+      },
+      usage: null,
+      implementation_usage: null,
+      implementation_result: {
+        summary: "Added the Program Type filter.",
+        changed_files: [],
+        warnings: [],
+        follow_up_questions: [],
+      },
+      implementation_diff: { overall_patch: "", files: [] },
+      validation_results: [
+        {
+          name: "ruff",
+          command: "ruff check .",
+          status: "FAILED",
+          summary: "1 lint error",
+          output_excerpt: "fix.py:1: undefined name",
+        },
+      ],
+      implementation_clarifications: null,
+      implementation_approved_at: "2026-08-20T09:02:00Z",
+      implementation_started_at: "2026-08-20T09:02:01Z",
+      implementation_finished_at: "2026-08-20T09:02:10Z",
+      implementation_baseline_commit_sha: "f".repeat(40),
+      implementation_correction_attempted: false,
+      implementation_correction_result: null,
+      implementation_correction_error: null,
+      branch_name: null,
+      branch_commit_sha: null,
+      branch_created_at: null,
+      created_at: "2026-08-20T09:00:00Z",
+      updated_at: "2026-08-20T09:02:10Z",
+      ...overrides,
+    };
+  }
+
+  it("shows an automatic-fix button when validation failed and none has been attempted", async () => {
+    fetchJob.mockResolvedValue(readyJobWithValidation({}));
+    correctValidation.mockResolvedValue({ job_id: "job-correction" });
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    const fixButton = await screen.findByRole("button", {
+      name: "Attempt automatic fix",
+    });
+    fireEvent.click(fixButton);
+
+    await waitFor(() =>
+      expect(correctValidation).toHaveBeenCalledWith("job-correction"),
+    );
+  });
+
+  it("hides the fix button and the correction card entirely when only npm install failed", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        validation_results: [
+          {
+            name: "npm install",
+            command: "npm install",
+            status: "FAILED",
+            summary: "Validation command failed with exit code 1.",
+            output_excerpt: "npm ERR! network request to registry failed",
+          },
+        ],
+      }),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByText("Validation command failed with exit code 1.");
+    expect(screen.queryByText("Validation correction")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Attempt automatic fix" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the fix button and shows the correction summary and changed files once already attempted", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        implementation_correction_attempted: true,
+        implementation_correction_result: {
+          summary: "Fixed the lint failure.",
+          changed_files: [
+            {
+              path: "fix.py",
+              action: "modify",
+              rationale: "Removed the undefined name.",
+            },
+          ],
+          warnings: [],
+          follow_up_questions: [],
+        },
+        validation_results: [
+          {
+            name: "ruff",
+            command: "ruff check .",
+            status: "PASSED",
+            summary: "ok",
+            output_excerpt: null,
+          },
+        ],
+      }),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByText("Fixed the lint failure.");
+    expect(screen.getByText("fix.py")).toBeInTheDocument();
+    expect(screen.getByText("Removed the undefined name.")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Attempt automatic fix" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the correction error banner when the fix attempt itself failed", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        implementation_correction_attempted: true,
+        implementation_correction_error: {
+          code: "BUDGET_EXCEEDED",
+          message:
+            "The implementation agent exceeded its run budget before finishing.",
+          stage: "CORRECTING",
+        },
+      }),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByText(
+      "The implementation agent exceeded its run budget before finishing.",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Attempt automatic fix" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("creates a branch with the submitted name and message", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({ validation_results: [] }),
+    );
+    createBranch.mockResolvedValue({
+      branch_name: "custom/my-branch",
+      commit_sha: "a".repeat(40),
+    });
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    const branchInput = await screen.findByPlaceholderText(
+      "jira2pullreq/KAN-31",
+    );
+    fireEvent.change(branchInput, { target: { value: "custom/my-branch" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create branch" }));
+
+    await waitFor(() =>
+      expect(createBranch).toHaveBeenCalledWith("job-correction", {
+        branch_name: "custom/my-branch",
+        commit_message: "",
+      }),
+    );
+  });
+
+  it("shows the created branch and hides the form once a branch exists", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        validation_results: [],
+        branch_name: "jira2pullreq/KAN-31",
+        branch_commit_sha: "b".repeat(40),
+        branch_created_at: "2026-08-20T09:03:00Z",
+      }),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByText("jira2pullreq/KAN-31");
+    expect(
+      screen.queryByRole("button", { name: "Create branch" }),
+    ).not.toBeInTheDocument();
   });
 
   it("maps a LOCAL_FOLDER source to repoMode local in the retry draft", async () => {
@@ -566,6 +896,7 @@ describe("JobStatusView", () => {
       repo: "D:\\repos\\plain-folder",
       repoMode: "local",
       planningNotes: "",
+      implementationClarifications: "",
     });
   });
 
@@ -621,6 +952,7 @@ describe("JobStatusView", () => {
       planningNotes: "",
       requirementSource: "DOCUMENT",
       requirementDocumentName: "requirements.pdf",
+      implementationClarifications: "",
     });
   });
 

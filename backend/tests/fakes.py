@@ -13,7 +13,13 @@ from app.jobs.models import (
     ValidationResult,
     ValidationStatus,
 )
-from app.jobs.runner import CloneResult, ImplementationStepResult, JobSteps, PlanResult
+from app.jobs.runner import (
+    BranchResult,
+    CloneResult,
+    ImplementationStepResult,
+    JobSteps,
+    PlanResult,
+)
 from app.jobs.store import JobStore
 from app.schemas.plan import Plan
 from app.schemas.repomap import RepoMap
@@ -65,15 +71,24 @@ def make_fake_steps() -> JobSteps:
         del planning_notes
         return PlanResult(plan=sample_plan(), usage=AgentUsage(duration_seconds=0.1))
 
-    async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepResult:
+    async def implement_plan(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
         del workspace_path
         # No file actually changes in this default fake (its clone_repo fake
         # doesn't create a real workspace on disk), so changed_files must stay
         # empty — otherwise it trips the "agent claimed changes that never
         # landed" consistency check in run_implementation.
+        summary = (
+            f"Corrected {len(validation_failures)} validation failure(s) for {job.ticket_key}."
+            if validation_failures
+            else f"Prepared implementation output for {job.ticket_key}."
+        )
         return ImplementationStepResult(
             result=ImplementationResult(
-                summary=f"Prepared implementation output for {job.ticket_key}.",
+                summary=summary,
                 changed_files=[],
                 warnings=[],
                 follow_up_questions=[],
@@ -97,6 +112,18 @@ def make_fake_steps() -> JobSteps:
             )
         ]
 
+    async def create_branch(
+        job: Job,
+        workspace_path: Path,
+        branch_name: str | None,
+        commit_message: str | None,
+    ) -> BranchResult:
+        del workspace_path, commit_message
+        return BranchResult(
+            branch_name=branch_name or f"jira2pullreq/{job.ticket_key}",
+            commit_sha="b" * 40,
+        )
+
     return JobSteps(
         fetch_ticket=fetch_ticket,
         clone_repo=clone_repo,
@@ -104,4 +131,5 @@ def make_fake_steps() -> JobSteps:
         generate_plan=generate_plan,
         implement_plan=implement_plan,
         validate_workspace=validate_workspace,
+        create_branch=create_branch,
     )

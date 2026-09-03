@@ -13,6 +13,7 @@ import {
   type RepoChoice,
   type RepoList,
 } from "@/lib/api";
+import { savePendingClarifications } from "@/lib/pending-clarifications";
 import { consumeRetryDraft } from "@/lib/retry-draft";
 
 const SAMPLE_TICKET = "PROJ-123";
@@ -33,6 +34,7 @@ export function JobForm() {
   const [retriedDocumentName, setRetriedDocumentName] = useState<string | null>(
     null,
   );
+  const [retriedClarifications, setRetriedClarifications] = useState("");
   const [repos, setRepos] = useState<RepoChoice[]>([]);
   const [githubRepos, setGitHubRepos] = useState<GitHubRepositorySummary[]>([]);
   const [allowedHosts, setAllowedHosts] = useState<string[]>([]);
@@ -50,6 +52,7 @@ export function JobForm() {
       setRepo(draft.repo);
       setRepoMode(draft.repoMode);
       setPlanningNotes(draft.planningNotes);
+      setRetriedClarifications(draft.implementationClarifications);
       if (draft.requirementSource === "DOCUMENT") {
         setRequirementMode("document");
         setRetriedDocumentName(draft.requirementDocumentName);
@@ -159,6 +162,7 @@ export function JobForm() {
               ? (requirementDocument ?? undefined)
               : undefined,
         });
+        savePendingClarifications(result.job_id, retriedClarifications);
         router.push(`/jobs/${result.job_id}`);
       } catch (submitError) {
         setError(

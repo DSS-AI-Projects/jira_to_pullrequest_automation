@@ -51,6 +51,10 @@ class ErrorCode(StrEnum):
     IMPLEMENTATION_NOT_READY = "IMPLEMENTATION_NOT_READY"
     IMPLEMENTATION_NOT_SUPPORTED = "IMPLEMENTATION_NOT_SUPPORTED"
     IMPLEMENTATION_WORKSPACE_MISSING = "IMPLEMENTATION_WORKSPACE_MISSING"
+    VALIDATION_CORRECTION_NOT_AVAILABLE = "VALIDATION_CORRECTION_NOT_AVAILABLE"
+    BRANCH_CREATION_NOT_AVAILABLE = "BRANCH_CREATION_NOT_AVAILABLE"
+    BRANCH_NAME_INVALID = "BRANCH_NAME_INVALID"
+    BRANCH_CREATION_FAILED = "BRANCH_CREATION_FAILED"
     INTERNAL = "INTERNAL"
 
 
@@ -150,6 +154,22 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING: (
         "The isolated workspace for this job is unavailable. Regenerate the plan and try again."
     ),
+    ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE: (
+        "Automatic validation correction is not available for this job — it requires a "
+        "completed implementation with at least one failed validation check, and only "
+        "one correction attempt is allowed per job."
+    ),
+    ErrorCode.BRANCH_CREATION_NOT_AVAILABLE: (
+        "Creating a branch is only available once implementation is ready, and there "
+        "must be changes to commit."
+    ),
+    ErrorCode.BRANCH_NAME_INVALID: (
+        "That branch name is not a valid Git branch name. Use letters, digits, "
+        "hyphens, underscores, and slashes only."
+    ),
+    ErrorCode.BRANCH_CREATION_FAILED: (
+        "Creating the branch and committing the changes failed unexpectedly."
+    ),
     ErrorCode.INTERNAL: "An internal error occurred.",
 }
 
@@ -178,6 +198,9 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.IMPLEMENTATION_NOT_READY: 400,
     ErrorCode.IMPLEMENTATION_NOT_SUPPORTED: 400,
     ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING: 400,
+    ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE: 400,
+    ErrorCode.BRANCH_CREATION_NOT_AVAILABLE: 400,
+    ErrorCode.BRANCH_NAME_INVALID: 400,
     ErrorCode.UNAUTHENTICATED: 401,
     ErrorCode.FORBIDDEN: 403,
     ErrorCode.JOB_NOT_FOUND: 404,

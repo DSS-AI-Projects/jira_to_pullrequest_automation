@@ -55,15 +55,24 @@ class CloneResult:
 
 
 @dataclass(frozen=True)
+class BranchResult:
+    branch_name: str
+    commit_sha: str
+
+
+@dataclass(frozen=True)
 class JobSteps:
-    """The four job steps, injectable for tests."""
+    """The job steps, injectable for tests."""
 
     fetch_ticket: Callable[[Job, JobStore], Awaitable[TicketData]]
     clone_repo: Callable[[str, str, str, Path], Awaitable[CloneResult]]
     build_repo_map: Callable[[Path], Awaitable[RepoMap]]
     generate_plan: Callable[[TicketData, RepoMap, Path, str | None], Awaitable[PlanResult]]
-    implement_plan: Callable[[Job, Path], Awaitable[ImplementationStepResult]]
+    implement_plan: Callable[
+        [Job, Path, list[ValidationResult] | None], Awaitable[ImplementationStepResult]
+    ]
     validate_workspace: Callable[[Path], Awaitable[list[ValidationResult]]]
+    create_branch: Callable[[Job, Path, str | None, str | None], Awaitable[BranchResult]]
 
 
 def _advance(store: JobStore, job: Job, state: JobState) -> Job:
@@ -262,9 +271,10 @@ async def run_implementation(
 
         base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
         base_ref = base_ref or "HEAD"
+        job.implementation_baseline_commit_sha = base_ref
         job.implementation_started_at = store.save(job).updated_at
         job = _advance(store, job, JobState.IMPLEMENTING)
-        implementation = await steps.implement_plan(job, workspace_path)
+        implementation = await steps.implement_plan(job, workspace_path, None)
         diff = await _collect_implementation_diff(workspace_path, base_ref)
 
         if implementation.result.changed_files and (diff is None or not diff.files):
@@ -315,6 +325,94 @@ async def run_implementation(
             ErrorCode.INTERNAL,
             DEFAULT_MESSAGES[ErrorCode.INTERNAL],
             failure_state=JobState.IMPLEMENTATION_FAILED,
+        )
+    finally:
+        final = store.get(job.id)
+        if final is not None and not final.is_terminal:  # pragma: no cover - defensive
+            _fail(
+                store,
+                final,
+                ErrorCode.INTERNAL,
+                DEFAULT_MESSAGES[ErrorCode.INTERNAL],
+                failure_state=JobState.IMPLEMENTATION_FAILED,
+            )
+
+
+def _record_correction_failure(store: JobStore, job: Job, code: ErrorCode, message: str) -> None:
+    # A correction attempt is strictly best-effort: whether it succeeds,
+    # partially succeeds, or the agent call itself fails, the job always
+    # lands back on IMPLEMENTATION_READY. The original implementation_result
+    # and implementation_diff are left untouched — a failed correction never
+    # regresses a job that already had a working (if imperfectly validated)
+    # implementation.
+    job.implementation_correction_error = JobError(code=code, message=message, stage=job.state)
+    job.implementation_correction_attempted = True
+    job.state = JobState.IMPLEMENTATION_READY
+    store.save(job)
+
+
+async def run_validation_correction(
+    job_id: str, store: JobStore, settings: Settings, steps: JobSteps
+) -> None:
+    # Deferred import: app.steps.__init__ imports JobSteps from this module,
+    # so a top-level import here would be circular.
+    from app.steps.validation_runner import correctable_failures
+
+    del settings  # reserved for future correction-step configuration
+    job = store.get(job_id)
+    if job is None:  # pragma: no cover - defensive
+        logger.error("run_validation_correction: job %s not found", job_id)
+        return
+    try:
+        if job.state != JobState.CORRECTING:
+            raise AppError(ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE)
+        if not job.workspace_path:
+            raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+
+        workspace_path = Path(job.workspace_path)
+        if not workspace_path.exists():
+            raise AppError(
+                ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING,
+                internal_detail=f"workspace path missing: {workspace_path}",
+            )
+
+        failed_results = correctable_failures(job.validation_results)
+        base_ref = job.implementation_baseline_commit_sha
+        if not base_ref:
+            # Defensive fallback for a job implemented before this field
+            # existed on Job.
+            base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
+            base_ref = base_ref or "HEAD"
+
+        correction = await steps.implement_plan(job, workspace_path, failed_results)
+        job.implementation_correction_result = correction.result
+        store.save(job)
+
+        job = _advance(store, job, JobState.REVALIDATING)
+        diff = await _collect_implementation_diff(workspace_path, base_ref)
+        if diff is not None:
+            # A diff-collection failure here is best-effort like elsewhere in
+            # this pipeline — keep whatever diff the original implementation
+            # already recorded rather than clobbering it with None.
+            job.implementation_diff = diff
+        job.validation_results = await steps.validate_workspace(workspace_path)
+        job.implementation_correction_attempted = True
+        job.state = JobState.IMPLEMENTATION_READY
+        store.save(job)
+        logger.info("job %s: validation correction complete", job.id)
+    except AppError as err:
+        logger.warning(
+            "job %s validation correction failed at %s: %s (%s)",
+            job.id,
+            job.state,
+            err.code,
+            err.internal_detail or "no detail",
+        )
+        _record_correction_failure(store, job, err.code, err.user_message)
+    except Exception:
+        logger.exception("job %s validation correction crashed at %s", job.id, job.state)
+        _record_correction_failure(
+            store, job, ErrorCode.INTERNAL, DEFAULT_MESSAGES[ErrorCode.INTERNAL]
         )
     finally:
         final = store.get(job.id)

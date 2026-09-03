@@ -165,7 +165,8 @@ outside-root / not-git / dirty / branch-mismatch), `CLONE_FAILED`, `REPO_MAP_FAI
 planning — `AGENT_CONFIG_MISSING`, `AGENT_REQUEST_FAILED`, `PLAN_INVALID`,
 `BUDGET_EXCEEDED`; implementation — `IMPLEMENTATION_NOT_READY`,
 `IMPLEMENTATION_NOT_SUPPORTED`, `IMPLEMENTATION_WORKSPACE_MISSING`, `VALIDATION_FAILED`;
-and `INTERNAL`. Raw stack traces never reach the client.
+validation correction — `VALIDATION_CORRECTION_NOT_AVAILABLE`; and `INTERNAL`. Raw
+stack traces never reach the client.
 
 Every job ends in a terminal state. Two async pipelines drive it:
 
@@ -270,6 +271,27 @@ per-file patches + numstat), then runs the validation runner. Diff collection an
 validation are best-effort — their failures degrade gracefully rather than crashing
 the job.
 
+The validation runner (`backend/app/steps/validation_runner.py`) auto-detects a
+Python profile (`ruff`/`pytest`, run via the *backend's own* `sys.executable` — not
+a venv belonging to the target repo) and a Node profile (`npm run lint`/`npm test`,
+from `package.json` scripts). The isolated workspace clone is just the repo's git
+tree — `node_modules` is never tracked by git, so a Node profile always installs
+dependencies first (`npm ci` if a lockfile is present, else `npm install`) before
+running lint/test; without this, any devDependency binary (`ng`, `eslint`,
+`vitest`, ...) fails with "not recognized"/"command not found" every time, which
+looks like a validation failure but isn't a real code defect. Install is
+best-effort and skipped if `node_modules` already exists (e.g. the post-correction
+revalidation reuses the same workspace); if install itself fails, the remaining
+npm-based checks are reported `SKIPPED` rather than run (they'd fail identically),
+and that failure is **not** eligible fodder for the validation-correction pass
+below — no source edit can fix a missing dependency, so feeding it to the
+corrective agent would just burn its one-shot budget on an unfixable prompt. On
+Windows, launching `npm`/`npx`/etc. also requires resolving the executable via
+`shutil.which()` to its full, extension-included path (`_resolve_executable`) —
+`subprocess.run` without `shell=True` only auto-appends `.exe` when searching
+PATH, so passing a bare name like `"npm"` fails even though it correctly resolves
+to an `npm.cmd` shim.
+
 Approving implementation may include optional free-text **clarifications** —
 answers to the plan's `open_questions` or other guidance — submitted alongside
 `POST /jobs/{id}/implement`. When present, they are quoted into the implement
@@ -278,6 +300,88 @@ acknowledge how each one was addressed in its summary; they never widen scope
 beyond the approved plan. The submitted text is echoed back on the job
 (`implementation_clarifications`) so the result view can show what was
 considered.
+
+## Validation-correction feedback loop
+
+After the validate step lands a job on `IMPLEMENTATION_READY` with one or more
+`FAILED` validation results, the developer may explicitly trigger **one** corrective
+pass (`POST /jobs/{id}/correct-validation`) rather than editing the diff by hand.
+This is an opt-in, explicitly-approved action — never automatic — matching the
+app's existing "human approves every code-writing action" pattern for the plan and
+implement steps. It is capped at exactly one attempt per job
+(`implementation_correction_attempted`, checked server-side so a second call is
+rejected with `VALIDATION_CORRECTION_NOT_AVAILABLE`) and **never regresses** a
+working implementation: whatever the correction's outcome, the job always lands
+back on `IMPLEMENTATION_READY`, never a failure state, so the original
+`implementation_result` stays visible even if the fix attempt itself errors out.
+
+- **Reuses the existing implementation agent**, not a new one: same harness, same
+  tool set (`Read`/`Grep`/`Glob`/`Edit`/`Write`, no `Bash`/network), same model —
+  `steps/implement_agent.py`'s `build_prompt`/`build_options` just switch to a
+  corrective framing when passed the job's `FAILED` validation results, and to
+  tighter budget caps (`AGENT_IMPLEMENT_CORRECTION_MAX_TURNS`,
+  `AGENT_IMPLEMENT_CORRECTION_MAX_BUDGET_USD`) than the main implementation pass.
+  Validation output (`output_excerpt`, real subprocess output) is quoted into the
+  prompt inside a `<validation_failures>` tag — untrusted data, same treatment as
+  ticket/repo content and clarifications.
+- **One cumulative diff, not a merge.** The pre-implementation baseline SHA is
+  persisted on the job (`implementation_baseline_commit_sha`) the first time
+  implementation runs, so the correction pass can re-diff the workspace against
+  that same baseline afterward and simply overwrite `implementation_diff` with the
+  result — original change plus fix, with no diff-merging logic required.
+- **State machine:** two additional non-terminal `JobState` values, `CORRECTING`
+  (agent applying a fix) and `REVALIDATING` (re-running the validation runner),
+  both of which always resolve back to `IMPLEMENTATION_READY`
+  (`run_validation_correction` in `app/jobs/runner.py`). They are deliberately
+  **not** added to the frontend's linear pipeline stepper (`JOB_STATES` in
+  `frontend/src/lib/job.ts`) — correction is a post-hoc addendum after
+  `IMPLEMENTATION_READY`, not a continuation of the plan → implement pipeline —
+  and are instead shown as a separate "Attempt automatic fix" card on the job
+  status screen, alongside the correction's own summary and changed-files list
+  once attempted.
+- Deterministic work stays out of the LLM here too: re-collecting the diff and
+  re-running validation after the corrective agent pass are the same plain-code
+  steps (`_collect_implementation_diff`, the validation runner) the original
+  implement phase already uses — only the corrective agent turn is new.
+
+## Branch preparation (commit only — never pushes)
+
+Once a job is `IMPLEMENTATION_READY`, the developer may explicitly create a branch
+and commit the already-reviewed diff **inside the isolated workspace**
+(`POST /jobs/{id}/create-branch`, `backend/app/steps/branch_prep.py`). This is
+deliberately scoped to commit-only: it never runs `git push` and never touches the
+user's original repository or any remote — pushing (and the credential handling it
+needs) is a distinct, not-yet-built capability. Like every other code-writing action
+in this app, it's explicitly triggered by the user, never automatic.
+
+- **Deterministic, synchronous, no LLM.** Branch/commit is plain git plumbing
+  (`checkout -B`, `add -A`, `commit`) — unlike implement/validate/correct there's no
+  slow agent call, so this endpoint runs inline and returns its result directly
+  (200, not 202 + poll) instead of going through the async job-state-machine
+  pattern the other mutating endpoints use.
+- **Branch naming:** `jira2pullreq/<TICKET-KEY>` for Jira-sourced jobs;
+  `jira2pullreq/<synthetic-key>-<slugified-plan-summary>` for a document-sourced job,
+  since its synthetic `DOC-XXXXXXXX` key alone means nothing to a reviewer
+  (`default_branch_name`). Both the branch name and the commit message (default:
+  `<ticket-key>: <plan summary>`) can be overridden per request
+  (`CreateBranchRequest`, same free-text length/credential-shape checks as every
+  other user-provided field).
+- **Branch-name validation is delegated to git itself** (`git check-ref-format
+  --branch`) rather than reimplementing the ref-name grammar — a battle-tested tool
+  already gets edge cases (double dots, trailing `.lock`, `@{`, control characters)
+  right.
+- **Capped at one successful call per job** (`Job.branch_name` set = done) — but
+  only *after* success. A rejected name or an empty diff never touches git state, so
+  those are always safely retryable with corrected input. This differs from
+  validation correction's cap: there's no LLM budget to protect here, but retrying
+  after a successful commit would mean re-pointing the branch at a fresh checkout of
+  the baseline, discarding the working tree that first commit already absorbed — so
+  the simplest safe design is to get it right once rather than support rename/retry.
+- Reuses the same baseline SHA the implement/correction steps already establish
+  (`implementation_baseline_commit_sha`) — since those steps only ever `git add`,
+  never `git commit`, HEAD is still at the baseline when this step runs, so
+  `checkout -B <name> <baseline>` is a no-op move that never touches the working
+  tree holding the (uncommitted) implementation changes.
 
 ## Job history and admin cost reporting
 
@@ -302,15 +406,19 @@ the header only when the signed-in user's role is `ADMIN`.
 alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
 delegated Jira/GitHub OAuth with encrypted-at-rest tokens; async jobs with SQLite
 store + polling status screen; the plan pipeline (fetch/clone/map/plan); local-repo
-execution with an isolated-clone implement + validate phase; plan and diff review
-screens; a paginated job-history list scoped to the owner (admins/no-auth-mode see
-all); an admin-only per-user cost-usage dashboard; typed errors; quality gates;
-security-invariant tests; a reference shared-deployment stack under `deploy/`.
+execution with an isolated-clone implement + validate phase; a single, explicitly
+opt-in validation-correction pass after a failed validation; creating a branch and
+committing the reviewed diff inside the isolated workspace (commit-only, never
+pushed); plan and diff review screens; a paginated job-history list scoped to the
+owner (admins/no-auth-mode see all); an admin-only per-user cost-usage dashboard;
+typed errors; quality gates; security-invariant tests; a reference
+shared-deployment stack under `deploy/`.
 
-**Out (not built; do not scaffold):** opening a pull request / pushing branches;
-delegated *git* auth (clone still uses ambient credentials); the GitLab OAuth flow;
-implementing against *remote* repos; a durable workflow engine; a network-locked
-sandbox; an embeddings/vector index.
+**Out (not built; do not scaffold):** pushing a branch anywhere, or opening a pull
+request; delegated *git* auth (clone still uses ambient credentials — branch
+creation is local-only so this doesn't apply yet, but pushing will need it); the
+GitLab OAuth flow; implementing against *remote* repos; a durable workflow engine;
+a network-locked sandbox; an embeddings/vector index.
 
 ## Stack
 

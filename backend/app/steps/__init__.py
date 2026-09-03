@@ -6,6 +6,7 @@ from app.jobs.models import Job, RequirementSource
 from app.jobs.runner import JobSteps
 from app.jobs.store import JobStore
 from app.schemas.ticket import TicketData
+from app.steps.branch_prep import create_branch
 from app.steps.document_fetch import fetch_requirement_document
 from app.steps.implement_agent import implement_plan
 from app.steps.jira_fetch import fetch_ticket as fetch_jira_ticket
@@ -32,4 +33,5 @@ def default_steps() -> JobSteps:
         generate_plan=generate_plan,
         implement_plan=implement_plan,
         validate_workspace=validate_workspace,
+        create_branch=create_branch,
     )

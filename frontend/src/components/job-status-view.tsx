@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  correctValidation,
+  createBranch,
   fetchJob,
   implementJob,
   isAbortError,
@@ -13,6 +15,7 @@ import {
   type ValidationResult,
 } from "@/lib/api";
 import { isTerminalState, JOB_STATES, JOB_STATE_LABELS } from "@/lib/job";
+import { consumePendingClarifications } from "@/lib/pending-clarifications";
 import { saveRetryDraft } from "@/lib/retry-draft";
 
 import { PlanView } from "./plan-view";
@@ -67,7 +70,11 @@ export function JobStatusView(props: { jobId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [implementing, setImplementing] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
   const [clarifications, setClarifications] = useState("");
+  const [branchNameInput, setBranchNameInput] = useState("");
+  const [commitMessageInput, setCommitMessageInput] = useState("");
+  const [creatingBranch, setCreatingBranch] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
     "idle",
   );
@@ -81,6 +88,13 @@ export function JobStatusView(props: { jobId: string }) {
     },
     [props.jobId],
   );
+
+  useEffect(() => {
+    const pending = consumePendingClarifications(props.jobId);
+    if (pending) {
+      setClarifications(pending);
+    }
+  }, [props.jobId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -141,6 +155,25 @@ export function JobStatusView(props: { jobId: string }) {
   const canRetry =
     job?.state === "FAILED" || job?.state === "IMPLEMENTATION_FAILED";
 
+  // Excludes a failed "npm install" step: it's a missing-dependency /
+  // environment problem, not a code defect, so no source edit could ever
+  // fix it — mirrors correctable_failures() in the backend's
+  // validation_runner.py.
+  const hasCorrectableFailure = job
+    ? (job.validation_results ?? []).some(
+        (result) => result.status === "FAILED" && result.name !== "npm install",
+      )
+    : false;
+  const correctionInProgress =
+    job?.state === "CORRECTING" || job?.state === "REVALIDATING";
+  const canCorrectValidation =
+    job?.state === "IMPLEMENTATION_READY" &&
+    hasCorrectableFailure &&
+    !job.implementation_correction_attempted;
+
+  const canCreateBranch =
+    job?.state === "IMPLEMENTATION_READY" && !job.branch_name;
+
   function handleRetry() {
     if (!job) {
       return;
@@ -154,6 +187,7 @@ export function JobStatusView(props: { jobId: string }) {
       planningNotes: job.planning_notes ?? "",
       requirementSource: job.requirement_source,
       requirementDocumentName: job.requirement_document_name,
+      implementationClarifications: job.implementation_clarifications ?? "",
     });
     router.push("/");
   }
@@ -175,6 +209,49 @@ export function JobStatusView(props: { jobId: string }) {
       );
     } finally {
       setImplementing(false);
+    }
+  }
+
+  async function handleCorrectValidation() {
+    if (!job) {
+      return;
+    }
+    setCorrecting(true);
+    setError(null);
+    try {
+      await correctValidation(job.id);
+      setRefreshKey((value) => value + 1);
+    } catch (correctError) {
+      setError(
+        correctError instanceof Error
+          ? correctError.message
+          : "Could not start validation correction.",
+      );
+    } finally {
+      setCorrecting(false);
+    }
+  }
+
+  async function handleCreateBranch() {
+    if (!job) {
+      return;
+    }
+    setCreatingBranch(true);
+    setError(null);
+    try {
+      await createBranch(job.id, {
+        branch_name: branchNameInput,
+        commit_message: commitMessageInput,
+      });
+      setRefreshKey((value) => value + 1);
+    } catch (branchError) {
+      setError(
+        branchError instanceof Error
+          ? branchError.message
+          : "Could not create the branch.",
+      );
+    } finally {
+      setCreatingBranch(false);
     }
   }
 
@@ -623,6 +700,151 @@ export function JobStatusView(props: { jobId: string }) {
               )}
             </section>
           </div>
+        </section>
+      ) : null}
+
+      {job &&
+      (hasCorrectableFailure || job.implementation_correction_attempted) ? (
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">Validation correction</span>
+              <h2>Attempt automatic fix</h2>
+              <p>
+                One or more validation checks failed. You can ask the agent to
+                attempt a targeted fix in the same workspace — limited to one
+                attempt per job.
+              </p>
+            </div>
+          </div>
+          {canCorrectValidation ? (
+            <div className="actions">
+              <button
+                className="primary-button"
+                disabled={correcting}
+                onClick={() => void handleCorrectValidation()}
+                type="button"
+              >
+                {correcting
+                  ? "Starting correction..."
+                  : "Attempt automatic fix"}
+              </button>
+            </div>
+          ) : null}
+          {correctionInProgress ? (
+            <p className="banner banner-info">
+              {JOB_STATE_LABELS[job.state]} in progress. This page will keep
+              polling automatically.
+            </p>
+          ) : null}
+          {job.implementation_correction_attempted ? (
+            <div className="stack">
+              {job.implementation_correction_error ? (
+                <p className="banner banner-error">
+                  {job.implementation_correction_error.message}
+                </p>
+              ) : job.implementation_correction_result ? (
+                <>
+                  <p className="preserve-whitespace">
+                    {job.implementation_correction_result.summary}
+                  </p>
+                  {(job.implementation_correction_result.changed_files ?? [])
+                    .length > 0 ? (
+                    <ul className="content-list">
+                      {job.implementation_correction_result.changed_files.map(
+                        (change) => (
+                          <li
+                            key={`${change.path}-${change.action}-${change.rationale}`}
+                          >
+                            <div className="change-header">
+                              <code>{change.path}</code>
+                              <span className="pill cap">{change.action}</span>
+                            </div>
+                            <p>{change.rationale}</p>
+                          </li>
+                        ),
+                      )}
+                    </ul>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {job && (canCreateBranch || job.branch_name) ? (
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">Branch preparation</span>
+              <h2>Create branch</h2>
+              <p>
+                Commit the reviewed diff to a new branch inside the isolated
+                workspace. This never pushes anywhere or touches your original
+                repository.
+              </p>
+            </div>
+          </div>
+          {canCreateBranch ? (
+            <div className="stack">
+              <label className="field">
+                <span>Branch name (optional)</span>
+                <small>
+                  Leave blank to use{" "}
+                  {job.requirement_source === "DOCUMENT"
+                    ? "a name based on the plan summary"
+                    : `"jira2pullreq/${job.ticket_key}"`}
+                  .
+                </small>
+                <input
+                  className="text-input"
+                  disabled={creatingBranch}
+                  maxLength={200}
+                  onChange={(event) => setBranchNameInput(event.target.value)}
+                  placeholder={`jira2pullreq/${job.ticket_key}`}
+                  type="text"
+                  value={branchNameInput}
+                />
+              </label>
+              <label className="field">
+                <span>Commit message (optional)</span>
+                <small>
+                  Leave blank to use &quot;{job.ticket_key}:{" "}
+                  {job.plan?.summary ?? "..."}&quot;.
+                </small>
+                <textarea
+                  className="text-input"
+                  disabled={creatingBranch}
+                  maxLength={2000}
+                  onChange={(event) =>
+                    setCommitMessageInput(event.target.value)
+                  }
+                  placeholder={`${job.ticket_key}: ${job.plan?.summary ?? ""}`}
+                  rows={2}
+                  value={commitMessageInput}
+                />
+              </label>
+              <div className="actions">
+                <button
+                  className="primary-button"
+                  disabled={creatingBranch}
+                  onClick={() => void handleCreateBranch()}
+                  type="button"
+                >
+                  {creatingBranch ? "Creating branch..." : "Create branch"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {job.branch_name ? (
+            <div className="stack">
+              <p>
+                Created branch <code>{job.branch_name}</code> at commit{" "}
+                <code>{job.branch_commit_sha?.slice(0, 12)}</code>.
+              </p>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

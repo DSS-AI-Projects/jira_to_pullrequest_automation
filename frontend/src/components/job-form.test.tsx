@@ -258,6 +258,7 @@ describe("JobForm", () => {
         repo: "D:\\repos\\abtf-membership",
         repoMode: "local",
         planningNotes: "Use the shared logger, not print().",
+        implementationClarifications: "",
       }),
     );
     fetchRepos.mockResolvedValue({
@@ -288,6 +289,48 @@ describe("JobForm", () => {
       screen.getByRole("button", { name: /Local repo path/i }),
     ).toHaveAttribute("aria-selected", "true");
     expect(sessionStorage.getItem("jira2pullreq:retry-draft")).toBeNull();
+  });
+
+  it("forwards retried implementation clarifications to the new job's pending-clarifications store", async () => {
+    sessionStorage.setItem(
+      "jira2pullreq:retry-draft",
+      JSON.stringify({
+        ticket: "KAN-34",
+        repo: "D:\\repos\\j5-frontend",
+        repoMode: "local",
+        planningNotes: "",
+        implementationClarifications:
+          "Stuff Type will be form based field i.e. F=factory, D=dock.",
+      }),
+    );
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: true,
+        allowed_roots: ["D:\\repos"],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+    createJob.mockResolvedValue({ job_id: "job-retried" });
+
+    render(<JobForm />);
+
+    await screen.findByDisplayValue("KAN-34");
+    fireEvent.click(
+      screen.getByRole("button", { name: /Generate implementation plan/i }),
+    );
+
+    await waitFor(() => expect(createJob).toHaveBeenCalled());
+    expect(push).toHaveBeenCalledWith("/jobs/job-retried");
+    expect(
+      sessionStorage.getItem("jira2pullreq:pending-clarifications:job-retried"),
+    ).toBe("Stuff Type will be form based field i.e. F=factory, D=dock.");
   });
 
   it("switches to a file upload when Upload document is selected", async () => {
@@ -381,6 +424,7 @@ describe("JobForm", () => {
         planningNotes: "",
         requirementSource: "DOCUMENT",
         requirementDocumentName: "requirements.pdf",
+        implementationClarifications: "",
       }),
     );
     fetchRepos.mockResolvedValue({

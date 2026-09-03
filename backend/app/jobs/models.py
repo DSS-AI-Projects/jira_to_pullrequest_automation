@@ -22,6 +22,8 @@ class JobState(StrEnum):
     IMPLEMENTATION_QUEUED = "IMPLEMENTATION_QUEUED"
     IMPLEMENTING = "IMPLEMENTING"
     VALIDATING = "VALIDATING"
+    CORRECTING = "CORRECTING"
+    REVALIDATING = "REVALIDATING"
     IMPLEMENTATION_READY = "IMPLEMENTATION_READY"
     IMPLEMENTATION_FAILED = "IMPLEMENTATION_FAILED"
     FAILED = "FAILED"
@@ -155,6 +157,30 @@ class Job(BaseModel):
     implementation_approved_at: datetime | None = None
     implementation_started_at: datetime | None = None
     implementation_finished_at: datetime | None = None
+    # The pre-implementation git SHA, persisted so a later correction pass can
+    # diff against the same baseline the original implementation used —
+    # without this, a correction run (a separate pipeline invocation) has no
+    # reliable way to reproduce the diff boundary.
+    implementation_baseline_commit_sha: str | None = None
+    # A validation-failure correction is capped at one attempt per job (see
+    # ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE) and is strictly
+    # best-effort: implementation_result/implementation_diff from the
+    # original pass are never regressed by a failed or partial correction.
+    implementation_correction_attempted: bool = False
+    implementation_correction_result: ImplementationResult | None = None
+    implementation_correction_error: JobError | None = None
+    # Set once a branch has been created and the reviewed diff committed to
+    # it inside the isolated workspace (never pushed anywhere — see
+    # ErrorCode.BRANCH_CREATION_NOT_AVAILABLE / BRANCH_CREATION_FAILED). The
+    # endpoint refuses a second call once this is set: unlike validation
+    # correction there's no LLM budget to protect, but re-creating after a
+    # *successful* commit would mean re-pointing the branch at a fresh
+    # checkout of the baseline, discarding the working tree that commit
+    # already absorbed — get it right once instead. A rejected branch name
+    # or commit message never reaches git, so it's always safely retryable.
+    branch_name: str | None = None
+    branch_commit_sha: str | None = None
+    branch_created_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

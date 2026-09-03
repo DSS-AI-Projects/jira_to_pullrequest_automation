@@ -46,6 +46,22 @@ class ImplementRequest(BaseModel):
     )
 
 
+class CreateBranchRequest(BaseModel):
+    # Same invariant-1 treatment as every other free-text field.
+    model_config = ConfigDict(extra="forbid")
+
+    branch_name: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Optional branch name; a ticket-based default is used if omitted",
+    )
+    commit_message: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Optional commit message; a ticket-based default is used if omitted",
+    )
+
+
 def _reject_credential_shaped(value: str, field: str) -> None:
     if looks_token_shaped(value):
         # Do not log or echo the value anywhere.
@@ -151,6 +167,21 @@ def normalize_clarifications(raw: str | None) -> str | None:
 def normalize_planning_notes(raw: str | None) -> str | None:
     """Trim and validate free-text technical guidance (pre-plan)."""
     return _normalize_free_text(raw, "planning_notes")
+
+
+def normalize_branch_name(raw: str | None) -> str | None:
+    """Trim and validate an optional user-supplied branch name.
+
+    Git's own `check-ref-format` (run against the workspace at branch-
+    creation time) is the authority on ref-name grammar — this only handles
+    the same invariant-1 credential-shape check every free-text field gets.
+    """
+    return _normalize_free_text(raw, "branch_name")
+
+
+def normalize_commit_message(raw: str | None) -> str | None:
+    """Trim and validate an optional user-supplied commit message."""
+    return _normalize_free_text(raw, "commit_message")
 
 
 def load_preconfigured_repos(settings: Settings) -> list[RepoChoice]:

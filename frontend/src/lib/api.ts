@@ -10,6 +10,8 @@ export type JobState =
   | "IMPLEMENTATION_QUEUED"
   | "IMPLEMENTING"
   | "VALIDATING"
+  | "CORRECTING"
+  | "REVALIDATING"
   | "IMPLEMENTATION_READY"
   | "IMPLEMENTATION_FAILED"
   | "FAILED";
@@ -209,6 +211,13 @@ export type Job = {
   implementation_approved_at: string | null;
   implementation_started_at: string | null;
   implementation_finished_at: string | null;
+  implementation_baseline_commit_sha: string | null;
+  implementation_correction_attempted: boolean;
+  implementation_correction_result: ImplementationResult | null;
+  implementation_correction_error: JobError | null;
+  branch_name: string | null;
+  branch_commit_sha: string | null;
+  branch_created_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -379,6 +388,24 @@ function normalizeJob(job: Job): Job {
             : [],
         }
       : null,
+    implementation_correction_result: job.implementation_correction_result
+      ? {
+          ...job.implementation_correction_result,
+          changed_files: Array.isArray(
+            job.implementation_correction_result.changed_files,
+          )
+            ? job.implementation_correction_result.changed_files
+            : [],
+          warnings: Array.isArray(job.implementation_correction_result.warnings)
+            ? job.implementation_correction_result.warnings
+            : [],
+          follow_up_questions: Array.isArray(
+            job.implementation_correction_result.follow_up_questions,
+          )
+            ? job.implementation_correction_result.follow_up_questions
+            : [],
+        }
+      : null,
   };
 }
 
@@ -477,6 +504,46 @@ export async function implementJob(
     signal,
   });
   return parseJson<JobCreated>(response);
+}
+
+export async function correctValidation(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<JobCreated> {
+  const response = await apiFetch(`/api/jobs/${jobId}/correct-validation`, {
+    method: "POST",
+    signal,
+  });
+  return parseJson<JobCreated>(response);
+}
+
+export type BranchCreated = {
+  branch_name: string;
+  commit_sha: string;
+};
+
+export async function createBranch(
+  jobId: string,
+  payload?: { branch_name?: string; commit_message?: string },
+  signal?: AbortSignal,
+): Promise<BranchCreated> {
+  const branchName = payload?.branch_name?.trim();
+  const commitMessage = payload?.commit_message?.trim();
+  const body = {
+    ...(branchName ? { branch_name: branchName } : {}),
+    ...(commitMessage ? { commit_message: commitMessage } : {}),
+  };
+  const response = await apiFetch(`/api/jobs/${jobId}/create-branch`, {
+    method: "POST",
+    ...(Object.keys(body).length > 0
+      ? {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      : {}),
+    signal,
+  });
+  return parseJson<BranchCreated>(response);
 }
 
 export async function fetchSession(signal?: AbortSignal): Promise<SessionInfo> {

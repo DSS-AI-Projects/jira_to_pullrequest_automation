@@ -18,6 +18,17 @@ from app.jobs.models import ValidationResult, ValidationStatus
 logger = get_logger(__name__)
 
 _OUTPUT_LIMIT = 1200
+_COMMAND_TIMEOUT_SECONDS = 120
+# npm install can be much slower than a lint/test run, especially cold
+# (no local npm cache yet in a fresh workspace) — give it more room.
+_INSTALL_TIMEOUT_SECONDS = 300
+
+# The name every dependency-install ValidationResult carries. Exported so
+# callers (the validation-correction endpoint/runner) can exclude it from
+# "failures worth asking the implementation agent to fix" — no source edit
+# can resolve a failed `npm install`, so feeding it to the corrective agent
+# would just burn its one-shot budget on an unfixable prompt.
+INSTALL_STEP_NAME = "npm install"
 
 
 @dataclass(frozen=True)
@@ -92,11 +103,49 @@ def _node_commands(workspace_path: Path) -> list[ValidationCommand]:
     return commands
 
 
-def _tool_available(command: list[str]) -> bool:
-    executable = command[0]
+def npm_install_command(workspace_path: Path) -> ValidationCommand | None:
+    """An `npm ci`/`npm install` step to run before npm-based validation
+    commands, if the workspace's dependencies aren't already installed.
+
+    The isolated workspace clone is just the repo's git tree — `node_modules`
+    is never tracked by git, so it's never present in a fresh clone. Without
+    installing first, any npm-based validation command that relies on a
+    devDependency binary (ng, eslint, vitest, ...) fails with "not
+    recognized" / "command not found" every time — not a real code defect.
+    Prefer `npm ci` (deterministic, matches the lockfile exactly) when a
+    lockfile is present; fall back to `npm install` otherwise. Returns None
+    when there's nothing to install (no package.json) or dependencies are
+    already present (e.g. a later validation pass in the same workspace,
+    such as the post-correction revalidation).
+    """
+    package_json = workspace_path / "package.json"
+    if not package_json.exists():
+        return None
+    if (workspace_path / "node_modules").exists():
+        return None
+    if (workspace_path / "package-lock.json").exists():
+        return ValidationCommand(name=INSTALL_STEP_NAME, command=["npm", "ci"])
+    return ValidationCommand(name=INSTALL_STEP_NAME, command=["npm", "install"])
+
+
+def _resolve_executable(executable: str) -> str | None:
+    """Resolve a command's executable to the path `subprocess.run` can launch.
+
+    On Windows, tools installed as shims (npm, npx, yarn, pnpm, ...) resolve to a
+    `.cmd`/`.bat` file. `subprocess.run` without `shell=True` only appends `.exe`
+    when searching PATH for a bare name, so passing e.g. "npm" directly raises
+    `FileNotFoundError: [WinError 2] The system cannot find the file specified`
+    even though `shutil.which("npm")` finds it. Resolving to the full path
+    (extension included) fixes this: Windows launches `.cmd`/`.bat` files fine
+    when given the full path, no shell wrapper needed.
+    """
     if executable == sys.executable:
-        return True
-    return shutil.which(executable) is not None
+        return executable
+    return shutil.which(executable)
+
+
+def _tool_available(command: list[str]) -> bool:
+    return _resolve_executable(command[0]) is not None
 
 
 def _truncate_output(output: str) -> str | None:
@@ -116,25 +165,31 @@ def _coerce_output(value: str | bytes | None) -> str:
     return value
 
 
-def _run_command_sync(workspace_path: Path, command: ValidationCommand) -> ValidationResult:
-    if not _tool_available(command.command):
+def _run_command_sync(
+    workspace_path: Path,
+    command: ValidationCommand,
+    timeout: int = _COMMAND_TIMEOUT_SECONDS,
+) -> ValidationResult:
+    resolved_executable = _resolve_executable(command.command[0])
+    if resolved_executable is None:
         return ValidationResult(
             name=command.name,
             command=" ".join(command.command),
             status=ValidationStatus.SKIPPED,
             summary="Tool is not available in this environment.",
         )
+    argv = [resolved_executable, *command.command[1:]]
 
     logger.info("validation %s: running %s", command.name, command.command)
     try:
         completed = subprocess.run(
-            command.command,
+            argv,
             cwd=workspace_path,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=120,
+            timeout=timeout,
             check=False,
         )
     except OSError as exc:
@@ -174,17 +229,10 @@ def _run_command_sync(workspace_path: Path, command: ValidationCommand) -> Valid
     )
 
 
-def _detect_commands(workspace_path: Path) -> list[ValidationCommand]:
-    commands = [*_python_commands(workspace_path), *_node_commands(workspace_path)]
-    unique: dict[tuple[str, ...], ValidationCommand] = {}
-    for command in commands:
-        unique[tuple(command.command)] = command
-    return list(unique.values())
-
-
 async def validate_workspace(workspace_path: Path) -> list[ValidationResult]:
-    commands = _detect_commands(workspace_path)
-    if not commands:
+    python_commands = _python_commands(workspace_path)
+    node_commands = _node_commands(workspace_path)
+    if not python_commands and not node_commands:
         return [
             ValidationResult(
                 name="validation-profile",
@@ -195,6 +243,48 @@ async def validate_workspace(workspace_path: Path) -> list[ValidationResult]:
         ]
 
     results: list[ValidationResult] = []
-    for command in commands:
+    for command in python_commands:
         results.append(await asyncio.to_thread(_run_command_sync, workspace_path, command))
+
+    if node_commands:
+        install_command = npm_install_command(workspace_path)
+        if install_command is not None:
+            install_result = await asyncio.to_thread(
+                _run_command_sync, workspace_path, install_command, _INSTALL_TIMEOUT_SECONDS
+            )
+            results.append(install_result)
+            if install_result.status != ValidationStatus.PASSED:
+                # Dependencies aren't installed, so every npm-based command
+                # below would just fail the same way for the same reason —
+                # skip them instead of burning another timeout each.
+                results.extend(
+                    ValidationResult(
+                        name=command.name,
+                        command=" ".join(command.command),
+                        status=ValidationStatus.SKIPPED,
+                        summary=(
+                            "Skipped because installing dependencies (npm install) did not succeed."
+                        ),
+                    )
+                    for command in node_commands
+                )
+                return results
+        for command in node_commands:
+            results.append(await asyncio.to_thread(_run_command_sync, workspace_path, command))
+
     return results
+
+
+def correctable_failures(results: list[ValidationResult]) -> list[ValidationResult]:
+    """Failed results worth handing to the implementation agent to fix.
+
+    Excludes a failed `npm install` step: it's an environment/dependency
+    problem, not a code defect, so no source edit could ever satisfy it —
+    offering it up would just spend the one-shot correction attempt on a
+    prompt the agent can't succeed at.
+    """
+    return [
+        result
+        for result in results
+        if result.status == ValidationStatus.FAILED and result.name != INSTALL_STEP_NAME
+    ]

@@ -14,6 +14,11 @@ export type RetryDraft = {
   // what to re-upload; the file input itself always starts empty.
   requirementSource: "JIRA" | "DOCUMENT";
   requirementDocumentName: string | null;
+  // The failed job's implementation clarifications, if any. There's no
+  // field for this on the creation form — job-form.tsx forwards it to
+  // pending-clarifications.ts once the new job's id is known, so it can
+  // prefill that job's own implement-approval panel later.
+  implementationClarifications: string;
 };
 
 const STORAGE_KEY = "jira2pullreq:retry-draft";

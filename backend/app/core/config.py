@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     agent_plan_max_budget_usd: float = 1.0
     # None disables the implementation-phase budget cap entirely (SDK default).
     agent_implement_max_budget_usd: float | None = None
+    # The corrective pass (fix validation failures) is meant to be a small,
+    # targeted change, not a re-implementation — deliberately tighter caps
+    # than the main implementation phase.
+    agent_implement_correction_max_turns: int = 10
+    agent_implement_correction_max_budget_usd: float | None = 1.0
     agent_timeout_seconds: int = 600
     # Token-saving controls (see docs). Stub returns a canned plan with NO API
     # call (pipeline testing without credits). Cache reuses a prior plan for the

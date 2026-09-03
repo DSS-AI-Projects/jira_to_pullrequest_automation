@@ -1,5 +1,10 @@
 import type { JobState } from "@/lib/api";
 
+// CORRECTING/REVALIDATING are deliberately not included here: they're a
+// post-hoc "fix the validation failures" addendum a developer can trigger
+// after reaching IMPLEMENTATION_READY, not a continuation of the linear
+// plan -> implement pipeline this timeline stepper represents. See the
+// correction status shown separately in job-status-view.tsx.
 export const JOB_STATES: JobState[] = [
   "QUEUED",
   "FETCHING_TICKET",
@@ -23,6 +28,8 @@ export const JOB_STATE_LABELS: Record<JobState, string> = {
   IMPLEMENTATION_QUEUED: "Implementation queued",
   IMPLEMENTING: "Applying changes",
   VALIDATING: "Running validation",
+  CORRECTING: "Attempting automatic fix",
+  REVALIDATING: "Re-running validation",
   IMPLEMENTATION_READY: "Implementation ready",
   IMPLEMENTATION_FAILED: "Implementation failed",
   FAILED: "Failed",

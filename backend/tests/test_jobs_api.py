@@ -21,10 +21,13 @@ from app.jobs.models import (
     Job,
     RepoInfo,
     RepoSourceKind,
+    ValidationResult,
+    ValidationStatus,
 )
 from app.jobs.runner import CloneResult, ImplementationStepResult
 from app.jobs.store import JobStore
 from app.main import create_app
+from app.steps.branch_prep import create_branch as real_create_branch
 from tests.fakes import make_fake_steps
 from tests.pdf_fixtures import make_pdf_bytes
 
@@ -97,8 +100,12 @@ def local_client(store: JobStore) -> Iterator[TestClient]:
             ),
         )
 
-    async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepResult:
-        del job
+    async def implement_plan(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
         (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
         return ImplementationStepResult(
             result=ImplementationResult(
@@ -126,6 +133,240 @@ def local_client(store: JobStore) -> Iterator[TestClient]:
         make_fake_steps(),
         clone_repo=local_clone,
         implement_plan=implement_plan,
+        # local_client has a real git workspace on disk (init_git_workspace
+        # above), so use the real branch-creation git plumbing too rather
+        # than the fake's unconditional echo — several tests below rely on
+        # it actually validating names and committing.
+        create_branch=real_create_branch,
+    )
+    app = create_app(store=store, steps=steps)
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def local_client_npm_install_failing(store: JobStore) -> Iterator[TestClient]:
+    """Same as local_client, but validation reports only a failed
+    "npm install" step — an environment/dependency problem, not something an
+    implementation-agent correction could ever fix — so the
+    correct-validation endpoint should refuse to offer a fix."""
+
+    def init_git_workspace(path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "README.md").write_text("Hello AI Agentic World\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(path), "branch", "-M", "main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "add", "README.md"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "-m", "Initial commit"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch=ticket_key,
+                commit_sha="e" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def implement_plan(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated the README greeting.",
+                changed_files=[
+                    ImplementationChange(
+                        path="README.md", action="modify", rationale="Match the approved plan."
+                    )
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=1.0),
+        )
+
+    async def validate_npm_install_failed(workspace_path: Path) -> list[ValidationResult]:
+        del workspace_path
+        return [
+            ValidationResult(
+                name="npm install",
+                command="npm install",
+                status=ValidationStatus.FAILED,
+                summary="Validation command failed with exit code 1.",
+                output_excerpt="npm ERR! network request to registry failed",
+            )
+        ]
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=local_clone,
+        implement_plan=implement_plan,
+        validate_workspace=validate_npm_install_failed,
+    )
+    app = create_app(store=store, steps=steps)
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def local_client_failing_validation(store: JobStore) -> Iterator[TestClient]:
+    """Same as local_client, but validation reports FAILED on its first run
+    and PASSED on its second — so the correct-validation endpoint has
+    something real to fix and revalidate."""
+
+    def init_git_workspace(path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "README.md").write_text("Hello AI Agentic World\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(path), "branch", "-M", "main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "add", "README.md"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "-m", "Initial commit"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch=ticket_key,
+                commit_sha="e" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    validate_calls: list[bool] = []
+
+    async def implement_plan(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job
+        (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
+        if validation_failures:
+            (workspace_path / "fix.py").write_text("x = 1\n", encoding="utf-8")
+            return ImplementationStepResult(
+                result=ImplementationResult(
+                    summary="Fixed the lint failure.",
+                    changed_files=[
+                        ImplementationChange(
+                            path="fix.py", action="create", rationale="Fix the lint error."
+                        )
+                    ],
+                    warnings=[],
+                    follow_up_questions=[],
+                ),
+                usage=AgentUsage(duration_seconds=0.5),
+            )
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated the README greeting.",
+                changed_files=[
+                    ImplementationChange(
+                        path="README.md", action="modify", rationale="Match the approved plan."
+                    )
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=1.0),
+        )
+
+    async def validate_once_failed_then_passed(workspace_path: Path) -> list[ValidationResult]:
+        del workspace_path
+        if not validate_calls:
+            validate_calls.append(True)
+            return [
+                ValidationResult(
+                    name="ruff",
+                    command="ruff check .",
+                    status=ValidationStatus.FAILED,
+                    summary="1 lint error",
+                    output_excerpt="fix.py:1: undefined name",
+                )
+            ]
+        return [
+            ValidationResult(
+                name="ruff", command="ruff check .", status=ValidationStatus.PASSED, summary="ok"
+            )
+        ]
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=local_clone,
+        implement_plan=implement_plan,
+        validate_workspace=validate_once_failed_then_passed,
     )
     app = create_app(store=store, steps=steps)
     with TestClient(app, raise_server_exceptions=False) as test_client:
@@ -184,8 +425,12 @@ def local_folder_client(store: JobStore) -> Iterator[TestClient]:
             ),
         )
 
-    async def implement_plan(job: Job, workspace_path: Path) -> ImplementationStepResult:
-        del job
+    async def implement_plan(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
         (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
         return ImplementationStepResult(
             result=ImplementationResult(
@@ -594,6 +839,212 @@ def test_implement_rejects_job_not_in_plan_ready_state(client: TestClient, store
     response = client.post(f"/api/jobs/{job.id}/implement")
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "IMPLEMENTATION_NOT_READY"
+
+
+def _poll_until_correction_attempted(
+    client: TestClient, job_id: str, timeout: float = 5.0
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/jobs/{job_id}").json()
+        if body["implementation_correction_attempted"]:
+            return body
+        time.sleep(0.02)
+    raise AssertionError("job never finished its validation correction attempt")
+
+
+def test_correct_validation_fixes_and_revalidates(
+    local_client_failing_validation: TestClient,
+) -> None:
+    create = local_client_failing_validation.post(
+        "/api/jobs",
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(local_client_failing_validation, job_id)
+
+    implement = local_client_failing_validation.post(f"/api/jobs/{job_id}/implement")
+    assert implement.status_code == 202
+    ready = poll_until_terminal(
+        local_client_failing_validation,
+        job_id,
+        terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED"),
+    )
+    assert ready["state"] == "IMPLEMENTATION_READY"
+    assert ready["validation_results"][0]["status"] == "FAILED"
+    assert ready["implementation_correction_attempted"] is False
+
+    correct = local_client_failing_validation.post(f"/api/jobs/{job_id}/correct-validation")
+    assert correct.status_code == 202
+    assert correct.json()["job_id"] == job_id
+
+    final = _poll_until_correction_attempted(local_client_failing_validation, job_id)
+    assert final["state"] == "IMPLEMENTATION_READY"
+    assert final["implementation_correction_attempted"] is True
+    assert final["implementation_correction_error"] is None
+    assert final["implementation_correction_result"]["summary"] == "Fixed the lint failure."
+    assert final["validation_results"][0]["status"] == "PASSED"
+    paths = {f["path"] for f in final["implementation_diff"]["files"]}
+    assert paths == {"README.md", "fix.py"}
+
+
+def test_correct_validation_rejects_a_second_attempt(
+    local_client_failing_validation: TestClient,
+) -> None:
+    create = local_client_failing_validation.post(
+        "/api/jobs",
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(local_client_failing_validation, job_id)
+    local_client_failing_validation.post(f"/api/jobs/{job_id}/implement")
+    poll_until_terminal(
+        local_client_failing_validation,
+        job_id,
+        terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED"),
+    )
+
+    first = local_client_failing_validation.post(f"/api/jobs/{job_id}/correct-validation")
+    assert first.status_code == 202
+    _poll_until_correction_attempted(local_client_failing_validation, job_id)
+
+    second = local_client_failing_validation.post(f"/api/jobs/{job_id}/correct-validation")
+    assert second.status_code == 400
+    assert second.json()["error"]["code"] == "VALIDATION_CORRECTION_NOT_AVAILABLE"
+
+
+def test_correct_validation_rejects_when_nothing_failed(local_client: TestClient) -> None:
+    """local_client's validation always reports SKIPPED — nothing to fix."""
+    create = local_client.post(
+        "/api/jobs",
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(local_client, job_id)
+    local_client.post(f"/api/jobs/{job_id}/implement")
+    poll_until_terminal(
+        local_client, job_id, terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED")
+    )
+
+    response = local_client.post(f"/api/jobs/{job_id}/correct-validation")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_CORRECTION_NOT_AVAILABLE"
+
+
+def test_correct_validation_rejects_when_only_npm_install_failed(
+    local_client_npm_install_failing: TestClient,
+) -> None:
+    """A failed npm install is an environment problem, not something a
+    source-code edit could fix — the endpoint must not offer a correction
+    for it, even though the job does have a FAILED validation result."""
+    create = local_client_npm_install_failing.post(
+        "/api/jobs",
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(local_client_npm_install_failing, job_id)
+    local_client_npm_install_failing.post(f"/api/jobs/{job_id}/implement")
+    ready = poll_until_terminal(
+        local_client_npm_install_failing,
+        job_id,
+        terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED"),
+    )
+    assert ready["state"] == "IMPLEMENTATION_READY"
+    assert ready["validation_results"][0]["status"] == "FAILED"
+
+    response = local_client_npm_install_failing.post(f"/api/jobs/{job_id}/correct-validation")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_CORRECTION_NOT_AVAILABLE"
+
+
+def test_correct_validation_rejects_job_not_implementation_ready(
+    client: TestClient, store: JobStore
+) -> None:
+    job = Job.new(ticket_key="PROJ-1", repo_url="git@github.com:acme/repo.git")
+    store.create(job)
+
+    response = client.post(f"/api/jobs/{job.id}/correct-validation")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_CORRECTION_NOT_AVAILABLE"
+
+
+def _reach_implementation_ready(client: TestClient) -> str:
+    create = client.post(
+        "/api/jobs",
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(client, job_id)
+    client.post(f"/api/jobs/{job_id}/implement")
+    ready = poll_until_terminal(
+        client, job_id, terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED")
+    )
+    assert ready["state"] == "IMPLEMENTATION_READY"
+    return job_id
+
+
+def test_create_branch_commits_the_reviewed_diff(local_client: TestClient) -> None:
+    job_id = _reach_implementation_ready(local_client)
+
+    response = local_client.post(f"/api/jobs/{job_id}/create-branch")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["branch_name"] == "jira2pullreq/PROJ-123"
+    assert body["commit_sha"]
+
+    job = local_client.get(f"/api/jobs/{job_id}").json()
+    assert job["branch_name"] == "jira2pullreq/PROJ-123"
+    assert job["branch_commit_sha"] == body["commit_sha"]
+    assert job["branch_created_at"] is not None
+
+
+def test_create_branch_honors_a_custom_name_and_message(local_client: TestClient) -> None:
+    job_id = _reach_implementation_ready(local_client)
+
+    response = local_client.post(
+        f"/api/jobs/{job_id}/create-branch",
+        json={"branch_name": "custom/my-branch", "commit_message": "A custom message"},
+    )
+    assert response.status_code == 200
+    assert response.json()["branch_name"] == "custom/my-branch"
+
+
+def test_create_branch_rejects_a_second_attempt(local_client: TestClient) -> None:
+    job_id = _reach_implementation_ready(local_client)
+
+    first = local_client.post(f"/api/jobs/{job_id}/create-branch")
+    assert first.status_code == 200
+
+    second = local_client.post(f"/api/jobs/{job_id}/create-branch")
+    assert second.status_code == 400
+    assert second.json()["error"]["code"] == "BRANCH_CREATION_NOT_AVAILABLE"
+
+
+def test_create_branch_rejects_an_invalid_name_and_stays_retryable(
+    local_client: TestClient,
+) -> None:
+    job_id = _reach_implementation_ready(local_client)
+
+    bad = local_client.post(f"/api/jobs/{job_id}/create-branch", json={"branch_name": "bad..name"})
+    assert bad.status_code == 400
+    assert bad.json()["error"]["code"] == "BRANCH_NAME_INVALID"
+
+    job = local_client.get(f"/api/jobs/{job_id}").json()
+    assert job["branch_name"] is None
+
+    good = local_client.post(f"/api/jobs/{job_id}/create-branch")
+    assert good.status_code == 200
+
+
+def test_create_branch_rejects_job_not_implementation_ready(
+    client: TestClient, store: JobStore
+) -> None:
+    job = Job.new(ticket_key="PROJ-1", repo_url="git@github.com:acme/repo.git")
+    store.create(job)
+
+    response = client.post(f"/api/jobs/{job.id}/create-branch")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BRANCH_CREATION_NOT_AVAILABLE"
 
 
 def test_implement_rejects_remote_repo_jobs(client: TestClient) -> None:
