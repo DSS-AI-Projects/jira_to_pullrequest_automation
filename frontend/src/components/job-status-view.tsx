@@ -145,9 +145,10 @@ export function JobStatusView(props: { jobId: string }) {
     return JOB_STATES.findIndex((state) => state === job.state);
   }, [job]);
 
-  const canImplement = job
-    ? job.state === "PLAN_READY" && isLocalSource(job)
-    : false;
+  // Implementation runs entirely in the isolated workspace clone regardless
+  // of source kind, so it's available for every job that has reached
+  // PLAN_READY — remote-sourced jobs included.
+  const canImplement = job?.state === "PLAN_READY";
 
   const implementationResult =
     job?.state === "IMPLEMENTATION_READY" ? job.implementation_result : null;
@@ -414,6 +415,74 @@ export function JobStatusView(props: { jobId: string }) {
         </section>
       ) : null}
 
+      {job?.state === "IMPLEMENTATION_FAILED" && job.implementation_diff ? (
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">Partial changes</span>
+              <h2>Changes made before the failure</h2>
+              <p className="meta-muted">
+                The agent had already written these changes to the isolated
+                workspace before the job failed. They were never validated or
+                summarized by the agent, so review carefully before reusing
+                them.
+              </p>
+            </div>
+          </div>
+          <div className="actions">
+            <button
+              className="pill-button"
+              onClick={() =>
+                void handleCopyPatch(
+                  job.implementation_diff?.overall_patch ?? "",
+                )
+              }
+              type="button"
+            >
+              {copyStatus === "copied"
+                ? "Copied!"
+                : copyStatus === "error"
+                  ? "Copy failed"
+                  : "Copy patch"}
+            </button>
+            <button
+              className="pill-button"
+              onClick={() =>
+                handleDownloadPatch(
+                  job.implementation_diff?.overall_patch ?? "",
+                  job.id,
+                  job.ticket_key,
+                )
+              }
+              type="button"
+            >
+              Download patch
+            </button>
+          </div>
+          <details>
+            <summary className="pill-button">Show full patch</summary>
+            <pre className="output-block">
+              {job.implementation_diff.overall_patch}
+            </pre>
+          </details>
+          <ul className="content-list">
+            {(job.implementation_diff.files ?? []).map((file) => (
+              <li key={`${file.path}-${file.is_binary}`}>
+                <div className="change-header">
+                  <code>{file.path}</code>
+                  <span className="pill">{diffStat(file)}</span>
+                </div>
+                {file.is_binary ? (
+                  <p className="meta-muted">Binary file diff is not shown.</p>
+                ) : (
+                  <pre className="output-block">{file.patch}</pre>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {job?.plan ? (
         <PlanView
           plan={job.plan}
@@ -511,12 +580,6 @@ export function JobStatusView(props: { jobId: string }) {
                   : "Approve and Implement"}
               </button>
             </div>
-          ) : null}
-          {!canImplement && job.state === "PLAN_READY" ? (
-            <p className="meta-muted">
-              Implementation approval is available only for local repository
-              jobs.
-            </p>
           ) : null}
           {job.state === "IMPLEMENTATION_QUEUED" ||
           job.state === "IMPLEMENTING" ||

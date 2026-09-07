@@ -305,6 +305,11 @@ async def test_invalid_structured_output_is_implementation_invalid(
     with pytest.raises(AppError) as excinfo:
         await implement_plan(implementation_job(), tmp_path)
     assert excinfo.value.code == ErrorCode.IMPLEMENTATION_INVALID
+    # Distinct from the structured-output-retries-exhausted message below and
+    # from the runner's own "claimed changes but no diff found" message — a
+    # developer should be able to tell which of the three actually happened.
+    assert "didn't match the expected result format" in excinfo.value.user_message
+    assert "retrying often succeeds" in excinfo.value.user_message
 
 
 async def test_harness_budget_stop_is_budget_exceeded(
@@ -336,3 +341,5 @@ async def test_max_structured_output_retries_is_implementation_invalid(
         await implement_plan(implementation_job(), tmp_path)
     assert excinfo.value.code == ErrorCode.IMPLEMENTATION_INVALID
     assert "Failed to provide valid structured output" in (excinfo.value.internal_detail or "")
+    assert "could not produce a properly formatted result" in excinfo.value.user_message
+    assert "retrying often succeeds" in excinfo.value.user_message

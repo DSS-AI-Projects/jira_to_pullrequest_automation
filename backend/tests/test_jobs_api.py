@@ -145,6 +145,104 @@ def local_client(store: JobStore) -> Iterator[TestClient]:
 
 
 @pytest.fixture
+def remote_client(store: JobStore) -> Iterator[TestClient]:
+    """Same as local_client, but the cloned workspace's RepoInfo reports
+    REMOTE (no local_path) — implementation is no longer gated to local
+    sources; the isolated workspace clone is identical either way."""
+
+    def init_git_workspace(path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "README.md").write_text("Hello AI Agentic World\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(path), "branch", "-M", "main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "add", "README.md"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "-m", "Initial commit"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    async def remote_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.REMOTE,
+                branch="main",
+                commit_sha="e" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path=None,
+            ),
+        )
+
+    async def implement_plan(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated the README greeting.",
+                changed_files=[
+                    ImplementationChange(
+                        path="README.md",
+                        action="modify",
+                        rationale="Update the greeting text to match the approved plan.",
+                    )
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(
+                input_tokens=120,
+                output_tokens=80,
+                total_cost_usd=0.02,
+                num_turns=2,
+                duration_seconds=1.2,
+            ),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=remote_clone,
+        implement_plan=implement_plan,
+        create_branch=real_create_branch,
+    )
+    app = create_app(store=store, steps=steps)
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
+
+
+@pytest.fixture
 def local_client_npm_install_failing(store: JobStore) -> Iterator[TestClient]:
     """Same as local_client, but validation reports only a failed
     "npm install" step — an environment/dependency problem, not something an
@@ -1047,7 +1145,14 @@ def test_create_branch_rejects_job_not_implementation_ready(
     assert response.json()["error"]["code"] == "BRANCH_CREATION_NOT_AVAILABLE"
 
 
-def test_implement_rejects_remote_repo_jobs(client: TestClient) -> None:
+def test_implement_no_longer_rejects_remote_repo_jobs_by_source_kind(
+    client: TestClient,
+) -> None:
+    """Remote-sourced jobs are no longer blocked at the implement gate merely
+    for being remote (see test_implement_accepts_remote_repo_jobs_end_to_end
+    for the full happy path). The plain `client` fixture's fake clone doesn't
+    create a real workspace on disk, so it now fails for a different, more
+    specific reason than IMPLEMENTATION_NOT_SUPPORTED."""
     create = client.post(
         "/api/jobs",
         data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
@@ -1060,7 +1165,28 @@ def test_implement_rejects_remote_repo_jobs(client: TestClient) -> None:
 
     response = client.post(f"/api/jobs/{job_id}/implement")
     assert response.status_code == 400
-    assert response.json()["error"]["code"] == "IMPLEMENTATION_NOT_SUPPORTED"
+    assert response.json()["error"]["code"] == "IMPLEMENTATION_WORKSPACE_MISSING"
+
+
+def test_implement_accepts_remote_repo_jobs_end_to_end(remote_client: TestClient) -> None:
+    create = remote_client.post(
+        "/api/jobs",
+        data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
+    )
+    job_id = create.json()["job_id"]
+    poll_until_terminal(remote_client, job_id)
+
+    implement = remote_client.post(f"/api/jobs/{job_id}/implement")
+    assert implement.status_code == 202
+
+    ready = poll_until_terminal(
+        remote_client,
+        job_id,
+        terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED"),
+    )
+    assert ready["state"] == "IMPLEMENTATION_READY"
+    assert ready["implementation_result"]["summary"] == "Updated the README greeting."
+    assert ready["repo_info"]["source_kind"] == "REMOTE"
 
 
 def test_implement_accepts_local_folder_repo_jobs(local_folder_client: TestClient) -> None:

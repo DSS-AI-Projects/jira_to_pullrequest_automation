@@ -148,8 +148,8 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.VALIDATION_FAILED: ("Running post-implementation validation failed unexpectedly."),
     ErrorCode.IMPLEMENTATION_NOT_READY: ("This job is not ready for implementation approval yet."),
     ErrorCode.IMPLEMENTATION_NOT_SUPPORTED: (
-        "Implementation is currently available only for jobs created from "
-        "approved local repositories."
+        "Implementation is not available for this job because no repository "
+        "information was recorded for it."
     ),
     ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING: (
         "The isolated workspace for this job is unavailable. Regenerate the plan and try again."

@@ -249,7 +249,7 @@ describe("JobStatusView", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
   });
 
-  it("explains when implementation approval is unavailable for remote jobs", async () => {
+  it("allows implementation approval for remote jobs too", async () => {
     fetchJob.mockResolvedValue({
       id: "job-remote",
       ticket_key: "PROJ-1",
@@ -295,12 +295,7 @@ describe("JobStatusView", () => {
 
     render(<JobStatusView jobId="job-remote" />);
 
-    await screen.findByText(
-      /Implementation approval is available only for local repository jobs/i,
-    );
-    expect(
-      screen.queryByRole("button", { name: /Approve and Implement/i }),
-    ).not.toBeInTheDocument();
+    await screen.findByRole("button", { name: /Approve and Implement/i });
   });
 
   it("allows implementation and renders folder-source metadata for a LOCAL_FOLDER job", async () => {
@@ -638,6 +633,108 @@ describe("JobStatusView", () => {
 
     const stateValue = await screen.findByText("Implementation failed");
     expect(stateValue).toHaveClass("state-failed");
+  });
+
+  it("shows partial changes captured before an implementation failure", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-impl-failed-partial",
+      ticket_key: "KAN-31",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: null,
+      state: "IMPLEMENTATION_FAILED",
+      error: {
+        code: "BUDGET_EXCEEDED",
+        message:
+          "The implementation agent exceeded its run budget before finishing.",
+        stage: "IMPLEMENTING",
+      },
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "jira_to_code_test",
+        commit_sha: "f".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\abtf-membership",
+      },
+      workspace_path: "D:\\workdir\\job-impl-failed-partial\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: {
+        overall_patch:
+          "diff --git a/README b/README\nindex 1111111..2222222 100644\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-Hello World\n+Hello Partial World\n",
+        files: [
+          {
+            path: "README",
+            patch:
+              "diff --git a/README b/README\nindex 1111111..2222222 100644\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-Hello World\n+Hello Partial World\n",
+            additions: 1,
+            deletions: 1,
+            is_binary: false,
+          },
+        ],
+      },
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-20T09:00:00Z",
+      updated_at: "2026-08-20T09:05:00Z",
+    });
+
+    render(<JobStatusView jobId="job-impl-failed-partial" />);
+
+    await screen.findByText("Changes made before the failure");
+    expect(screen.getByText("README")).toBeInTheDocument();
+    expect(screen.getByText(/\+1 -1/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Copy patch" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show a partial-changes section when nothing was captured", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-impl-failed-empty",
+      ticket_key: "KAN-31",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: null,
+      state: "IMPLEMENTATION_FAILED",
+      error: {
+        code: "IMPLEMENTATION_INVALID",
+        message: "The implementation agent could not produce a valid result.",
+        stage: "IMPLEMENTING",
+      },
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "jira_to_code_test",
+        commit_sha: "f".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\abtf-membership",
+      },
+      workspace_path: "D:\\workdir\\job-impl-failed-empty\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-20T09:00:00Z",
+      updated_at: "2026-08-20T09:05:00Z",
+    });
+
+    render(<JobStatusView jobId="job-impl-failed-empty" />);
+
+    await screen.findByText("Job failed");
+    expect(
+      screen.queryByText("Changes made before the failure"),
+    ).not.toBeInTheDocument();
   });
 
   function readyJobWithValidation(overrides: Record<string, unknown>) {
@@ -1002,9 +1099,7 @@ describe("JobStatusView", () => {
 
     render(<JobStatusView jobId="job-remote" />);
 
-    await screen.findByText(
-      /Implementation approval is available only for local repository jobs/i,
-    );
+    await screen.findByRole("button", { name: /Approve and Implement/i });
     expect(
       screen.queryByRole("button", { name: "Retry" }),
     ).not.toBeInTheDocument();

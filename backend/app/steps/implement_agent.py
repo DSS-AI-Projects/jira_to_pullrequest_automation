@@ -42,6 +42,26 @@ _BUDGET_EXCEEDED_MESSAGE = (
     "approving implementation again, or raise AGENT_IMPLEMENT_MAX_BUDGET_USD / "
     "AGENT_IMPLEMENT_MAX_TURNS in backend/.env."
 )
+# The two IMPLEMENTATION_INVALID sub-cases below are the two shapes of "the
+# agent's final response wasn't usable" — distinct from each other and from
+# the runner's own "claimed changes but no diff found" consistency-check
+# message (app/jobs/runner.py), so a developer sees which one actually
+# happened instead of one generic, unhelpful message for all three.
+_SCHEMA_INVALID_MESSAGE = (
+    "The implementation agent's response didn't match the expected result "
+    "format. This is usually a one-off issue — retrying often succeeds without "
+    "any changes needed. If it keeps happening on this ticket, the plan may be "
+    "too large or ambiguous for one pass; try adding clarifications that narrow "
+    "the scope, or splitting the ticket into smaller changes."
+)
+_STRUCTURED_OUTPUT_RETRIES_EXHAUSTED_MESSAGE = (
+    "The implementation agent could not produce a properly formatted result "
+    "after multiple attempts. This is usually a one-off issue — retrying often "
+    "succeeds without any changes needed. If it keeps happening on this ticket, "
+    "the requested change may be too large or ambiguous for one pass; try "
+    "adding clarifications that narrow the scope, or splitting the ticket into "
+    "smaller changes."
+)
 
 _SYSTEM_PROMPT = """\
 You are a senior software engineer applying an already-approved implementation
@@ -330,6 +350,7 @@ async def implement_plan(
         except ValidationError as exc:
             raise AppError(
                 ErrorCode.IMPLEMENTATION_INVALID,
+                user_message=_SCHEMA_INVALID_MESSAGE,
                 internal_detail=redact(f"implementation result validation failed: {exc}"),
             ) from exc
 
@@ -350,7 +371,11 @@ async def implement_plan(
 
     if outcome.subtype == "error_max_structured_output_retries":
         detail = redact(f"harness stopped: {outcome.subtype} errors={outcome.errors}")
-        raise AppError(ErrorCode.IMPLEMENTATION_INVALID, internal_detail=detail)
+        raise AppError(
+            ErrorCode.IMPLEMENTATION_INVALID,
+            user_message=_STRUCTURED_OUTPUT_RETRIES_EXHAUSTED_MESSAGE,
+            internal_detail=detail,
+        )
 
     detail = redact(f"subtype={outcome.subtype} errors={outcome.errors}")
     raise AppError(ErrorCode.INTERNAL, internal_detail=detail)

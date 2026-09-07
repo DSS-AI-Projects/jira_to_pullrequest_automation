@@ -1,9 +1,9 @@
 # jira2pullreq
 
 Reads a Jira ticket — or an uploaded PDF requirement document — analyzes a Git
-repo, and produces a structured, schema-validated implementation plan. For
-**local** repositories, an approved plan can then be implemented in an
-isolated clone, producing a real diff plus lint/type/test validation results.
+repo, and produces a structured, schema-validated implementation plan. An
+approved plan can then be implemented in an isolated clone — local or remote
+repo alike — producing a real diff plus lint/type/test validation results.
 Opening a pull request is still out of scope.
 
 See [CLAUDE.md](CLAUDE.md) for the full project contract: scope, security
@@ -25,11 +25,13 @@ what the app does and why.
    impacted files, proposed changes, test strategy, risks, and open
    questions.
 4. **Review** — the plan renders on a review screen for a human to approve.
-5. **Implementation (local repos only, opt-in)** — once approved, a second
-   agent applies the plan inside the isolated clone (`Read`/`Grep`/`Glob`/
-   `Edit`/`Write`, no `Bash`, no network tools), producing a real diff against
-   a pre-implementation baseline git SHA, followed by an auto-detected
-   lint/type/test validation run (plain code, not an LLM step).
+5. **Implementation (opt-in)** — once approved, a second agent applies the
+   plan inside the isolated clone (`Read`/`Grep`/`Glob`/`Edit`/`Write`, no
+   `Bash`, no network tools), producing a real diff against a
+   pre-implementation baseline git SHA, followed by an auto-detected
+   lint/type/test validation run (plain code, not an LLM step). Available for
+   local and remote repos alike — implementation only ever touches the
+   isolated clone, never the original repo or remote.
 6. **Job history & cost tracking** — every job is listed on a paginated
    `/jobs` page scoped to its owner; admins get a per-user AI cost breakdown
    at `/admin/costs`.
@@ -183,9 +185,10 @@ allowlist), or — when `ALLOW_LOCAL_REPOS=true` — an absolute local path.
   metadata captured from the selected branch/worktree: branch, commit SHA,
   origin URL, and dirty/clean state.
 
-**Implementation phase** (local sources only — `LOCAL` or `LOCAL_FOLDER`;
-remote repos are excluded): after plan approval, the implementation agent
-applies the plan inside the isolated workspace. A pre-implementation baseline
+**Implementation phase** (every source kind — `LOCAL`, `LOCAL_FOLDER`, and
+`REMOTE` alike, since all three land in the same kind of isolated workspace):
+after plan approval, the implementation agent applies the plan inside the
+isolated workspace. A pre-implementation baseline
 git SHA is recorded so the diff capture step correctly captures changes even
 as the implementation advances the workspace's git state; the diff (per-file
 patches + numstat) and validation results (auto-detected lint/type/test

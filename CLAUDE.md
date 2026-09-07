@@ -1,9 +1,9 @@
 # jira2pullreq — Ticket → Plan → (optional) Implement
 
 A web app that reads a Jira ticket, analyzes a Git repo, and produces a structured
-implementation plan. For **local** repositories the user can then approve a second
-phase that implements the plan in an isolated clone, captures the diff, and runs
-validation. Opening a pull request is still out of scope.
+implementation plan. The user can then approve a second phase that implements the
+plan in an isolated clone (local or remote repos alike), captures the diff, and
+runs validation. Opening a pull request is still out of scope.
 
 > **Scope note:** this project began as "Milestone 1: Ticket → Plan" (plan only,
 > single-user, env/ambient auth, no OAuth, no apply step). It has since grown a
@@ -17,9 +17,10 @@ validation. Opening a pull request is still out of scope.
 A signed-in user (or, with auth off, any local user) submits a real Jira ticket key
 (or URL) — or, alternatively, uploads a PDF requirement document — plus a repo
 identifier, and gets back a valid, schema-conforming plan JSON rendered on the
-review screen. For an approved local repo they may run the implement phase and get
-back a diff + validation results. Every failure path returns a typed, user-safe
-error, and all quality gates (types, lint, tests, secret scan) are green.
+review screen. Once approved, they may run the implement phase — local or remote
+repo alike — and get back a diff + validation results. Every failure path returns
+a typed, user-safe error, and all quality gates (types, lint, tests, secret scan)
+are green.
 
 ## Hard security principle: the app NEVER custodies user secrets *typed into the UI*
 
@@ -172,7 +173,7 @@ Every job ends in a terminal state. Two async pipelines drive it:
 
 - **Plan** (`run_job`): `QUEUED → FETCHING_TICKET → CLONING_REPO → MAPPING_REPO →
   PLANNING → PLAN_READY | FAILED`.
-- **Implement** (`run_implementation`, opt-in, local repos only): `PLAN_READY →
+- **Implement** (`run_implementation`, opt-in, any repo source): `PLAN_READY →
   IMPLEMENTATION_QUEUED → IMPLEMENTING → VALIDATING → IMPLEMENTATION_READY |
   IMPLEMENTATION_FAILED`.
 
@@ -264,12 +265,33 @@ are always excluded, and the source's own `.gitignore` (if present) is additiona
 honored on a best-effort basis — this keeps stray secrets out of the workspace the
 planning/implementation agent can Read/Grep (invariant 3).
 
-The implement phase is **gated to local sources** (`LOCAL` or `LOCAL_FOLDER`; `REMOTE`
-is excluded). It records a pre-implementation baseline git SHA, runs the
+The implement phase is available for every source kind (`LOCAL`, `LOCAL_FOLDER`,
+and `REMOTE`) — clone already lands every source in the same kind of isolated
+workspace (`RepoSourceKind` only changes how that workspace was populated, not
+what the implement/validate/correct/branch-prep steps do with it afterward), so
+there was no technical reason to gate implementation to local sources; it's
+available uniformly now. It records a pre-implementation baseline git SHA, runs the
 implementation agent, diffs the workspace against the baseline (`ImplementationDiff`,
 per-file patches + numstat), then runs the validation runner. Diff collection and
 validation are best-effort — their failures degrade gracefully rather than crashing
 the job.
+
+**A failed implementation never discards real work that already landed in the
+workspace.** If `implement_plan` (or a validation-correction pass) raises partway
+through — a budget cap, a request failure, or the "agent claimed changes that never
+landed" consistency check — `_refresh_diff_best_effort` (`app/jobs/runner.py`)
+re-collects whatever diff exists between the workspace's current state and the
+recorded baseline before the job is marked failed, and attaches it to
+`Job.implementation_diff` if non-empty. This only ever adds information: for the
+main implement phase the diff was otherwise never computed on that failure path;
+for a failed correction pass it can only be a superset of the diff the *original*
+successful implementation already had (correction only ever adds uncommitted edits
+on top of the same baseline), so it can't regress a working job. The status screen
+surfaces this as a distinct "Changes made before the failure" panel on an
+`IMPLEMENTATION_FAILED` job — separate from, and explicitly not to be confused
+with, the normal `IMPLEMENTATION_READY` result panel, since this diff was never
+validated and the agent's own summary for it is not trusted (`implementation_result`
+is deliberately left unset on this path).
 
 The validation runner (`backend/app/steps/validation_runner.py`) auto-detects a
 Python profile (`ruff`/`pytest`, run via the *backend's own* `sys.executable` — not
@@ -405,20 +427,20 @@ the header only when the signed-in user's role is `ADMIN`.
 **In:** non-secret form; a Jira ticket or an uploaded PDF requirement document as
 alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
 delegated Jira/GitHub OAuth with encrypted-at-rest tokens; async jobs with SQLite
-store + polling status screen; the plan pipeline (fetch/clone/map/plan); local-repo
-execution with an isolated-clone implement + validate phase; a single, explicitly
-opt-in validation-correction pass after a failed validation; creating a branch and
-committing the reviewed diff inside the isolated workspace (commit-only, never
-pushed); plan and diff review screens; a paginated job-history list scoped to the
-owner (admins/no-auth-mode see all); an admin-only per-user cost-usage dashboard;
-typed errors; quality gates; security-invariant tests; a reference
-shared-deployment stack under `deploy/`.
+store + polling status screen; the plan pipeline (fetch/clone/map/plan); an
+isolated-clone implement + validate phase, available for local *and* remote
+repos alike; a single, explicitly opt-in validation-correction pass after a
+failed validation; creating a branch and committing the reviewed diff inside the
+isolated workspace (commit-only, never pushed); plan and diff review screens; a
+paginated job-history list scoped to the owner (admins/no-auth-mode see all); an
+admin-only per-user cost-usage dashboard; typed errors; quality gates;
+security-invariant tests; a reference shared-deployment stack under `deploy/`.
 
 **Out (not built; do not scaffold):** pushing a branch anywhere, or opening a pull
-request; delegated *git* auth (clone still uses ambient credentials — branch
-creation is local-only so this doesn't apply yet, but pushing will need it); the
-GitLab OAuth flow; implementing against *remote* repos; a durable workflow engine;
-a network-locked sandbox; an embeddings/vector index.
+request; delegated *git* auth (clone, and any future push, still use ambient
+credentials only — no per-user token is ever handed to a git subprocess); the
+GitLab OAuth flow; a durable workflow engine; a network-locked sandbox; an
+embeddings/vector index.
 
 ## Stack
 

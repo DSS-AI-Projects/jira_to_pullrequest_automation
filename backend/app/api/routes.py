@@ -238,6 +238,7 @@ async def implement_job(
     if job.repo_info is None or job.repo_info.source_kind not in (
         RepoSourceKind.LOCAL,
         RepoSourceKind.LOCAL_FOLDER,
+        RepoSourceKind.REMOTE,
     ):
         raise AppError(ErrorCode.IMPLEMENTATION_NOT_SUPPORTED)
     if not job.workspace_path or not Path(job.workspace_path).exists():

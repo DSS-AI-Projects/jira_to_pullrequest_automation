@@ -243,6 +243,34 @@ async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSt
             _fail(store, final, ErrorCode.INTERNAL, DEFAULT_MESSAGES[ErrorCode.INTERNAL])
 
 
+async def _refresh_diff_best_effort(job: Job) -> None:
+    """Best-effort: (re-)collect the diff between the workspace's current
+    state and the recorded baseline, so a developer sees whatever the agent
+    actually wrote to disk even though the run is about to be marked
+    failed — turns/budget spent on edits that landed before a later tool
+    call, or the agent itself, failed shouldn't be invisible.
+
+    Used both when implementation fails outright (`implementation_diff` is
+    still unset at that point — the normal diff-collection line is only
+    reached on the success path) and when a validation-correction attempt
+    fails (`implementation_diff` already holds the *original* successful
+    implementation's diff; a correction only ever adds uncommitted edits on
+    top of that same baseline, so re-collecting can only add information,
+    never lose the original). Only overwrites when a non-empty diff is
+    actually found — never regresses a job to a worse or missing diff.
+    """
+    if not job.workspace_path or not job.implementation_baseline_commit_sha:
+        return
+    workspace_path = Path(job.workspace_path)
+    if not workspace_path.exists():
+        return
+    diff = await _collect_implementation_diff(
+        workspace_path, job.implementation_baseline_commit_sha
+    )
+    if diff is not None and diff.files:
+        job.implementation_diff = diff
+
+
 async def run_implementation(
     job_id: str, store: JobStore, settings: Settings, steps: JobSteps
 ) -> None:
@@ -257,6 +285,7 @@ async def run_implementation(
         if job.repo_info is None or job.repo_info.source_kind not in (
             RepoSourceKind.LOCAL,
             RepoSourceKind.LOCAL_FOLDER,
+            RepoSourceKind.REMOTE,
         ):
             raise AppError(ErrorCode.IMPLEMENTATION_NOT_SUPPORTED)
         if not job.workspace_path:
@@ -283,8 +312,19 @@ async def run_implementation(
             # (most likely a tool call that silently failed and was not
             # recovered from). Surfacing this as a hollow "success" with an
             # empty diff would be misleading; fail explicitly instead.
+            claimed_paths = ", ".join(change.path for change in implementation.result.changed_files)
             raise AppError(
                 ErrorCode.IMPLEMENTATION_INVALID,
+                user_message=(
+                    "The implementation agent reported changing "
+                    f"{len(implementation.result.changed_files)} file(s) "
+                    f"({claimed_paths}), but no actual code differences were found in "
+                    "the workspace afterward — most likely one of its edit attempts "
+                    "failed silently partway through and it did not recover. This is "
+                    "typically a one-off execution glitch, not a problem with the "
+                    "ticket itself — retrying often succeeds without any changes "
+                    "needed."
+                ),
                 internal_detail=(
                     f"agent reported {len(implementation.result.changed_files)} changed "
                     "file(s) but no working-tree differences were detected against the "
@@ -310,6 +350,7 @@ async def run_implementation(
             err.code,
             err.internal_detail or "no detail",
         )
+        await _refresh_diff_best_effort(job)
         _fail(
             store,
             job,
@@ -319,6 +360,7 @@ async def run_implementation(
         )
     except Exception:
         logger.exception("job %s implementation crashed at %s", job.id, job.state)
+        await _refresh_diff_best_effort(job)
         _fail(
             store,
             job,
@@ -408,9 +450,11 @@ async def run_validation_correction(
             err.code,
             err.internal_detail or "no detail",
         )
+        await _refresh_diff_best_effort(job)
         _record_correction_failure(store, job, err.code, err.user_message)
     except Exception:
         logger.exception("job %s validation correction crashed at %s", job.id, job.state)
+        await _refresh_diff_best_effort(job)
         _record_correction_failure(
             store, job, ErrorCode.INTERNAL, DEFAULT_MESSAGES[ErrorCode.INTERNAL]
         )

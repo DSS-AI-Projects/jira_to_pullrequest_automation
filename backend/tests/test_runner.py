@@ -528,6 +528,11 @@ async def test_claimed_changes_with_no_actual_diff_is_implementation_invalid(
     # a failed consistency check must not leave a misleading hollow result
     assert final.implementation_result is None
     assert final.implementation_diff is None
+    # the message names the claimed file(s) and distinguishes this cause
+    # from the two implement_agent.py IMPLEMENTATION_INVALID sub-cases.
+    assert "README.md" in final.error.message
+    assert "no actual code differences were found" in final.error.message
+    assert "retrying often succeeds" in final.error.message
 
 
 async def test_implementation_app_error_yields_typed_failure_with_stage(tmp_path: Path) -> None:
@@ -579,6 +584,69 @@ async def test_implementation_app_error_yields_typed_failure_with_stage(tmp_path
     assert final.error.code == ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING
     assert final.error.stage == JobState.IMPLEMENTING
     assert SECRET not in final.error.message
+
+
+async def test_implementation_failure_preserves_partial_edits_already_on_disk(
+    tmp_path: Path,
+) -> None:
+    """A budget/request failure raised by implement_plan itself skips the
+    normal diff-collection line entirely — but if earlier tool calls in that
+    same run already wrote real files to the workspace before the failure,
+    those edits must not be silently lost."""
+    store, settings, job = make_env(tmp_path)
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch="PROJ-1",
+                commit_sha="d" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def partially_implement_then_fail(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        # Simulates a real edit that landed before the run was cut off
+        # (budget exceeded, agent request failed, ...).
+        (workspace_path / "README.md").write_text(
+            "Hello Back To World (partial)\n", encoding="utf-8"
+        )
+        raise AppError(ErrorCode.BUDGET_EXCEEDED)
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=local_clone,
+        implement_plan=partially_implement_then_fail,
+    )
+    await run_job(job.id, store, settings, steps)
+
+    planned = store.get(job.id)
+    assert planned is not None
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_FAILED
+    assert final.error is not None
+    assert final.error.code == ErrorCode.BUDGET_EXCEEDED
+    assert final.implementation_diff is not None
+    assert any(f.path == "README.md" for f in final.implementation_diff.files)
+    assert "partial" in final.implementation_diff.overall_patch
 
 
 async def test_validation_app_error_yields_typed_failure_with_stage(tmp_path: Path) -> None:
@@ -893,6 +961,49 @@ async def test_validation_correction_agent_failure_never_regresses_the_job(tmp_p
     assert final.implementation_result == original_result
     assert final.implementation_diff == original_diff
     assert final.validation_results[0].status == ValidationStatus.FAILED
+
+
+async def test_validation_correction_failure_still_preserves_its_partial_edits(
+    tmp_path: Path,
+) -> None:
+    """A correction that writes a real partial fix before failing (e.g. the
+    agent ran out of budget partway through) must not lose that edit — the
+    refreshed diff is a superset of the original, never a regression."""
+    store, settings, ready, steps, calls = await _reach_implementation_ready_with_failed_validation(
+        tmp_path
+    )
+    del calls
+    original_result = ready.implementation_result
+
+    async def partially_correct_then_fail(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        (workspace_path / "fix.py").write_text("x = 1\n", encoding="utf-8")
+        raise AppError(ErrorCode.BUDGET_EXCEEDED, internal_detail="correction ran out of budget")
+
+    failing_steps = dataclasses.replace(steps, implement_plan=partially_correct_then_fail)
+    ready.state = JobState.CORRECTING
+    store.save(ready)
+
+    await run_validation_correction(ready.id, store, settings, failing_steps)
+
+    final = store.get(ready.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_READY
+    assert final.implementation_correction_attempted is True
+    assert final.implementation_correction_error is not None
+    assert final.implementation_correction_error.code == ErrorCode.BUDGET_EXCEEDED
+    # The original implementation_result is still the trustworthy one shown
+    # to the user (the correction's own claim is never trusted on failure).
+    assert final.implementation_result == original_result
+    # But the diff now reflects the partial correction edit too, on top of
+    # the original — a superset, not a loss.
+    assert final.implementation_diff is not None
+    diff_paths = {f.path for f in final.implementation_diff.files}
+    assert diff_paths == {"README.md", "fix.py"}
 
 
 async def test_validation_correction_requires_correcting_state(tmp_path: Path) -> None:
