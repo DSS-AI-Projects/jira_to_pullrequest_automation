@@ -46,6 +46,7 @@ function totalCost(job: Job): number | null {
   const values = [
     job.usage?.total_cost_usd,
     job.implementation_usage?.total_cost_usd,
+    job.implementation_correction_usage?.total_cost_usd,
   ].filter((value): value is number => value !== null && value !== undefined);
   if (values.length === 0) {
     return null;
@@ -184,6 +185,19 @@ export function JobStatusView(props: { jobId: string }) {
         : job?.state === "CORRECTING"
           ? "Attempting automatic fix"
           : "Last agent activity";
+
+  // Cost is recorded whenever an agent call completed, even on a job that
+  // ultimately failed (see backend/app/jobs/runner.py's AppError.usage
+  // handling) — so this must NOT be gated on job.plan like the panels below
+  // it. A PLANNING failure, for instance, never gets a plan but can still
+  // have spent real Anthropic cost worth showing.
+  const hasRecordedCost = Boolean(
+    job &&
+    (job.plan ??
+      job.usage ??
+      job.implementation_usage ??
+      job.implementation_correction_usage),
+  );
 
   // Implementation runs entirely in the isolated workspace clone regardless
   // of source kind, so it's available for every job that has reached
@@ -602,9 +616,12 @@ export function JobStatusView(props: { jobId: string }) {
         </section>
       ) : null}
 
-      {job?.plan ? (
+      {hasRecordedCost && job ? (
         <section className="panel">
           <h2>Cost summary</h2>
+          {/* Shown even on a failed job: an agent call that ran and burned
+              Anthropic cost/tokens before the failure is still recorded —
+              see backend/app/jobs/runner.py's AppError.usage handling. */}
           <div className="summary-grid">
             <div className="summary-card">
               <span className="meta-label">Planning cost</span>
@@ -616,6 +633,16 @@ export function JobStatusView(props: { jobId: string }) {
                 {currency(job.implementation_usage?.total_cost_usd ?? null)}
               </strong>
             </div>
+            {job.implementation_correction_usage ? (
+              <div className="summary-card">
+                <span className="meta-label">Correction cost</span>
+                <strong>
+                  {currency(
+                    job.implementation_correction_usage?.total_cost_usd ?? null,
+                  )}
+                </strong>
+              </div>
+            ) : null}
             <div className="summary-card">
               <span className="meta-label">Total cost</span>
               <strong>{currency(totalCost(job))}</strong>

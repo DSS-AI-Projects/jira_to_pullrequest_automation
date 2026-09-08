@@ -219,6 +219,7 @@ export type Job = {
   implementation_correction_attempted: boolean;
   implementation_correction_result: ImplementationResult | null;
   implementation_correction_error: JobError | null;
+  implementation_correction_usage: AgentUsage | null;
   branch_name: string | null;
   branch_commit_sha: string | null;
   branch_created_at: string | null;
@@ -378,7 +379,10 @@ function normalizeJob(job: Job): Job {
             : [],
         }
       : null,
+    usage: job.usage ?? null,
     implementation_usage: job.implementation_usage ?? null,
+    implementation_correction_usage:
+      job.implementation_correction_usage ?? null,
     implementation_result: job.implementation_result
       ? {
           ...job.implementation_result,

@@ -483,6 +483,53 @@ describe("JobStatusView", () => {
     expect(push).toHaveBeenCalledWith("/");
   });
 
+  it("shows recorded planning cost on a failed job that never reached a plan", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-failed-planning",
+      ticket_key: "KAN-30",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: null,
+      state: "FAILED",
+      error: {
+        code: "PLAN_INVALID",
+        message:
+          "The planning agent could not produce a valid plan for this ticket.",
+        stage: "PLANNING",
+      },
+      repo_info: null,
+      workspace_path: null,
+      // No plan was ever produced, but the agent call that failed still
+      // burned real cost — the Cost summary panel must not be gated on
+      // job.plan, or this would be silently invisible.
+      plan: null,
+      usage: {
+        input_tokens: 500,
+        output_tokens: 50,
+        total_cost_usd: 0.03,
+        num_turns: 2,
+        duration_seconds: 8,
+      },
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-09-08T17:54:02Z",
+      updated_at: "2026-09-08T17:57:53Z",
+    });
+
+    render(<JobStatusView jobId="job-failed-planning" />);
+
+    expect(await screen.findByText("Cost summary")).toBeInTheDocument();
+    expect(screen.getByText("Planning cost")).toBeInTheDocument();
+    // "$0.03" appears twice (planning cost and, since it's the only cost
+    // recorded, total cost too) — just confirm it isn't "Not recorded".
+    expect(screen.getAllByText("$0.03")).toHaveLength(2);
+  });
+
   it("carries implementation clarifications into the retry draft for a failed implementation job", async () => {
     sessionStorage.clear();
     fetchJob.mockResolvedValue({
@@ -1065,6 +1112,35 @@ describe("JobStatusView", () => {
     expect(
       screen.queryByRole("button", { name: "Attempt automatic fix" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows a correction cost row once a correction attempt has recorded usage", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        implementation_correction_attempted: true,
+        implementation_correction_result: {
+          summary: "Fixed the lint failure.",
+          changed_files: [],
+          warnings: [],
+          follow_up_questions: [],
+        },
+        implementation_correction_usage: {
+          input_tokens: 300,
+          output_tokens: 40,
+          total_cost_usd: 0.07,
+          num_turns: 2,
+          duration_seconds: 12,
+        },
+      }),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByText("Cost summary");
+    expect(screen.getByText("Correction cost")).toBeInTheDocument();
+    // "$0.07" appears twice (correction cost and, since it's the only cost
+    // recorded here, total cost too).
+    expect(screen.getAllByText("$0.07")).toHaveLength(2);
   });
 
   it("shows the correction error banner when the fix attempt itself failed", async () => {

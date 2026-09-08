@@ -497,6 +497,46 @@ touching* when it ran out of budget or hit an error.
   `IMPLEMENTING` still reads as "Last agent activity" rather than the live
   present-tense title. Entries render newest-first.
 
+## Cost is recorded even when the job fails
+
+A failed job never silently loses the Anthropic cost/tokens it already spent.
+An agent call that *ran* — even one that ended in a typed failure
+(`PLAN_INVALID`, `BUDGET_EXCEEDED`, `IMPLEMENTATION_INVALID`, a schema
+validation failure, ...) — still burned real API cost, and that cost is worth
+knowing when diagnosing why a job failed or budgeting spend.
+
+- **`AppError` optionally carries `usage`** (`backend/app/core/errors.py`): a
+  plain `dict[str, Any] | None` (an `AgentUsage.model_dump()`), not the
+  `AgentUsage` model itself — `app.core.errors` is imported by
+  `app.jobs.models`, so it can never import back from there without a cycle;
+  the runner reconstructs `AgentUsage` from the dict when present.
+- **Every raise site in `plan_agent.py` / `implement_agent.py` that has an
+  `AgentRunOutcome` in scope attaches `usage=_usage_from(outcome).model_dump()`**
+  — that covers a completed-but-unusable structured output, a harness
+  budget/max-turns stop, an unexpected harness failure, and (using
+  `last_outcome`) `PLAN_INVALID` after the single retry. The two genuinely
+  outcome-less failures — a wall-clock timeout and a transport/exception
+  before any `ResultMessage` arrives — leave `usage` unset, since there is
+  nothing to report.
+- **`runner.py` applies `err.usage` onto the job right before failing it**:
+  `job.usage` in `run_job`, `job.implementation_usage` in `run_implementation`,
+  `job.implementation_correction_usage` in `run_validation_correction` — a new
+  field alongside `implementation_correction_result`/`_error`, since the
+  correction pass previously dropped its own usage entirely, even on success.
+  `run_implementation` additionally records `job.implementation_usage` as soon
+  as `implement_plan` *returns*, before the "claimed changes never landed"
+  consistency check can raise — that check's `AppError` is raised by the
+  runner itself (no `outcome` in scope there), so without this the one
+  implementation failure mode that isn't even an agent-side error would be
+  the one case still missing its cost.
+- **Frontend:** the "Cost summary" panel (`job-status-view.tsx`) is no longer
+  gated on `job.plan` — a `PLANNING` failure never produces a plan but can
+  still have spent cost, so gating on the plan would hide it entirely. It now
+  renders whenever any of `job.plan` / `job.usage` / `job.implementation_usage`
+  / `job.implementation_correction_usage` is present, and shows a "Correction
+  cost" row alongside planning/implementation/total whenever a correction
+  attempt recorded usage.
+
 ## Job history and admin cost reporting
 
 `GET /jobs` lists jobs most-recent-first with keyset (`created_at`-cursor)

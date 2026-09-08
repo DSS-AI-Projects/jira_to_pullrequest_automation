@@ -8,6 +8,7 @@ redactor) but never returned to the client.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 
 class ErrorCode(StrEnum):
@@ -230,6 +231,14 @@ class AppError(Exception):
 
     `user_message` is shown to the user; `internal_detail` is only logged
     (through the redactor) and must never be returned in a response.
+
+    `usage` optionally carries Anthropic API usage/cost already incurred by
+    the time this error was raised (e.g. an agent call that completed and
+    burned tokens/cost but produced an unusable or budget-exceeded result).
+    It's a plain dict (an AgentUsage.model_dump()), not the AgentUsage model
+    itself, so this module — imported by app.jobs.models — never has to
+    import back from app.jobs.models and create a cycle. The job runner
+    reconstructs AgentUsage from this dict when present.
     """
 
     def __init__(
@@ -237,10 +246,12 @@ class AppError(Exception):
         code: ErrorCode,
         user_message: str | None = None,
         internal_detail: str | None = None,
+        usage: dict[str, Any] | None = None,
     ) -> None:
         self.code = code
         self.user_message = user_message or DEFAULT_MESSAGES[code]
         self.internal_detail = internal_detail
+        self.usage = usage
         super().__init__(f"{code}: {self.user_message}")
 
     @property

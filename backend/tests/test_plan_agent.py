@@ -255,6 +255,10 @@ async def test_malformed_twice_is_plan_invalid(
         await generate_plan(ticket(), repo_map(), tmp_path)
     assert excinfo.value.code == ErrorCode.PLAN_INVALID
     assert len(prompts) == 2  # never a third attempt
+    # A failed job still spent real Anthropic cost/tokens on both attempts —
+    # the cost of the *last* attempt is recorded, not silently dropped.
+    assert excinfo.value.usage is not None
+    assert excinfo.value.usage["total_cost_usd"] == 0.01
 
 
 async def test_schema_violating_output_is_plan_invalid_after_retry(
@@ -272,6 +276,11 @@ async def test_schema_violating_output_is_plan_invalid_after_retry(
     with pytest.raises(AppError) as excinfo:
         await generate_plan(ticket(), repo_map(), tmp_path)
     assert excinfo.value.code == ErrorCode.PLAN_INVALID
+    # Usage is still attached (as the harness's own duration/turn accounting)
+    # even when the model never reported a token count or cost for this run.
+    assert excinfo.value.usage is not None
+    assert excinfo.value.usage["total_cost_usd"] is None
+    assert excinfo.value.usage["duration_seconds"] == 0.5
 
 
 async def test_max_turns_is_budget_exceeded(
@@ -281,6 +290,8 @@ async def test_max_turns_is_budget_exceeded(
     with pytest.raises(AppError) as excinfo:
         await generate_plan(ticket(), repo_map(), tmp_path)
     assert excinfo.value.code == ErrorCode.BUDGET_EXCEEDED
+    assert excinfo.value.usage is not None
+    assert excinfo.value.usage["total_cost_usd"] == 0.01
 
 
 async def test_wall_clock_timeout_is_budget_exceeded(
@@ -297,6 +308,11 @@ async def test_wall_clock_timeout_is_budget_exceeded(
     with pytest.raises(AppError) as excinfo:
         await generate_plan(ticket(), repo_map(), tmp_path)
     assert excinfo.value.code == ErrorCode.BUDGET_EXCEEDED
+    # The wall-clock timeout fires before any harness result comes back at
+    # all, so there's genuinely no cost/usage to report — unlike the other
+    # BUDGET_EXCEEDED case above (the harness's own max_turns/budget stop),
+    # which always has a ResultMessage to report from.
+    assert excinfo.value.usage is None
 
 
 async def test_missing_api_key_is_typed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -307,6 +323,7 @@ async def test_missing_api_key_is_typed(monkeypatch: pytest.MonkeyPatch, tmp_pat
     with pytest.raises(AppError) as excinfo:
         await generate_plan(ticket(), repo_map(), tmp_path)
     assert excinfo.value.code == ErrorCode.AGENT_CONFIG_MISSING
+    assert excinfo.value.usage is None  # no API call was ever made
 
 
 async def test_unexpected_harness_failure_is_internal_and_redacted(
@@ -326,6 +343,7 @@ async def test_unexpected_harness_failure_is_internal_and_redacted(
         await generate_plan(ticket(), repo_map(), tmp_path)
     assert excinfo.value.code == ErrorCode.INTERNAL
     assert FAKE_JIRA_TOKEN not in (excinfo.value.internal_detail or "")
+    assert excinfo.value.usage is not None
 
 
 async def test_success_without_structured_output_is_typed_request_failure(
@@ -346,6 +364,7 @@ async def test_success_without_structured_output_is_typed_request_failure(
         await generate_plan(ticket(), repo_map(), tmp_path)
     assert excinfo.value.code == ErrorCode.AGENT_REQUEST_FAILED
     assert "Credit balance is too low" in (excinfo.value.internal_detail or "")
+    assert excinfo.value.usage is not None
 
 
 # --- token-saving controls ---

@@ -21,6 +21,7 @@ from app.jobs.runner import (
     CloneResult,
     ImplementationStepResult,
     JobSteps,
+    PlanResult,
     run_implementation,
     run_job,
     run_validation_correction,
@@ -222,6 +223,38 @@ async def test_app_error_in_step_yields_typed_failure_with_stage(tmp_path: Path)
     assert final.error.code == ErrorCode.TICKET_NOT_FOUND
     assert final.error.stage == JobState.FETCHING_TICKET
     assert SECRET not in final.error.message  # internal detail never reaches the record
+
+
+async def test_run_job_records_usage_from_a_failed_planning_call(tmp_path: Path) -> None:
+    """A planning agent call that completes (and spends real cost) but ends
+    in a typed failure — e.g. PLAN_INVALID, BUDGET_EXCEEDED — must still have
+    its usage recorded on the job, not silently dropped just because the
+    job itself ends in FAILED."""
+    store, settings, job = make_env(tmp_path)
+
+    async def failing_generate_plan(
+        ticket: TicketData, repo_map: object, clone_path: Path, planning_notes: str | None
+    ) -> PlanResult:
+        del ticket, repo_map, clone_path, planning_notes
+        raise AppError(
+            ErrorCode.PLAN_INVALID,
+            internal_detail="invalid plan after retry",
+            usage=AgentUsage(
+                input_tokens=500, total_cost_usd=0.03, num_turns=2, duration_seconds=8.0
+            ).model_dump(),
+        )
+
+    steps = dataclasses.replace(make_fake_steps(), generate_plan=failing_generate_plan)
+    await run_job(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.FAILED
+    assert final.error is not None
+    assert final.error.code == ErrorCode.PLAN_INVALID
+    assert final.usage is not None
+    assert final.usage.total_cost_usd == 0.03
+    assert final.usage.duration_seconds == 8.0
 
 
 async def test_unexpected_crash_yields_generic_internal_error(tmp_path: Path) -> None:
@@ -649,6 +682,11 @@ async def test_claimed_changes_with_no_actual_diff_is_implementation_invalid(
     assert "README.md" in final.error.message
     assert "no actual code differences were found" in final.error.message
     assert "retrying often succeeds" in final.error.message
+    # The agent call itself completed (and spent real cost) before the
+    # consistency check raised — that cost must still be recorded, not
+    # silently dropped because the job ultimately failed.
+    assert final.implementation_usage is not None
+    assert final.implementation_usage.duration_seconds == 0.4
 
 
 async def test_implementation_app_error_yields_typed_failure_with_stage(tmp_path: Path) -> None:
@@ -700,6 +738,65 @@ async def test_implementation_app_error_yields_typed_failure_with_stage(tmp_path
     assert final.error.code == ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING
     assert final.error.stage == JobState.IMPLEMENTING
     assert SECRET not in final.error.message
+
+
+async def test_implementation_records_usage_from_a_failed_implement_call(tmp_path: Path) -> None:
+    """Mirrors test_run_job_records_usage_from_a_failed_planning_call for the
+    implementation phase: implement_plan itself raising a typed failure after
+    its agent call completed must still leave implementation_usage set."""
+    store, settings, job = make_env(tmp_path)
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch="PROJ-1",
+                commit_sha="e" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def failing_implement(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, workspace_path, validation_failures
+        raise AppError(
+            ErrorCode.IMPLEMENTATION_INVALID,
+            internal_detail="schema validation failed",
+            usage=AgentUsage(
+                input_tokens=700, total_cost_usd=0.02, num_turns=3, duration_seconds=5.5
+            ).model_dump(),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(), clone_repo=local_clone, implement_plan=failing_implement
+    )
+    await run_job(job.id, store, settings, steps)
+
+    planned = store.get(job.id)
+    assert planned is not None
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_FAILED
+    assert final.error is not None
+    assert final.error.code == ErrorCode.IMPLEMENTATION_INVALID
+    assert final.implementation_usage is not None
+    assert final.implementation_usage.total_cost_usd == 0.02
+    assert final.implementation_usage.duration_seconds == 5.5
 
 
 async def test_implementation_failure_preserves_partial_edits_already_on_disk(
@@ -1004,6 +1101,8 @@ async def test_validation_correction_happy_path_fixes_and_revalidates(tmp_path: 
     # The correction's diff is collected against the *original* baseline, so
     # it's cumulative: both the original and the corrective change appear.
     assert paths == {"README.md", "fix.py"}
+    assert final.implementation_correction_usage is not None
+    assert final.implementation_correction_usage.total_cost_usd == 0.01
     assert calls == [
         "implement:initial",
         "validate:1-failed",
@@ -1058,7 +1157,11 @@ async def test_validation_correction_agent_failure_never_regresses_the_job(tmp_p
         validation_failures: list[ValidationResult] | None = None,
     ) -> ImplementationStepResult:
         del job, workspace_path, validation_failures
-        raise AppError(ErrorCode.BUDGET_EXCEEDED, internal_detail="correction ran out of budget")
+        raise AppError(
+            ErrorCode.BUDGET_EXCEEDED,
+            internal_detail="correction ran out of budget",
+            usage=AgentUsage(total_cost_usd=0.07, duration_seconds=12.0).model_dump(),
+        )
 
     failing_steps = dataclasses.replace(steps, implement_plan=failing_implement)
     ready.state = JobState.CORRECTING
@@ -1077,6 +1180,13 @@ async def test_validation_correction_agent_failure_never_regresses_the_job(tmp_p
     assert final.implementation_result == original_result
     assert final.implementation_diff == original_diff
     assert final.validation_results[0].status == ValidationStatus.FAILED
+    # The failed correction attempt still burned real cost — recorded
+    # separately from the original implementation's own usage, which is left
+    # untouched (never regressed by a failed correction, same as the diff).
+    assert final.implementation_correction_usage is not None
+    assert final.implementation_correction_usage.total_cost_usd == 0.07
+    assert final.implementation_usage is not None
+    assert final.implementation_usage.total_cost_usd == 0.01
 
 
 async def test_validation_correction_failure_still_preserves_its_partial_edits(

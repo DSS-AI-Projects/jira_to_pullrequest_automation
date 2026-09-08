@@ -155,6 +155,13 @@ class Job(BaseModel):
     repo_info: RepoInfo | None = None
     workspace_path: str | None = None
     plan: Plan | None = None
+    # Recorded whenever the harness returns a result, including a failed one
+    # (invalid/malformed output, budget exceeded, etc.) — an agent call that
+    # completed still spent real Anthropic tokens/cost, so a failed job's cost
+    # is never silently dropped. Only truly outcome-less failures (a timeout
+    # or transport error before any harness result came back) leave these
+    # unset, since there's genuinely nothing to report. See runner.py's
+    # AppError.usage handling and app/steps/{plan,implement}_agent.py.
     usage: AgentUsage | None = None
     implementation_usage: AgentUsage | None = None
     implementation_result: ImplementationResult | None = None
@@ -176,6 +183,10 @@ class Job(BaseModel):
     implementation_correction_attempted: bool = False
     implementation_correction_result: ImplementationResult | None = None
     implementation_correction_error: JobError | None = None
+    # Cost/token usage for the correction pass, recorded whether it succeeds
+    # or fails — same rationale as usage/implementation_usage below: a failed
+    # agent call still spends real Anthropic credits.
+    implementation_correction_usage: AgentUsage | None = None
     # Set once a branch has been created and the reviewed diff committed to
     # it inside the isolated workspace (never pushed anywhere — see
     # ErrorCode.BRANCH_CREATION_NOT_AVAILABLE / BRANCH_CREATION_FAILED). The

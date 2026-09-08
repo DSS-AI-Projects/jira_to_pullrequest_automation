@@ -423,19 +423,28 @@ async def generate_plan(
                 detail = redact(
                     f"api_error_status={outcome.api_error_status} errors={outcome.errors}"
                 )
-                raise AppError(ErrorCode.AGENT_REQUEST_FAILED, internal_detail=detail)
+                raise AppError(
+                    ErrorCode.AGENT_REQUEST_FAILED,
+                    internal_detail=detail,
+                    usage=_usage_from(outcome).model_dump(),
+                )
 
             if "max_turns" in outcome.subtype or "budget" in outcome.subtype:
                 raise AppError(
                     ErrorCode.BUDGET_EXCEEDED,
                     internal_detail=f"harness stopped: {outcome.subtype}",
+                    usage=_usage_from(outcome).model_dump(),
                 )
 
             if outcome.subtype != "error_max_structured_output_retries":
                 # Unexpected harness failure (auth, process, API error) — not a
                 # malformed plan; surface as INTERNAL with redacted detail.
                 detail = redact(f"subtype={outcome.subtype} errors={outcome.errors}")
-                raise AppError(ErrorCode.INTERNAL, internal_detail=detail)
+                raise AppError(
+                    ErrorCode.INTERNAL,
+                    internal_detail=detail,
+                    usage=_usage_from(outcome).model_dump(),
+                )
             # error_max_structured_output_retries -> loop for the single retry
 
         detail = (
@@ -443,7 +452,11 @@ async def generate_plan(
             if last_outcome
             else ""
         )
-        raise AppError(ErrorCode.PLAN_INVALID, internal_detail=detail)
+        raise AppError(
+            ErrorCode.PLAN_INVALID,
+            internal_detail=detail,
+            usage=_usage_from(last_outcome).model_dump() if last_outcome else None,
+        )
     finally:
         if cache is not None:
             cache.close()

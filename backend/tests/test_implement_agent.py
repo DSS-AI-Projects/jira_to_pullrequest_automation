@@ -291,6 +291,7 @@ async def test_missing_api_key_is_typed(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert excinfo.value.code == ErrorCode.AGENT_CONFIG_MISSING
     assert "implementation agent" in excinfo.value.user_message
     assert "planning agent" not in excinfo.value.user_message
+    assert excinfo.value.usage is None  # no API call was ever made
 
 
 async def test_wall_clock_timeout_is_budget_exceeded(
@@ -309,6 +310,9 @@ async def test_wall_clock_timeout_is_budget_exceeded(
     assert excinfo.value.code == ErrorCode.BUDGET_EXCEEDED
     assert "implementation agent" in excinfo.value.user_message
     assert "planning agent" not in excinfo.value.user_message
+    # The wall-clock timeout fires before any harness result comes back —
+    # nothing to report, unlike the harness's own budget stop below.
+    assert excinfo.value.usage is None
 
 
 async def test_success_without_structured_output_is_typed_request_failure(
@@ -330,6 +334,7 @@ async def test_success_without_structured_output_is_typed_request_failure(
     assert excinfo.value.code == ErrorCode.AGENT_REQUEST_FAILED
     assert "implementation agent" in excinfo.value.user_message
     assert "planning agent" not in excinfo.value.user_message
+    assert excinfo.value.usage is not None
 
 
 async def test_invalid_structured_output_is_implementation_invalid(
@@ -355,6 +360,8 @@ async def test_invalid_structured_output_is_implementation_invalid(
     # developer should be able to tell which of the three actually happened.
     assert "didn't match the expected result format" in excinfo.value.user_message
     assert "retrying often succeeds" in excinfo.value.user_message
+    # A completed-but-schema-invalid agent response still burned real cost.
+    assert excinfo.value.usage is not None
 
 
 async def test_harness_budget_stop_is_budget_exceeded(
@@ -367,6 +374,8 @@ async def test_harness_budget_stop_is_budget_exceeded(
     assert "implementation agent" in excinfo.value.user_message
     assert "planning agent" not in excinfo.value.user_message
     assert "AGENT_IMPLEMENT_MAX_BUDGET_USD" in excinfo.value.user_message
+    assert excinfo.value.usage is not None
+    assert excinfo.value.usage["total_cost_usd"] == 0.01
 
 
 async def test_max_structured_output_retries_is_implementation_invalid(
@@ -387,4 +396,6 @@ async def test_max_structured_output_retries_is_implementation_invalid(
     assert excinfo.value.code == ErrorCode.IMPLEMENTATION_INVALID
     assert "Failed to provide valid structured output" in (excinfo.value.internal_detail or "")
     assert "could not produce a properly formatted result" in excinfo.value.user_message
+    assert excinfo.value.usage is not None
+    assert excinfo.value.usage["total_cost_usd"] == 0.78
     assert "retrying often succeeds" in excinfo.value.user_message

@@ -366,6 +366,7 @@ async def implement_plan(
                 ErrorCode.IMPLEMENTATION_INVALID,
                 user_message=_SCHEMA_INVALID_MESSAGE,
                 internal_detail=redact(f"implementation result validation failed: {exc}"),
+                usage=_usage_from(outcome).model_dump(),
             ) from exc
 
     if outcome.subtype == "success" and outcome.structured_output is None:
@@ -374,6 +375,7 @@ async def implement_plan(
             ErrorCode.AGENT_REQUEST_FAILED,
             user_message=_REQUEST_FAILED_MESSAGE,
             internal_detail=detail,
+            usage=_usage_from(outcome).model_dump(),
         )
 
     if "max_turns" in outcome.subtype or "budget" in outcome.subtype:
@@ -381,6 +383,7 @@ async def implement_plan(
             ErrorCode.BUDGET_EXCEEDED,
             user_message=_BUDGET_EXCEEDED_MESSAGE,
             internal_detail=f"harness stopped: {outcome.subtype}",
+            usage=_usage_from(outcome).model_dump(),
         )
 
     if outcome.subtype == "error_max_structured_output_retries":
@@ -389,7 +392,10 @@ async def implement_plan(
             ErrorCode.IMPLEMENTATION_INVALID,
             user_message=_STRUCTURED_OUTPUT_RETRIES_EXHAUSTED_MESSAGE,
             internal_detail=detail,
+            usage=_usage_from(outcome).model_dump(),
         )
 
     detail = redact(f"subtype={outcome.subtype} errors={outcome.errors}")
-    raise AppError(ErrorCode.INTERNAL, internal_detail=detail)
+    raise AppError(
+        ErrorCode.INTERNAL, internal_detail=detail, usage=_usage_from(outcome).model_dump()
+    )

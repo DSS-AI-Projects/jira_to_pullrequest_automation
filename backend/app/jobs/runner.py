@@ -269,6 +269,8 @@ async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSt
             err.code,
             err.internal_detail or "no detail",
         )
+        if err.usage is not None:
+            job.usage = AgentUsage.model_validate(err.usage)
         _fail(store, job, err.code, err.user_message)
     except Exception:
         logger.exception("job %s crashed at %s", job.id, job.state)
@@ -345,6 +347,12 @@ async def run_implementation(
 
         with report_progress_to(_start_activity_log(store, job)):
             implementation = await steps.implement_plan(job, workspace_path, None)
+        # Recorded as soon as the agent call returns, before the consistency
+        # check below can raise — so even the "claimed changes never landed"
+        # failure path still reports what the (completed, cost-incurring)
+        # agent run actually used.
+        job.implementation_usage = implementation.usage
+        store.save(job)
         diff = await _collect_implementation_diff(workspace_path, base_ref)
 
         if implementation.result.changed_files and (diff is None or not diff.files):
@@ -375,7 +383,6 @@ async def run_implementation(
 
         job.implementation_result = implementation.result
         job.implementation_diff = diff
-        job.implementation_usage = implementation.usage
         store.save(job)
         job = _advance(store, job, JobState.VALIDATING)
         job.validation_results = await steps.validate_workspace(workspace_path)
@@ -391,6 +398,14 @@ async def run_implementation(
             err.code,
             err.internal_detail or "no detail",
         )
+        # err.usage is only set when implement_plan itself raised after an
+        # agent call completed (e.g. IMPLEMENTATION_INVALID, BUDGET_EXCEEDED).
+        # When implement_plan succeeded and a later step in this function
+        # raised instead (e.g. the "claimed changes never landed" consistency
+        # check), job.implementation_usage was already set above right after
+        # that call returned — never overwrite it with an absent err.usage.
+        if err.usage is not None:
+            job.implementation_usage = AgentUsage.model_validate(err.usage)
         await _refresh_diff_best_effort(job)
         _fail(
             store,
@@ -474,6 +489,7 @@ async def run_validation_correction(
         with report_progress_to(_start_activity_log(store, job)):
             correction = await steps.implement_plan(job, workspace_path, failed_results)
         job.implementation_correction_result = correction.result
+        job.implementation_correction_usage = correction.usage
         store.save(job)
 
         job = _advance(store, job, JobState.REVALIDATING)
@@ -496,6 +512,8 @@ async def run_validation_correction(
             err.code,
             err.internal_detail or "no detail",
         )
+        if err.usage is not None:
+            job.implementation_correction_usage = AgentUsage.model_validate(err.usage)
         await _refresh_diff_best_effort(job)
         _record_correction_failure(store, job, err.code, err.user_message)
     except Exception:
