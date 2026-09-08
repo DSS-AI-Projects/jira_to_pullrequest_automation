@@ -89,6 +89,122 @@ async def test_happy_path_reaches_plan_ready(tmp_path: Path) -> None:
     assert final.repo_info.branch == "main"
 
 
+async def test_run_job_populates_activity_log_from_planning_progress(tmp_path: Path) -> None:
+    from app.jobs.runner import PlanResult
+    from app.steps.agent_progress import report
+    from tests.fakes import sample_plan
+
+    store, settings, job = make_env(tmp_path)
+
+    async def generate_plan_reporting_progress(
+        ticket: TicketData, repo_map: object, clone_path: Path, planning_notes: str | None
+    ) -> PlanResult:
+        del ticket, repo_map, clone_path, planning_notes
+        report("Reading README.md")
+        report("Searching for TODO")
+        return PlanResult(plan=sample_plan(), usage=AgentUsage(duration_seconds=0.1))
+
+    steps = dataclasses.replace(make_fake_steps(), generate_plan=generate_plan_reporting_progress)
+    await run_job(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.PLAN_READY
+    assert final.activity_log == ["Reading README.md", "Searching for TODO"]
+
+
+async def test_run_implementation_populates_and_resets_activity_log(tmp_path: Path) -> None:
+    from app.steps.agent_progress import report
+
+    store, settings, job = make_env(tmp_path)
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch=ticket_key,
+                commit_sha="a" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def implement_plan_reporting_progress(
+        job: Job, workspace_path: Path, validation_failures: list[ValidationResult] | None = None
+    ) -> ImplementationStepResult:
+        del validation_failures
+        report(f"Editing README.md for {job.ticket_key}")
+        (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated the README greeting.",
+                changed_files=[
+                    ImplementationChange(
+                        path="README.md", action="modify", rationale="Match the approved plan."
+                    )
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=1.0),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=local_clone,
+        implement_plan=implement_plan_reporting_progress,
+    )
+    await run_job(job.id, store, settings, steps)
+
+    planned = store.get(job.id)
+    assert planned is not None
+    # Planning's own (empty, since the default fake never reports) activity
+    # log must not leak into the implementation phase.
+    assert planned.activity_log == []
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_READY
+    assert final.activity_log == ["Editing README.md for PROJ-1"]
+
+
+async def test_activity_log_is_capped_to_the_most_recent_entries(tmp_path: Path) -> None:
+    from app.jobs.runner import PlanResult
+    from app.steps.agent_progress import report
+    from tests.fakes import sample_plan
+
+    store, settings, job = make_env(tmp_path)
+
+    async def generate_plan_reporting_lots_of_progress(
+        ticket: TicketData, repo_map: object, clone_path: Path, planning_notes: str | None
+    ) -> PlanResult:
+        del ticket, repo_map, clone_path, planning_notes
+        for i in range(60):
+            report(f"line {i}")
+        return PlanResult(plan=sample_plan(), usage=AgentUsage(duration_seconds=0.1))
+
+    steps = dataclasses.replace(
+        make_fake_steps(), generate_plan=generate_plan_reporting_lots_of_progress
+    )
+    await run_job(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert len(final.activity_log) == 50
+    assert final.activity_log[0] == "line 10"
+    assert final.activity_log[-1] == "line 59"
+
+
 async def test_app_error_in_step_yields_typed_failure_with_stage(tmp_path: Path) -> None:
     store, settings, job = make_env(tmp_path)
 

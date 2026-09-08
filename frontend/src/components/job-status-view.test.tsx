@@ -746,6 +746,185 @@ describe("JobStatusView", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows the activity log, most recent first, while implementing", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-implementing",
+      ticket_key: "KAN-31",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: null,
+      state: "IMPLEMENTING",
+      error: null,
+      activity_log: ["Reading a.java", "Editing a.java", "Editing b.java"],
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "jira_to_code_test",
+        commit_sha: "f".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\abtf-membership",
+      },
+      workspace_path: "D:\\workdir\\job-implementing\\repo",
+      plan: {
+        schema_version: 2,
+        summary: "Do the thing.",
+        ticket_type: "feature",
+        estimated_story_points: 3,
+        complexity_level: "medium",
+        impacted_files: [],
+        proposed_changes: [],
+        test_strategy: "n/a",
+        risks: [],
+        open_questions: [],
+      },
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: "2026-08-20T09:02:00Z",
+      implementation_started_at: "2026-08-20T09:02:01Z",
+      implementation_finished_at: null,
+      created_at: "2026-08-20T09:00:00Z",
+      updated_at: "2026-08-20T09:02:05Z",
+    });
+
+    render(<JobStatusView jobId="job-implementing" />);
+
+    await screen.findByText("Applying code changes");
+    const items = screen
+      .getAllByRole("listitem")
+      .filter((el) => el.closest(".activity-log-list"));
+    expect(items.map((el) => el.textContent)).toEqual([
+      "Editing b.java",
+      "Editing a.java",
+      "Reading a.java",
+    ]);
+  });
+
+  it("shows a waiting placeholder when active but no activity has landed yet", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-planning",
+      ticket_key: "KAN-31",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: null,
+      state: "PLANNING",
+      error: null,
+      activity_log: [],
+      repo_info: null,
+      workspace_path: "D:\\workdir\\job-planning\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-20T09:00:00Z",
+      updated_at: "2026-08-20T09:00:05Z",
+    });
+
+    render(<JobStatusView jobId="job-planning" />);
+
+    await screen.findByText("Generating the plan");
+    expect(screen.getByText("Waiting for activity…")).toBeInTheDocument();
+  });
+
+  it("keeps the last agent activity visible after an implementation failure", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-impl-failed-log",
+      ticket_key: "KAN-31",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: null,
+      state: "IMPLEMENTATION_FAILED",
+      error: {
+        code: "IMPLEMENTATION_INVALID",
+        message: "The implementation agent could not produce a valid result.",
+        stage: "IMPLEMENTING",
+      },
+      activity_log: ["Reading a.java", "Editing a.java"],
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "jira_to_code_test",
+        commit_sha: "f".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\abtf-membership",
+      },
+      workspace_path: "D:\\workdir\\job-impl-failed-log\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-20T09:00:00Z",
+      updated_at: "2026-08-20T09:05:00Z",
+    });
+
+    render(<JobStatusView jobId="job-impl-failed-log" />);
+
+    await screen.findByText("Last agent activity");
+    expect(screen.getByText("Editing a.java")).toBeInTheDocument();
+    expect(screen.getByText("Reading a.java")).toBeInTheDocument();
+  });
+
+  it("hides the activity log panel when there is nothing to show", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-plan-ready",
+      ticket_key: "KAN-31",
+      repo_url: "D:\\repos\\abtf-membership",
+      planning_notes: null,
+      state: "PLAN_READY",
+      error: null,
+      activity_log: [],
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "jira_to_code_test",
+        commit_sha: "f".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\repos\\abtf-membership",
+      },
+      workspace_path: "D:\\workdir\\job-plan-ready\\repo",
+      plan: {
+        schema_version: 2,
+        summary: "Do the thing.",
+        ticket_type: "feature",
+        estimated_story_points: 3,
+        complexity_level: "medium",
+        impacted_files: [],
+        proposed_changes: [],
+        test_strategy: "n/a",
+        risks: [],
+        open_questions: [],
+      },
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-20T09:00:00Z",
+      updated_at: "2026-08-20T09:00:05Z",
+    });
+
+    render(<JobStatusView jobId="job-plan-ready" />);
+
+    await screen.findByRole("button", { name: /Approve and Implement/i });
+    expect(screen.queryByText("Agent activity")).not.toBeInTheDocument();
+  });
+
   function readyJobWithValidation(overrides: Record<string, unknown>) {
     return {
       id: "job-correction",

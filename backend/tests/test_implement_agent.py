@@ -112,6 +112,51 @@ def install_fake_agent(
     return prompts
 
 
+async def test_execute_agent_reports_tool_use_as_progress(
+    agent_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
+
+    from app.steps.agent_progress import report_progress_to
+
+    async def fake_query(*, prompt: str, options: object):
+        del prompt, options
+        yield AssistantMessage(
+            content=[
+                ToolUseBlock(id="1", name="Read", input={"file_path": "src/cli.py"}),
+                # Not in the fixed tool set the agent is restricted to (or
+                # simply unrecognized) — must not produce a progress line.
+                ToolUseBlock(id="2", name="Bash", input={"command": "ls"}),
+                ToolUseBlock(id="3", name="Edit", input={"file_path": "src/cli.py"}),
+            ],
+            model="claude-test",
+        )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="session-1",
+            structured_output={
+                "summary": "Updated the CLI greeting.",
+                "changed_files": [],
+                "warnings": [],
+                "follow_up_questions": [],
+            },
+        )
+
+    monkeypatch.setattr(implement_agent, "query", fake_query)
+    options = build_options(Path("D:\\workdir\\job\\repo"), FAKE_ANTHROPIC_KEY, get_settings())
+
+    received: list[str] = []
+    with report_progress_to(received.append):
+        outcome = await implement_agent.execute_agent("do the thing", options)
+
+    assert outcome.subtype == "success"
+    assert received == ["Reading src/cli.py", "Editing src/cli.py"]
+
+
 def test_scrubbed_env_excludes_all_secrets(agent_env: None) -> None:
     env = scrubbed_env(FAKE_ANTHROPIC_KEY)
     assert "JIRA_API_TOKEN" not in env

@@ -233,6 +233,41 @@ ol {
   gap: 1.25rem;
 }
 
+.status-row {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
+@media (min-width: 901px) {
+  .status-row {
+    grid-template-columns: 3fr 2fr;
+  }
+}
+
+.activity-log-list {
+  display: grid;
+  gap: 0.5rem;
+  list-style: none;
+  padding-left: 0;
+  margin: 1.25rem 0 0;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+.activity-log-list li {
+  padding: 0.6rem 0.85rem;
+  border-radius: 0.65rem;
+  background: #f7f9fc;
+  color: var(--text);
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
 .hero-card {
   grid-template-columns: 1.1fr 0.9fr;
   align-items: start;

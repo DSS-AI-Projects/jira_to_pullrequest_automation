@@ -87,6 +87,46 @@ def install_fake_agent(
 # --- invariant 3: the agent boundary ---
 
 
+async def test_execute_agent_reports_tool_use_as_progress(
+    agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
+
+    from app.steps.agent_progress import report_progress_to
+
+    async def fake_query(*, prompt: str, options: object):
+        del prompt, options
+        yield AssistantMessage(
+            content=[
+                ToolUseBlock(id="1", name="Glob", input={"pattern": "**/*.py"}),
+                # Not in the fixed read-only tool set planning is restricted
+                # to (or simply unrecognized) — must not produce a line.
+                ToolUseBlock(id="2", name="Bash", input={"command": "ls"}),
+                ToolUseBlock(id="3", name="Grep", input={"pattern": "TODO"}),
+            ],
+            model="claude-test",
+        )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="session-1",
+            structured_output={},
+        )
+
+    monkeypatch.setattr(plan_agent, "query", fake_query)
+    options = build_options(tmp_path, FAKE_ANTHROPIC_KEY, get_settings())
+
+    received: list[str] = []
+    with report_progress_to(received.append):
+        outcome = await plan_agent.execute_agent("plan the thing", options)
+
+    assert outcome.subtype == "success"
+    assert received == ['Listing files matching "**/*.py"', 'Searching for "TODO"']
+
+
 def test_scrubbed_env_excludes_all_secrets(agent_env: None) -> None:
     env = scrubbed_env(FAKE_ANTHROPIC_KEY)
     assert "JIRA_API_TOKEN" not in env

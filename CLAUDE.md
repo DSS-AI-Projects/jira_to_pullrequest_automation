@@ -447,6 +447,56 @@ the larger delegated-credential design also considered:**
   it's a normal link the user clicks themselves, never an API call this app
   makes on their behalf.
 
+## Live activity log during agent phases
+
+The job status screen shows a right-hand "Activity log" panel alongside the
+pipeline stepper, updated live (via the existing status-polling loop) while an
+agent-backed phase (`PLANNING`, `IMPLEMENTING`, `CORRECTING`) is running, and left
+in place afterward so a failed job still shows what the agent was doing right up
+to the failure — the primary motivation, since a bare `FAILED`/`stage` code alone
+gives little sense of *what the agent had already tried* or *which file it was
+touching* when it ran out of budget or hit an error.
+
+- **Scope: tool calls only**, not free-text agent reasoning — a deliberate choice
+  to keep the log terse, deterministic to render, and free of any risk of
+  surfacing raw model chain-of-thought. Each entry is a short, human-readable
+  summary of one tool call: `summarize_tool_use()` (`backend/app/steps/agent_progress.py`)
+  maps a tool name + input dict to a line ("Reading `src/cli.py`", "Editing
+  `src/cli.py`", "Searching for `"foo"` in `src/`", "Listing files matching
+  `"*.py"`") for `Read`/`Write`/`Edit`/`Grep`/`Glob`; any other tool name (there
+  is no `Bash` in this app's tool set, but the mapping is defensive) is silently
+  skipped rather than shown raw.
+- **Plumbing: a `ContextVar`, not a widened `JobSteps` signature.** Both
+  `plan_agent.py` and `implement_agent.py`'s `execute_agent()` call
+  `report(summarize_tool_use(...))` for each `ToolUseBlock` they see in an
+  `AssistantMessage`, where `report()` looks up a sink function installed via the
+  `report_progress_to(sink)` context manager. `runner.py` installs that sink
+  around each `steps.generate_plan(...)` / `steps.implement_plan(...)` call so the
+  agent modules stay decoupled from job persistence — they just call `report()`
+  and don't know or care whether anything is listening. This was chosen over
+  adding an `on_progress` parameter threaded through every `JobSteps` callable
+  (which would mean touching every fake implementation across the test suite, as
+  happened for `validation_failures` earlier) — empirically verified that a
+  `ContextVar` set in the calling asyncio task survives the two nested
+  `asyncio.to_thread` hops down to the SDK's own `asyncio.run(...)` call.
+- **Reset per phase, capped at 50 entries.** `_start_activity_log()`
+  (`app/jobs/runner.py`) clears `Job.activity_log` to `[]` at the start of each
+  agent phase and returns a sink that appends + persists (via `store.save(job)`,
+  safe to call from the agent's background thread — `JobStore` is
+  `check_same_thread=False` behind its own lock) and truncates to the most recent
+  50 entries. The log is deliberately **not cumulative across phases** — it always
+  shows only the most recently run phase, which is what's relevant for diagnosing
+  that phase's outcome; a job that fails during `IMPLEMENTING` doesn't show stale
+  `PLANNING` entries mixed in.
+- **Frontend:** `job-status-view.tsx` renders the panel only when there's
+  something to show (log non-empty or the phase is currently active), titled
+  present-tense ("Generating plan…" / "Applying code changes…") while `job.state`
+  is genuinely live and past-tense ("Last agent activity") once the job has moved
+  past that phase (including into a failed state) — derived purely from
+  `job.state`, not `job.error?.stage`, so a job that failed *during*
+  `IMPLEMENTING` still reads as "Last agent activity" rather than the live
+  present-tense title. Entries render newest-first.
+
 ## Job history and admin cost reporting
 
 `GET /jobs` lists jobs most-recent-first with keyset (`created_at`-cursor)

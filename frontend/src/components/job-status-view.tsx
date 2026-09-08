@@ -165,6 +165,26 @@ export function JobStatusView(props: { jobId: string }) {
     return JOB_STATES.findIndex((state) => state === job.state);
   }, [job]);
 
+  // activity_log is reset at the start of each agent-backed step (see
+  // agent_progress.py) and then holds that step's log until the next one
+  // starts, so a FAILED job still shows exactly what the agent was doing
+  // right up to the failure — but the title should only read present-tense
+  // ("Applying code changes") while actually running; once terminal, a
+  // generic past-tense title avoids implying it's still in progress.
+  const isAgentActive =
+    job?.state === "PLANNING" ||
+    job?.state === "IMPLEMENTING" ||
+    job?.state === "CORRECTING";
+  const activityLog = job?.activity_log ?? [];
+  const activityLogTitle =
+    job?.state === "PLANNING"
+      ? "Generating the plan"
+      : job?.state === "IMPLEMENTING"
+        ? "Applying code changes"
+        : job?.state === "CORRECTING"
+          ? "Attempting automatic fix"
+          : "Last agent activity";
+
   // Implementation runs entirely in the isolated workspace clone regardless
   // of source kind, so it's available for every job that has reached
   // PLAN_READY — remote-sourced jobs included.
@@ -327,71 +347,94 @@ export function JobStatusView(props: { jobId: string }) {
 
   return (
     <div className="job-layout">
-      <section className="panel status-header">
-        <div className="status-heading">
-          <div>
-            <span className="eyebrow">Job status</span>
-            <h1>Planning job {props.jobId}</h1>
-            <p>
-              Review the generated plan, approve implementation when ready, and
-              track implementation plus validation through to completion.
-            </p>
+      <div className="status-row">
+        <section className="panel status-header">
+          <div className="status-heading">
+            <div>
+              <span className="eyebrow">Job status</span>
+              <h1>Planning job {props.jobId}</h1>
+              <p>
+                Review the generated plan, approve implementation when ready,
+                and track implementation plus validation through to completion.
+              </p>
+            </div>
+            <div className="actions">
+              {canRetry ? (
+                <button
+                  className="secondary-link"
+                  onClick={handleRetry}
+                  type="button"
+                >
+                  Retry
+                </button>
+              ) : null}
+              <Link className="secondary-link" href="/">
+                New job
+              </Link>
+              <Link className="secondary-link" href="/jobs">
+                All jobs
+              </Link>
+            </div>
           </div>
-          <div className="actions">
-            {canRetry ? (
-              <button
-                className="secondary-link"
-                onClick={handleRetry}
-                type="button"
-              >
-                Retry
-              </button>
-            ) : null}
-            <Link className="secondary-link" href="/">
-              New job
-            </Link>
-            <Link className="secondary-link" href="/jobs">
-              All jobs
-            </Link>
-          </div>
-        </div>
 
-        {error ? <p className="banner banner-error">{error}</p> : null}
+          {error ? <p className="banner banner-error">{error}</p> : null}
 
-        <ol className="status-timeline">
-          {JOB_STATES.map((state, index) => {
-            const jobFailed =
-              job?.state === "FAILED" || job?.state === "IMPLEMENTATION_FAILED";
-            const isFailed = jobFailed && job?.error?.stage === state;
-            const isActive = index === activeIndex && !isFailed;
-            const isComplete = job
-              ? index < activeIndex || job.state === "IMPLEMENTATION_READY"
-              : false;
-            return (
-              <li
-                className={[
-                  "timeline-item",
-                  isActive ? "is-active" : "",
-                  isComplete ? "is-complete" : "",
-                  isFailed ? "is-failed" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                key={state}
-              >
-                <span className="timeline-badge">{index + 1}</span>
-                <div>
-                  <strong>{JOB_STATE_LABELS[state]}</strong>
-                  {job?.state === state ? <p>Current step</p> : null}
-                  {isFailed ? (
-                    <p className="timeline-failed-label">Failed here</p>
-                  ) : null}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      </section>
+          <ol className="status-timeline">
+            {JOB_STATES.map((state, index) => {
+              const jobFailed =
+                job?.state === "FAILED" ||
+                job?.state === "IMPLEMENTATION_FAILED";
+              const isFailed = jobFailed && job?.error?.stage === state;
+              const isActive = index === activeIndex && !isFailed;
+              const isComplete = job
+                ? index < activeIndex || job.state === "IMPLEMENTATION_READY"
+                : false;
+              return (
+                <li
+                  className={[
+                    "timeline-item",
+                    isActive ? "is-active" : "",
+                    isComplete ? "is-complete" : "",
+                    isFailed ? "is-failed" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  key={state}
+                >
+                  <span className="timeline-badge">{index + 1}</span>
+                  <div>
+                    <strong>{JOB_STATE_LABELS[state]}</strong>
+                    {job?.state === state ? <p>Current step</p> : null}
+                    {isFailed ? (
+                      <p className="timeline-failed-label">Failed here</p>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+
+        {job && (activityLog.length > 0 || isAgentActive) ? (
+          <section className="panel activity-log-panel">
+            <div className="section-heading">
+              <div>
+                <span className="eyebrow">Agent activity</span>
+                <h2>{activityLogTitle}</h2>
+              </div>
+            </div>
+            {activityLog.length > 0 ? (
+              <ul className="activity-log-list">
+                {[...activityLog].reverse().map((line, index) => (
+                  <li key={`${activityLog.length - index}-${line}`}>{line}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="meta-muted">Waiting for activity…</p>
+            )}
+          </section>
+        ) : null}
+      </div>
 
       {job ? (
         <section className="panel summary-grid">

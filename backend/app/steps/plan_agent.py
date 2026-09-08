@@ -22,7 +22,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from claude_agent_sdk import ClaudeAgentOptions, Message, ResultMessage, query
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    Message,
+    ResultMessage,
+    ToolUseBlock,
+    query,
+)
 from pydantic import ValidationError
 
 from app.core import secrets
@@ -34,6 +41,7 @@ from app.jobs.runner import PlanResult
 from app.schemas.plan import Plan
 from app.schemas.repomap import RepoMap
 from app.schemas.ticket import TicketData
+from app.steps.agent_progress import report, summarize_tool_use
 from app.steps.plan_cache import PlanCache, plan_cache_key
 from app.steps.plan_stub import build_stub_plan
 from app.steps.repo_digest import RepoDigestCache, build_repo_digest, repo_digest_key
@@ -248,6 +256,12 @@ async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOut
     stream = cast(AsyncGenerator[Message, None], query(prompt=prompt, options=options))
     async with contextlib.aclosing(stream) as messages:
         async for message in messages:
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, ToolUseBlock):
+                        line = summarize_tool_use(block.name, block.input)
+                        if line:
+                            report(line)
             if isinstance(message, ResultMessage):
                 return AgentRunOutcome(
                     subtype=message.subtype,

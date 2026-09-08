@@ -87,6 +87,30 @@ def _advance(store: JobStore, job: Job, state: JobState) -> Job:
     return store.save(job)
 
 
+_ACTIVITY_LOG_CAP = 50
+
+
+def _start_activity_log(store: JobStore, job: Job) -> Callable[[str], None]:
+    """Clear the job's activity log for a fresh agent-backed step, and
+    return a sink that appends+persists each reported progress line.
+
+    The sink is a plain synchronous function: it runs inside the agent's
+    background thread (see app/steps/agent_progress.py's module docstring),
+    not the main event loop, so it must not be a coroutine. JobStore.save is
+    already thread-safe (sqlite3 connection opened with
+    check_same_thread=False, guarded by its own lock), so calling it
+    directly from that thread is safe.
+    """
+    job.activity_log = []
+    store.save(job)
+
+    def sink(line: str) -> None:
+        job.activity_log = [*job.activity_log, line][-_ACTIVITY_LOG_CAP:]
+        store.save(job)
+
+    return sink
+
+
 def _fail(
     store: JobStore,
     job: Job,
@@ -225,7 +249,12 @@ async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSt
         repo_map = await steps.build_repo_map(clone_path)
 
         job = _advance(store, job, JobState.PLANNING)
-        result = await steps.generate_plan(ticket, repo_map, clone_path, job.planning_notes)
+        # Deferred import: app.steps.__init__ imports JobSteps from this
+        # module, so a top-level import here would be circular.
+        from app.steps.agent_progress import report_progress_to
+
+        with report_progress_to(_start_activity_log(store, job)):
+            result = await steps.generate_plan(ticket, repo_map, clone_path, job.planning_notes)
 
         job.plan = result.plan
         job.usage = result.usage
@@ -310,7 +339,12 @@ async def run_implementation(
         job.implementation_baseline_commit_sha = base_ref
         job.implementation_started_at = store.save(job).updated_at
         job = _advance(store, job, JobState.IMPLEMENTING)
-        implementation = await steps.implement_plan(job, workspace_path, None)
+        # Deferred import: app.steps.__init__ imports JobSteps from this
+        # module, so a top-level import here would be circular.
+        from app.steps.agent_progress import report_progress_to
+
+        with report_progress_to(_start_activity_log(store, job)):
+            implementation = await steps.implement_plan(job, workspace_path, None)
         diff = await _collect_implementation_diff(workspace_path, base_ref)
 
         if implementation.result.changed_files and (diff is None or not diff.files):
@@ -433,7 +467,12 @@ async def run_validation_correction(
             base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
             base_ref = base_ref or "HEAD"
 
-        correction = await steps.implement_plan(job, workspace_path, failed_results)
+        # Deferred import: app.steps.__init__ imports JobSteps from this
+        # module, so a top-level import here would be circular.
+        from app.steps.agent_progress import report_progress_to
+
+        with report_progress_to(_start_activity_log(store, job)):
+            correction = await steps.implement_plan(job, workspace_path, failed_results)
         job.implementation_correction_result = correction.result
         store.save(job)
 

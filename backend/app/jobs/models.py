@@ -145,6 +145,13 @@ class Job(BaseModel):
     planning_notes: str | None = None
     state: JobState = JobState.QUEUED
     error: JobError | None = None
+    # A short, rolling window of what the planning/implementation agent is
+    # currently doing (tool calls only — "Reading X.java", not the model's
+    # own narration; see app/steps/agent_progress.py), so the status screen
+    # can show something more useful than the coarse job state while a slow
+    # step is running. Reset at the start of each agent-backed step; capped
+    # to the most recent entries by _append_activity() in app/jobs/runner.py.
+    activity_log: list[str] = []
     repo_info: RepoInfo | None = None
     workspace_path: str | None = None
     plan: Plan | None = None

@@ -199,6 +199,10 @@ export type Job = {
   planning_notes: string | null;
   state: JobState;
   error: JobError | null;
+  // A short, rolling window of what the planning/implementation agent is
+  // currently doing (tool calls only) — reset at the start of each
+  // agent-backed step; see agent_progress.py on the backend.
+  activity_log: string[];
   repo_info: RepoInfo | null;
   workspace_path: string | null;
   plan: Plan | null;
@@ -357,6 +361,7 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
 function normalizeJob(job: Job): Job {
   return {
     ...job,
+    activity_log: Array.isArray(job.activity_log) ? job.activity_log : [],
     validation_results: Array.isArray(job.validation_results)
       ? job.validation_results
       : [],
