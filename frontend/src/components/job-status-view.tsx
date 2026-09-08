@@ -10,6 +10,7 @@ import {
   fetchJob,
   implementJob,
   isAbortError,
+  pushBranch,
   type Job,
   type ImplementationDiffFile,
   type ValidationResult,
@@ -64,6 +65,23 @@ function diffStat(file: ImplementationDiffFile): string {
   return `+${additions} -${deletions}`;
 }
 
+// Mirrors github_compare_url() in backend/app/api/routes.py — a plain web
+// link, not an API call, so it never opens or creates a PR itself.
+const GITHUB_HTTPS_RE =
+  /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/;
+const GITHUB_SSH_RE =
+  /^(?:ssh:\/\/)?git@github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/;
+
+function githubCompareUrl(remoteUrl: string, branch: string): string | null {
+  const match =
+    GITHUB_HTTPS_RE.exec(remoteUrl) ?? GITHUB_SSH_RE.exec(remoteUrl);
+  if (!match) {
+    return null;
+  }
+  const [, owner, repo] = match;
+  return `https://github.com/${owner}/${repo}/compare/${branch}?expand=1`;
+}
+
 export function JobStatusView(props: { jobId: string }) {
   const router = useRouter();
   const [job, setJob] = useState<Job | null>(null);
@@ -75,6 +93,8 @@ export function JobStatusView(props: { jobId: string }) {
   const [branchNameInput, setBranchNameInput] = useState("");
   const [commitMessageInput, setCommitMessageInput] = useState("");
   const [creatingBranch, setCreatingBranch] = useState(false);
+  const [pushBranchNameInput, setPushBranchNameInput] = useState("");
+  const [pushingBranch, setPushingBranch] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
     "idle",
   );
@@ -175,6 +195,8 @@ export function JobStatusView(props: { jobId: string }) {
   const canCreateBranch =
     job?.state === "IMPLEMENTATION_READY" && !job.branch_name;
 
+  const canPushBranch = !!job?.branch_name && !job.branch_pushed_at;
+
   function handleRetry() {
     if (!job) {
       return;
@@ -253,6 +275,26 @@ export function JobStatusView(props: { jobId: string }) {
       );
     } finally {
       setCreatingBranch(false);
+    }
+  }
+
+  async function handlePushBranch() {
+    if (!job) {
+      return;
+    }
+    setPushingBranch(true);
+    setError(null);
+    try {
+      await pushBranch(job.id, { branch_name: pushBranchNameInput });
+      setRefreshKey((value) => value + 1);
+    } catch (pushError) {
+      setError(
+        pushError instanceof Error
+          ? pushError.message
+          : "Could not push the branch.",
+      );
+    } finally {
+      setPushingBranch(false);
     }
   }
 
@@ -906,6 +948,74 @@ export function JobStatusView(props: { jobId: string }) {
                 Created branch <code>{job.branch_name}</code> at commit{" "}
                 <code>{job.branch_commit_sha?.slice(0, 12)}</code>.
               </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {job?.branch_name ? (
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">Branch preparation</span>
+              <h2>Push branch</h2>
+              <p>
+                Push the created branch to this repository&apos;s remote. This
+                never force-pushes or overwrites an existing branch.
+              </p>
+            </div>
+          </div>
+          {canPushBranch ? (
+            <div className="stack">
+              <label className="field">
+                <span>Branch name (optional)</span>
+                <small>
+                  Leave blank to push as <code>{job.branch_name}</code>. Only
+                  needed to rename before pushing, e.g. after a name collision
+                  on the remote.
+                </small>
+                <input
+                  className="text-input"
+                  disabled={pushingBranch}
+                  maxLength={200}
+                  onChange={(event) =>
+                    setPushBranchNameInput(event.target.value)
+                  }
+                  placeholder={job.branch_name}
+                  type="text"
+                  value={pushBranchNameInput}
+                />
+              </label>
+              <div className="actions">
+                <button
+                  className="primary-button"
+                  disabled={pushingBranch}
+                  onClick={() => void handlePushBranch()}
+                  type="button"
+                >
+                  {pushingBranch ? "Pushing..." : "Push branch"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {job.branch_pushed_at ? (
+            <div className="stack">
+              <p>
+                Pushed <code>{job.branch_name}</code> to{" "}
+                <span className="break-all">{job.branch_push_remote_url}</span>.
+              </p>
+              {job.branch_push_remote_url &&
+              githubCompareUrl(job.branch_push_remote_url, job.branch_name) ? (
+                <Link
+                  className="secondary-link"
+                  href={githubCompareUrl(
+                    job.branch_push_remote_url,
+                    job.branch_name,
+                  )!}
+                >
+                  Open a pull request on GitHub
+                </Link>
+              ) : null}
             </div>
           ) : null}
         </section>

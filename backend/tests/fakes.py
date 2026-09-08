@@ -19,6 +19,7 @@ from app.jobs.runner import (
     ImplementationStepResult,
     JobSteps,
     PlanResult,
+    PushResult,
 )
 from app.jobs.store import JobStore
 from app.schemas.plan import Plan
@@ -124,6 +125,18 @@ def make_fake_steps() -> JobSteps:
             commit_sha="b" * 40,
         )
 
+    async def push_branch(
+        job: Job,
+        workspace_path: Path,
+        branch_name: str | None,
+    ) -> PushResult:
+        del workspace_path
+        return PushResult(
+            branch_name=branch_name or job.branch_name or f"jira2pullreq/{job.ticket_key}",
+            remote_url=(job.repo_info.origin_url if job.repo_info else None)
+            or "https://github.com/acme/repo.git",
+        )
+
     return JobSteps(
         fetch_ticket=fetch_ticket,
         clone_repo=clone_repo,
@@ -132,4 +145,5 @@ def make_fake_steps() -> JobSteps:
         implement_plan=implement_plan,
         validate_workspace=validate_workspace,
         create_branch=create_branch,
+        push_branch=push_branch,
     )

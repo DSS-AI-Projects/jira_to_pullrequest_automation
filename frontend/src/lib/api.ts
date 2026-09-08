@@ -218,6 +218,8 @@ export type Job = {
   branch_name: string | null;
   branch_commit_sha: string | null;
   branch_created_at: string | null;
+  branch_pushed_at: string | null;
+  branch_push_remote_url: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -544,6 +546,32 @@ export async function createBranch(
     signal,
   });
   return parseJson<BranchCreated>(response);
+}
+
+export type BranchPushed = {
+  branch_name: string;
+  remote_url: string;
+  compare_url: string | null;
+};
+
+export async function pushBranch(
+  jobId: string,
+  payload?: { branch_name?: string },
+  signal?: AbortSignal,
+): Promise<BranchPushed> {
+  const branchName = payload?.branch_name?.trim();
+  const body = branchName ? { branch_name: branchName } : {};
+  const response = await apiFetch(`/api/jobs/${jobId}/push-branch`, {
+    method: "POST",
+    ...(Object.keys(body).length > 0
+      ? {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      : {}),
+    signal,
+  });
+  return parseJson<BranchPushed>(response);
 }
 
 export async function fetchSession(signal?: AbortSignal): Promise<SessionInfo> {

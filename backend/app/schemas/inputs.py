@@ -62,6 +62,21 @@ class CreateBranchRequest(BaseModel):
     )
 
 
+class PushBranchRequest(BaseModel):
+    # Same invariant-1 treatment as every other free-text field.
+    model_config = ConfigDict(extra="forbid")
+
+    branch_name: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Optional branch name, only needed to rename before pushing "
+            "(e.g. after a BRANCH_PUSH_REJECTED collision); defaults to the "
+            "job's already-created branch name"
+        ),
+    )
+
+
 def _reject_credential_shaped(value: str, field: str) -> None:
     if looks_token_shaped(value):
         # Do not log or echo the value anywhere.

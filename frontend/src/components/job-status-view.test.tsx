@@ -3,14 +3,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobStatusView } from "@/components/job-status-view";
 
-const { correctValidation, createBranch, fetchJob, implementJob, push } =
-  vi.hoisted(() => ({
-    correctValidation: vi.fn(),
-    createBranch: vi.fn(),
-    fetchJob: vi.fn(),
-    implementJob: vi.fn(),
-    push: vi.fn(),
-  }));
+const {
+  correctValidation,
+  createBranch,
+  fetchJob,
+  implementJob,
+  push,
+  pushBranch,
+} = vi.hoisted(() => ({
+  correctValidation: vi.fn(),
+  createBranch: vi.fn(),
+  fetchJob: vi.fn(),
+  implementJob: vi.fn(),
+  push: vi.fn(),
+  pushBranch: vi.fn(),
+}));
 
 vi.mock("next/link", () => ({
   default: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
@@ -32,6 +39,7 @@ vi.mock("@/lib/api", async () => {
     createBranch,
     fetchJob,
     implementJob,
+    pushBranch,
   };
 });
 
@@ -42,6 +50,7 @@ describe("JobStatusView", () => {
     fetchJob.mockReset();
     implementJob.mockReset();
     push.mockReset();
+    pushBranch.mockReset();
   });
 
   it("shows approve button for local plan-ready jobs and renders implementation results", async () => {
@@ -939,9 +948,93 @@ describe("JobStatusView", () => {
 
     render(<JobStatusView jobId="job-correction" />);
 
-    await screen.findByText("jira2pullreq/KAN-31");
+    // The branch name also appears in the separate "Push branch" card's own
+    // hint text once a branch exists, so this must match more than one spot.
+    await waitFor(() =>
+      expect(screen.getAllByText("jira2pullreq/KAN-31").length).toBeGreaterThan(
+        0,
+      ),
+    );
     expect(
       screen.queryByRole("button", { name: "Create branch" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a push button once a branch exists and pushes the submitted name", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        validation_results: [],
+        branch_name: "jira2pullreq/KAN-31",
+        branch_commit_sha: "b".repeat(40),
+        branch_created_at: "2026-08-20T09:03:00Z",
+      }),
+    );
+    pushBranch.mockResolvedValue({
+      branch_name: "custom/renamed",
+      remote_url: "https://github.com/acme/repo.git",
+      compare_url:
+        "https://github.com/acme/repo/compare/custom/renamed?expand=1",
+    });
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    const branchInput = await screen.findByPlaceholderText(
+      "jira2pullreq/KAN-31",
+    );
+    fireEvent.change(branchInput, { target: { value: "custom/renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Push branch" }));
+
+    await waitFor(() =>
+      expect(pushBranch).toHaveBeenCalledWith("job-correction", {
+        branch_name: "custom/renamed",
+      }),
+    );
+  });
+
+  it("shows the pushed branch, remote, and a compare link once pushed", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        validation_results: [],
+        branch_name: "jira2pullreq/KAN-31",
+        branch_commit_sha: "b".repeat(40),
+        branch_created_at: "2026-08-20T09:03:00Z",
+        branch_pushed_at: "2026-08-20T09:05:00Z",
+        branch_push_remote_url: "https://github.com/acme/repo.git",
+      }),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByText("https://github.com/acme/repo.git");
+    expect(
+      screen.queryByRole("button", { name: "Push branch" }),
+    ).not.toBeInTheDocument();
+    const compareLink = screen.getByRole("link", {
+      name: "Open a pull request on GitHub",
+    });
+    expect(compareLink).toHaveAttribute(
+      "href",
+      "https://github.com/acme/repo/compare/jira2pullreq/KAN-31?expand=1",
+    );
+  });
+
+  it("omits the compare link when the remote isn't github.com", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        validation_results: [],
+        branch_name: "jira2pullreq/KAN-31",
+        branch_commit_sha: "b".repeat(40),
+        branch_created_at: "2026-08-20T09:03:00Z",
+        branch_pushed_at: "2026-08-20T09:05:00Z",
+        branch_push_remote_url: "https://gitlab.com/acme/repo.git",
+      }),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByText("https://gitlab.com/acme/repo.git");
+    expect(
+      screen.queryByRole("link", { name: "Open a pull request on GitHub" }),
     ).not.toBeInTheDocument();
   });
 

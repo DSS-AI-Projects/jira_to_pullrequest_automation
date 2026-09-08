@@ -181,6 +181,15 @@ class Job(BaseModel):
     branch_name: str | None = None
     branch_commit_sha: str | None = None
     branch_created_at: datetime | None = None
+    # Set once the branch has been pushed to the repo's real remote (never
+    # the isolated workspace's own "origin", which for a LOCAL job points at
+    # the user's local source path, not the actual remote — see
+    # push_branch() in app/steps/branch_prep.py). Unlike branch creation this
+    # is safely retryable on failure: pushing has no LLM cost to protect, and
+    # a push failure never touches the local branch/commit, so nothing is
+    # ever lost by trying again (optionally with a different branch name).
+    branch_pushed_at: datetime | None = None
+    branch_push_remote_url: str | None = None
     created_at: datetime
     updated_at: datetime
 

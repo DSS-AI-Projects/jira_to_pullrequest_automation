@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ from app.schemas.inputs import (
     JOB_CREATE_FORM_FIELDS,
     CreateBranchRequest,
     ImplementRequest,
+    PushBranchRequest,
     RepoChoice,
     load_preconfigured_repos,
     normalize_branch_name,
@@ -57,6 +59,17 @@ class BranchCreated(BaseModel):
 
     branch_name: str
     commit_sha: str
+
+
+class BranchPushed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    branch_name: str
+    remote_url: str
+    # A plain github.com web link (not an API call — never opens or creates
+    # anything itself) so the user can open a PR in one click if they want
+    # one; opening a PR is still out of scope for this app to do directly.
+    compare_url: str | None = None
 
 
 class LocalRepoSupport(BaseModel):
@@ -331,6 +344,73 @@ async def create_branch(
     store.save(job)
     logger.info("job %s: branch %s created", job.id, result.branch_name)
     return BranchCreated(branch_name=result.branch_name, commit_sha=result.commit_sha)
+
+
+_GITHUB_HTTPS_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$")
+_GITHUB_SSH_RE = re.compile(r"^(?:ssh://)?git@github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
+
+
+def github_compare_url(remote_url: str, branch: str) -> str | None:
+    """A plain web link, not an API call — never opens or creates a PR
+    itself, just gets the user one click away from doing it themselves."""
+    match = _GITHUB_HTTPS_RE.match(remote_url) or _GITHUB_SSH_RE.match(remote_url)
+    if not match:
+        return None
+    owner, repo = match.group(1), match.group(2)
+    return f"https://github.com/{owner}/{repo}/compare/{branch}?expand=1"
+
+
+@router.post("/jobs/{job_id}/push-branch", response_model=BranchPushed)
+async def push_branch(
+    job_id: str, request: Request, payload: PushBranchRequest | None = None
+) -> BranchPushed:
+    """Push the job's already-created branch to the repo's real remote.
+    Synchronous, like create-branch — plain git plumbing, no LLM call.
+    Always uses ambient git auth (the same SSH-key/credential-helper model
+    `git clone` already relies on); no per-user credential is read or
+    injected. Never force-pushes; see CLAUDE.md's "Branch preparation"
+    section and push_branch()'s own docstring in app/steps/branch_prep.py.
+    """
+    user = require_current_user(request)
+    store = _store(request)
+    job = store.get(job_id)
+    if job is None:
+        raise AppError(ErrorCode.JOB_NOT_FOUND)
+    ensure_job_access(job, user)
+    if job.branch_name is None:
+        raise AppError(ErrorCode.BRANCH_PUSH_NOT_AVAILABLE)
+    if not job.workspace_path or not Path(job.workspace_path).exists():
+        raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+
+    branch_name = normalize_branch_name(payload.branch_name if payload is not None else None)
+
+    # Idempotent: a repeat push with no rename requested, on a job already
+    # pushed, re-reports the existing result instead of re-attempting —
+    # otherwise it would incorrectly hit the "branch already exists on the
+    # remote" collision check against its *own* prior push.
+    if (
+        job.branch_pushed_at is not None
+        and job.branch_push_remote_url is not None
+        and (branch_name is None or branch_name == job.branch_name)
+    ):
+        return BranchPushed(
+            branch_name=job.branch_name,
+            remote_url=job.branch_push_remote_url,
+            compare_url=github_compare_url(job.branch_push_remote_url, job.branch_name),
+        )
+
+    result = await _steps(request).push_branch(job, Path(job.workspace_path), branch_name)
+
+    job.branch_name = result.branch_name
+    job.branch_pushed_at = datetime.now(UTC)
+    job.branch_push_remote_url = result.remote_url
+    store.save(job)
+    logger.info("job %s: branch %s pushed", job.id, result.branch_name)
+    return BranchPushed(
+        branch_name=result.branch_name,
+        remote_url=result.remote_url,
+        compare_url=github_compare_url(result.remote_url, result.branch_name),
+    )
 
 
 @router.get("/repos", response_model=RepoList)

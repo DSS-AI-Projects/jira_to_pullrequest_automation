@@ -28,6 +28,7 @@ from app.jobs.runner import CloneResult, ImplementationStepResult
 from app.jobs.store import JobStore
 from app.main import create_app
 from app.steps.branch_prep import create_branch as real_create_branch
+from app.steps.branch_prep import push_branch as real_push_branch
 from tests.fakes import make_fake_steps
 from tests.pdf_fixtures import make_pdf_bytes
 
@@ -138,6 +139,104 @@ def local_client(store: JobStore) -> Iterator[TestClient]:
         # than the fake's unconditional echo — several tests below rely on
         # it actually validating names and committing.
         create_branch=real_create_branch,
+        push_branch=real_push_branch,
+    )
+    app = create_app(store=store, steps=steps)
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def local_client_with_pushable_remote(store: JobStore, tmp_path: Path) -> Iterator[TestClient]:
+    """Same as local_client, but RepoInfo.origin_url points at a real, local
+    bare repo (a plain filesystem path is a fully valid git remote — no test
+    server needed), so push-branch tests can verify an actual push landed."""
+
+    def init_git_workspace(path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "README.md").write_text("Hello AI Agentic World\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(path), "branch", "-M", "main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "add", "README.md"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "-m", "Initial commit"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    remote_path = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(remote_path)], check=True, capture_output=True, text=True
+    )
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        del repo_url
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch=ticket_key,
+                commit_sha="e" * 40,
+                origin_url=str(remote_path),
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def implement_plan(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        (workspace_path / "README.md").write_text("Hello Back To World\n", encoding="utf-8")
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated the README greeting.",
+                changed_files=[
+                    ImplementationChange(
+                        path="README.md", action="modify", rationale="Match the approved plan."
+                    )
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=1.0),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=local_clone,
+        implement_plan=implement_plan,
+        create_branch=real_create_branch,
+        push_branch=real_push_branch,
     )
     app = create_app(store=store, steps=steps)
     with TestClient(app, raise_server_exceptions=False) as test_client:
@@ -236,6 +335,7 @@ def remote_client(store: JobStore) -> Iterator[TestClient]:
         clone_repo=remote_clone,
         implement_plan=implement_plan,
         create_branch=real_create_branch,
+        push_branch=real_push_branch,
     )
     app = create_app(store=store, steps=steps)
     with TestClient(app, raise_server_exceptions=False) as test_client:
@@ -548,6 +648,8 @@ def local_folder_client(store: JobStore) -> Iterator[TestClient]:
         make_fake_steps(),
         clone_repo=folder_clone,
         implement_plan=implement_plan,
+        create_branch=real_create_branch,
+        push_branch=real_push_branch,
     )
     app = create_app(store=store, steps=steps)
     with TestClient(app, raise_server_exceptions=False) as test_client:
@@ -1143,6 +1245,97 @@ def test_create_branch_rejects_job_not_implementation_ready(
     response = client.post(f"/api/jobs/{job.id}/create-branch")
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "BRANCH_CREATION_NOT_AVAILABLE"
+
+
+def test_push_branch_pushes_to_the_real_remote(
+    local_client_with_pushable_remote: TestClient,
+) -> None:
+    job_id = _reach_implementation_ready(local_client_with_pushable_remote)
+    created = local_client_with_pushable_remote.post(f"/api/jobs/{job_id}/create-branch")
+    assert created.status_code == 200
+
+    response = local_client_with_pushable_remote.post(f"/api/jobs/{job_id}/push-branch")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["branch_name"] == "jira2pullreq/PROJ-123"
+    assert body["remote_url"]
+    assert body["compare_url"] is None  # a bare local path isn't a github.com URL
+
+    job = local_client_with_pushable_remote.get(f"/api/jobs/{job_id}").json()
+    assert job["branch_pushed_at"] is not None
+    assert job["branch_push_remote_url"] == body["remote_url"]
+
+
+def test_push_branch_is_idempotent_on_a_repeat_call(
+    local_client_with_pushable_remote: TestClient,
+) -> None:
+    job_id = _reach_implementation_ready(local_client_with_pushable_remote)
+    local_client_with_pushable_remote.post(f"/api/jobs/{job_id}/create-branch")
+
+    first = local_client_with_pushable_remote.post(f"/api/jobs/{job_id}/push-branch")
+    assert first.status_code == 200
+
+    second = local_client_with_pushable_remote.post(f"/api/jobs/{job_id}/push-branch")
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+def test_push_branch_rejects_a_name_already_on_the_remote(
+    local_client_with_pushable_remote: TestClient,
+) -> None:
+    job_id = _reach_implementation_ready(local_client_with_pushable_remote)
+    local_client_with_pushable_remote.post(f"/api/jobs/{job_id}/create-branch")
+    local_client_with_pushable_remote.post(f"/api/jobs/{job_id}/push-branch")
+
+    # A second, independent job aimed at the same branch name/remote.
+    other_job_id = _reach_implementation_ready(local_client_with_pushable_remote)
+    local_client_with_pushable_remote.post(
+        f"/api/jobs/{other_job_id}/create-branch",
+        json={"branch_name": "jira2pullreq/PROJ-123"},
+    )
+
+    response = local_client_with_pushable_remote.post(f"/api/jobs/{other_job_id}/push-branch")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BRANCH_PUSH_REJECTED"
+
+
+def test_push_branch_rejects_when_no_branch_created_yet(local_client: TestClient) -> None:
+    job_id = _reach_implementation_ready(local_client)
+
+    response = local_client.post(f"/api/jobs/{job_id}/push-branch")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BRANCH_PUSH_NOT_AVAILABLE"
+
+
+def test_push_branch_rejects_when_repo_has_no_remote(
+    local_folder_client: TestClient,
+) -> None:
+    job_id = _reach_implementation_ready(local_folder_client)
+    created = local_folder_client.post(f"/api/jobs/{job_id}/create-branch")
+    assert created.status_code == 200
+
+    response = local_folder_client.post(f"/api/jobs/{job_id}/push-branch")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BRANCH_PUSH_NOT_AVAILABLE"
+
+
+def test_push_branch_rejects_job_not_found(client: TestClient) -> None:
+    response = client.post("/api/jobs/does-not-exist/push-branch")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "JOB_NOT_FOUND"
+
+
+def testgithub_compare_url_handles_https_and_ssh_remotes() -> None:
+    from app.api.routes import github_compare_url
+
+    https_url = github_compare_url("https://github.com/acme/repo.git", "feature/x")
+    assert https_url == "https://github.com/acme/repo/compare/feature/x?expand=1"
+
+    ssh_url = github_compare_url("git@github.com:acme/repo.git", "feature/x")
+    assert ssh_url == "https://github.com/acme/repo/compare/feature/x?expand=1"
+
+    assert github_compare_url("https://gitlab.com/acme/repo.git", "feature/x") is None
+    assert github_compare_url("/local/path/to/remote.git", "feature/x") is None
 
 
 def test_implement_no_longer_rejects_remote_repo_jobs_by_source_kind(

@@ -43,9 +43,10 @@ typing a secret into this app's forms. Sources:
     in SQLite and used preferentially, falling back to shared creds when a user has
     not connected. `JIRA_BASE_URL` still selects which Jira Cloud site to target.
 - **GitHub — delegated OAuth** (`GITHUB_OAUTH_*`): per-user tokens encrypted at rest,
-  used **for repository discovery / quick-picks only**. The actual `git clone` still
-  inherits the machine's ambient git auth (SSH key / credential helper); delegated
-  git auth is not built yet. GitLab has a connection-model foundation but no flow.
+  used **for repository discovery / quick-picks only**. `git clone` and `git push`
+  both still inherit the machine's ambient git auth (SSH key / credential helper);
+  delegated *git* auth is not built yet. GitLab has a connection-model foundation
+  but no flow.
 - **Anthropic:** `ANTHROPIC_API_KEY` from env, consumed only by the Agent SDK steps.
 
 Security-architecture changes require the owner's sign-off — propose, don't implement.
@@ -366,15 +367,14 @@ back on `IMPLEMENTATION_READY`, never a failure state, so the original
   steps (`_collect_implementation_diff`, the validation runner) the original
   implement phase already uses — only the corrective agent turn is new.
 
-## Branch preparation (commit only — never pushes)
+## Branch preparation and push
 
 Once a job is `IMPLEMENTATION_READY`, the developer may explicitly create a branch
 and commit the already-reviewed diff **inside the isolated workspace**
-(`POST /jobs/{id}/create-branch`, `backend/app/steps/branch_prep.py`). This is
-deliberately scoped to commit-only: it never runs `git push` and never touches the
-user's original repository or any remote — pushing (and the credential handling it
-needs) is a distinct, not-yet-built capability. Like every other code-writing action
-in this app, it's explicitly triggered by the user, never automatic.
+(`POST /jobs/{id}/create-branch`, `backend/app/steps/branch_prep.py`), then,
+separately, push that branch to the repo's real remote
+(`POST /jobs/{id}/push-branch`, same module). Like every other code-writing action
+in this app, both are explicitly triggered by the user, never automatic.
 
 - **Deterministic, synchronous, no LLM.** Branch/commit is plain git plumbing
   (`checkout -B`, `add -A`, `commit`) — unlike implement/validate/correct there's no
@@ -405,6 +405,48 @@ in this app, it's explicitly triggered by the user, never automatic.
   `checkout -B <name> <baseline>` is a no-op move that never touches the working
   tree holding the (uncommitted) implementation changes.
 
+**Push (`push_branch()`) is a separate, later, explicitly-triggered step — and,
+deliberately, the smallest change that could satisfy "push to GitHub" rather than
+the larger delegated-credential design also considered:**
+
+- **Ambient git auth only — no per-user credential is ever read or injected.**
+  Exactly the same trust model `git clone` already uses (SSH key / credential
+  helper on the machine running the backend). A shared multi-user deployment
+  where individual developers don't have their own push access on that machine
+  needs a separate, later capability (delegating the user's own connected GitHub
+  OAuth token) — deliberately not built here; seeing this gap is the reason to
+  build it, not a reason to work around it in the meantime.
+- **Targets `Job.repo_info.origin_url`, never the workspace clone's own "origin"
+  remote.** For a `LOCAL` job those are different things: `origin_url` was
+  captured from the *original* local source's own git config before cloning (see
+  `_inspect_repo` in `repo_clone.py`), i.e. the repo's real upstream (e.g.
+  github.com) — while the workspace's own "origin" remote points at the local
+  source path it was cloned from, since that's literally what `git clone
+  <local_source> <dest>` sets it to. Pushing to the workspace's own "origin" for a
+  `LOCAL` job would silently push into the user's own local checkout instead of
+  their real remote — a `LOCAL_FOLDER` job (no real remote ever existed) or a
+  `LOCAL` job with no configured origin correctly has `origin_url = None` and is
+  rejected with `BRANCH_PUSH_NOT_AVAILABLE`.
+- **Never force-pushes.** A `git ls-remote --heads` check runs before pushing; if
+  a branch with that name already exists on the remote, the request is rejected
+  (`BRANCH_PUSH_REJECTED`) rather than overwriting it.
+- **Retryable, unlike branch creation** — there's no LLM budget to protect, and a
+  failed push never touches the local branch/commit, so nothing is ever lost by
+  trying again. A repeat push with no rename requested, on a job already pushed,
+  is idempotent (re-reports the existing result) rather than re-attempting and
+  incorrectly tripping the collision check against its own prior push. Pushing
+  under a *different* name first does a local `git branch -m` (a safe rename —
+  the branch is already committed, so nothing uncommitted is at risk) before
+  pushing the new name — handles the case of retrying after a
+  `BRANCH_PUSH_REJECTED` collision without starting a new job.
+- **Never opens a pull request** — still out of scope. A successful push does
+  return a plain `compare_url` web link (`https://github.com/<owner>/<repo>/compare/<branch>?expand=1`)
+  when the remote is recognizably github.com, computed by `github_compare_url()`
+  (mirrored client-side in `job-status-view.tsx` as `githubCompareUrl()` so the
+  link still renders after a page reload, since it isn't persisted on the job) —
+  it's a normal link the user clicks themselves, never an API call this app
+  makes on their behalf.
+
 ## Job history and admin cost reporting
 
 `GET /jobs` lists jobs most-recent-first with keyset (`created_at`-cursor)
@@ -426,21 +468,23 @@ the header only when the signed-in user's role is `ADMIN`.
 
 **In:** non-secret form; a Jira ticket or an uploaded PDF requirement document as
 alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
-delegated Jira/GitHub OAuth with encrypted-at-rest tokens; async jobs with SQLite
-store + polling status screen; the plan pipeline (fetch/clone/map/plan); an
-isolated-clone implement + validate phase, available for local *and* remote
-repos alike; a single, explicitly opt-in validation-correction pass after a
-failed validation; creating a branch and committing the reviewed diff inside the
-isolated workspace (commit-only, never pushed); plan and diff review screens; a
-paginated job-history list scoped to the owner (admins/no-auth-mode see all); an
+delegated Jira/GitHub OAuth with encrypted-at-rest tokens (used for repository
+discovery only — see below); async jobs with SQLite store + polling status
+screen; the plan pipeline (fetch/clone/map/plan); an isolated-clone implement +
+validate phase, available for local *and* remote repos alike; a single,
+explicitly opt-in validation-correction pass after a failed validation; creating
+a branch and committing the reviewed diff inside the isolated workspace, then
+pushing it to the repo's real remote using ambient git auth (never force-pushes,
+never opens a pull request); plan and diff review screens; a paginated
+job-history list scoped to the owner (admins/no-auth-mode see all); an
 admin-only per-user cost-usage dashboard; typed errors; quality gates;
 security-invariant tests; a reference shared-deployment stack under `deploy/`.
 
-**Out (not built; do not scaffold):** pushing a branch anywhere, or opening a pull
-request; delegated *git* auth (clone, and any future push, still use ambient
-credentials only — no per-user token is ever handed to a git subprocess); the
-GitLab OAuth flow; a durable workflow engine; a network-locked sandbox; an
-embeddings/vector index.
+**Out (not built; do not scaffold):** opening a pull request; delegated *git*
+auth (clone and push both still use ambient credentials only — no per-user
+token, including the already-connected GitHub OAuth token, is ever handed to a
+git subprocess); the GitLab OAuth flow; a durable workflow engine; a
+network-locked sandbox; an embeddings/vector index.
 
 ## Stack
 

@@ -61,6 +61,12 @@ class BranchResult:
 
 
 @dataclass(frozen=True)
+class PushResult:
+    branch_name: str
+    remote_url: str
+
+
+@dataclass(frozen=True)
 class JobSteps:
     """The job steps, injectable for tests."""
 
@@ -73,6 +79,7 @@ class JobSteps:
     ]
     validate_workspace: Callable[[Path], Awaitable[list[ValidationResult]]]
     create_branch: Callable[[Job, Path, str | None, str | None], Awaitable[BranchResult]]
+    push_branch: Callable[[Job, Path, str | None], Awaitable[PushResult]]
 
 
 def _advance(store: JobStore, job: Job, state: JobState) -> Job:
