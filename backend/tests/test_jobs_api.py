@@ -874,6 +874,120 @@ def test_submit_with_document_reaches_plan_ready_with_synthetic_key(
     assert (tmp_path / job_id / "requirement.pdf").exists()
 
 
+def test_reuploading_the_same_pdf_yields_the_same_synthetic_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The synthetic DOC-XXXXXXXX key must be deterministic, not random — the
+    planning prompt embeds `ticket.key` (see plan_agent.build_prompt), and
+    the plan cache hashes the full rendered prompt (plan_cache_key). A
+    random key per upload made every PDF-sourced job a guaranteed cache
+    miss even when re-submitting byte-identical content, unlike a real
+    Jira ticket key which is already stable across resubmissions."""
+    monkeypatch.setattr(
+        "app.api.routes.get_settings",
+        lambda: Settings(_env_file=None, document_upload_dir=tmp_path),  # type: ignore[call-arg]
+    )
+    pdf_bytes = make_pdf_bytes("The system shall support single sign-on.")
+
+    def submit(content: bytes) -> str:
+        response = client.post(
+            "/api/jobs",
+            data={"repo": "git@github.com:acme/repo.git"},
+            files={"requirement_document": ("requirements.pdf", content, "application/pdf")},
+        )
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
+        body = poll_until_terminal(client, job_id)
+        assert body["state"] == "PLAN_READY"
+        return cast(str, body["ticket_key"])
+
+    first_key = submit(pdf_bytes)
+    second_key = submit(pdf_bytes)  # same bytes, re-uploaded
+    third_key = submit(make_pdf_bytes("A completely different requirement."))
+
+    assert first_key == second_key
+    assert first_key != third_key
+
+
+def test_submit_with_document_ticket_key_field_uses_the_typed_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Most requirement PDFs are themselves exported from a Jira ticket — an
+    explicitly typed key lets the job be named/branched the same way a
+    Jira-sourced job would be, instead of an opaque DOC-XXXXXXXX key."""
+    monkeypatch.setattr(
+        "app.api.routes.get_settings",
+        lambda: Settings(_env_file=None, document_upload_dir=tmp_path),  # type: ignore[call-arg]
+    )
+    response = client.post(
+        "/api/jobs",
+        data={"repo": "git@github.com:acme/repo.git", "document_ticket_key": "kan-31"},
+        files={
+            "requirement_document": (
+                "requirements.pdf",
+                # No key-shaped text in the PDF itself — proves the field
+                # wins on its own, not just because auto-detection agreed.
+                make_pdf_bytes("The system shall support single sign-on."),
+                "application/pdf",
+            )
+        },
+    )
+    assert response.status_code == 202
+    body = poll_until_terminal(client, response.json()["job_id"])
+    assert body["state"] == "PLAN_READY"
+    assert body["ticket_key"] == "KAN-31"
+
+
+def test_submit_with_document_auto_detects_ticket_key_from_pdf_text(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.get_settings",
+        lambda: Settings(_env_file=None, document_upload_dir=tmp_path),  # type: ignore[call-arg]
+    )
+    response = client.post(
+        "/api/jobs",
+        data={"repo": "git@github.com:acme/repo.git"},
+        files={
+            "requirement_document": (
+                "requirements.pdf",
+                make_pdf_bytes("KAN-31 Add a Program Type filter to membership search"),
+                "application/pdf",
+            )
+        },
+    )
+    assert response.status_code == 202
+    body = poll_until_terminal(client, response.json()["job_id"])
+    assert body["state"] == "PLAN_READY"
+    assert body["ticket_key"] == "KAN-31"
+
+
+def test_submit_with_document_ticket_key_field_wins_over_auto_detection(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.get_settings",
+        lambda: Settings(_env_file=None, document_upload_dir=tmp_path),  # type: ignore[call-arg]
+    )
+    response = client.post(
+        "/api/jobs",
+        data={"repo": "git@github.com:acme/repo.git", "document_ticket_key": "PROJ-9"},
+        files={
+            "requirement_document": (
+                "requirements.pdf",
+                # The PDF's own text would auto-detect to KAN-31 — the typed
+                # field must take priority over it.
+                make_pdf_bytes("KAN-31 Add a Program Type filter to membership search"),
+                "application/pdf",
+            )
+        },
+    )
+    assert response.status_code == 202
+    body = poll_until_terminal(client, response.json()["job_id"])
+    assert body["state"] == "PLAN_READY"
+    assert body["ticket_key"] == "PROJ-9"
+
+
 def test_repos_endpoint_lists_choices_and_hosts(client: TestClient) -> None:
     body = client.get("/api/repos").json()
     assert "repos" in body

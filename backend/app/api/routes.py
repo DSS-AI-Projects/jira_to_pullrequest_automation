@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -30,6 +30,7 @@ from app.schemas.inputs import (
     normalize_branch_name,
     normalize_clarifications,
     normalize_commit_message,
+    normalize_document_ticket_key,
     normalize_planning_notes,
     normalize_repo,
     normalize_ticket,
@@ -37,7 +38,11 @@ from app.schemas.inputs import (
     require_exactly_one_requirement_source,
     validate_uploaded_document,
 )
-from app.steps.document_fetch import requirement_document_path
+from app.steps.document_fetch import (
+    detect_ticket_key,
+    extract_pdf_text_from_bytes,
+    requirement_document_path,
+)
 from app.steps.validation_runner import correctable_failures
 
 logger = get_logger(__name__)
@@ -136,6 +141,64 @@ def _steps(request: Request) -> JobSteps:
     return cast(JobSteps, request.app.state.job_steps)
 
 
+# Kept small deliberately: this is a best-effort convenience read of the
+# PDF's own title/header, not the authoritative extraction (that's
+# document_fetch.fetch_requirement_document, run later in the job pipeline
+# with the full DOCUMENT_MAX_EXTRACTED_CHARS budget) — detect_ticket_key only
+# looks at the first ~500 chars anyway, so there's nothing to gain from a
+# bigger budget here.
+_TICKET_KEY_DETECTION_MAX_CHARS = 2000
+
+
+async def _resolve_document_ticket_key(
+    document_content: bytes,
+    explicit_key: str | None,
+    settings: Settings,
+) -> str:
+    """Resolve the ticket key for a document-sourced job: an explicitly
+    typed key wins, then a best-effort key auto-detected from the PDF's own
+    text (most uploaded requirement PDFs are themselves exported from a Jira
+    ticket), and finally a deterministic hash of the PDF bytes as a last
+    resort. A real key — instead of always an opaque DOC-XXXXXXXX — means
+    the job is named and branched the same way a truly Jira-sourced job
+    would be (default_branch_name in branch_prep.py already keys off
+    Job.requirement_source, not the key's shape, so this needs no branch-
+    naming changes), and, if the exact same PDF is re-uploaded, still hits
+    the plan cache exactly like the hash fallback does (see
+    plan_cache_key() in app/steps/plan_cache.py)."""
+    if explicit_key:
+        normalized = normalize_document_ticket_key(explicit_key, settings)
+        if normalized:
+            return normalized
+
+    try:
+        text = await asyncio.wait_for(
+            asyncio.to_thread(
+                extract_pdf_text_from_bytes, document_content, _TICKET_KEY_DETECTION_MAX_CHARS
+            ),
+            timeout=settings.document_parse_timeout_seconds,
+        )
+        detected = detect_ticket_key(text)
+        if detected:
+            return detected
+    except Exception:
+        # Best-effort only — the authoritative extraction (and its own typed
+        # DOCUMENT_* errors) still happens in the background
+        # fetch_requirement_document step; a parse failure here just means
+        # no auto-detected key, not a failed job submission.
+        logger.info("could not auto-detect a ticket key from the uploaded PDF", exc_info=True)
+
+    # Deterministic, not random: falling all the way back to this still
+    # means re-uploading the exact same PDF bytes (e.g. resubmitting after a
+    # failed job) yields the same key and hits the plan cache — see
+    # plan_cache_key() in app/steps/plan_cache.py, which hashes the full
+    # rendered prompt (which embeds "Key: {ticket.key}" — build_prompt in
+    # plan_agent.py). A random key per upload made every PDF-sourced job
+    # (that couldn't be resolved to a real key above) a guaranteed cache
+    # miss even when nothing about the request actually changed.
+    return f"DOC-{hashlib.sha256(document_content).hexdigest()[:8].upper()}"
+
+
 @router.post("/jobs", response_model=JobCreated, status_code=202)
 async def create_job(
     request: Request,
@@ -143,6 +206,7 @@ async def create_job(
     repo: str = Form(..., min_length=1, max_length=2000),
     planning_notes: str | None = Form(default=None, max_length=4000),
     requirement_document: UploadFile | None = File(default=None),  # noqa: B008
+    document_ticket_key: str | None = Form(default=None, max_length=2000),
 ) -> JobCreated:
     user = require_current_user(request)
     settings: Settings = get_settings()
@@ -156,7 +220,9 @@ async def create_job(
     if requirement_document is not None:
         document_content = await requirement_document.read()
         validate_uploaded_document(document_content, settings)
-        ticket_key = f"DOC-{uuid.uuid4().hex[:8].upper()}"
+        ticket_key = await _resolve_document_ticket_key(
+            document_content, document_ticket_key, settings
+        )
         requirement_source = RequirementSource.DOCUMENT
         requirement_document_name = requirement_document.filename or "requirement.pdf"
     elif ticket:

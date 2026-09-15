@@ -14,6 +14,13 @@ export type RetryDraft = {
   // what to re-upload; the file input itself always starts empty.
   requirementSource: "JIRA" | "DOCUMENT";
   requirementDocumentName: string | null;
+  // The failed job's resolved ticket key, carried forward only when it's a
+  // real Jira key (typed or auto-detected — see routes.py's
+  // _resolve_document_ticket_key) rather than the opaque DOC-XXXXXXXX
+  // fallback, which would mean nothing typed back into the form. Empty
+  // string means "nothing to prefill" — same convention as the other
+  // optional fields on this draft.
+  documentTicketKey: string;
   // The failed job's implementation clarifications, if any. There's no
   // field for this on the creation form — job-form.tsx forwards it to
   // pending-clarifications.ts once the new job's id is known, so it can

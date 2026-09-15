@@ -9,6 +9,7 @@ from app.core.config import Settings
 from app.core.errors import AppError, ErrorCode
 from app.schemas.inputs import (
     JOB_CREATE_FORM_FIELDS,
+    normalize_document_ticket_key,
     normalize_planning_notes,
     normalize_repo,
     normalize_ticket,
@@ -70,6 +71,42 @@ def test_garbage_ticket_is_rejected(tmp_path: Path) -> None:
 def test_token_shaped_ticket_is_rejected_without_echoing_value(tmp_path: Path) -> None:
     with pytest.raises(AppError) as excinfo:
         normalize_ticket(FAKE_TOKEN, make_settings(tmp_path))
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    assert FAKE_TOKEN not in excinfo.value.user_message
+
+
+# --- document_ticket_key (optional, alongside an uploaded PDF) ---
+
+
+def test_document_ticket_key_none_stays_none(tmp_path: Path) -> None:
+    assert normalize_document_ticket_key(None, make_settings(tmp_path)) is None
+
+
+def test_document_ticket_key_blank_normalizes_to_none(tmp_path: Path) -> None:
+    assert normalize_document_ticket_key("   ", make_settings(tmp_path)) is None
+
+
+def test_document_ticket_key_plain_key_is_accepted_and_uppercased(tmp_path: Path) -> None:
+    assert normalize_document_ticket_key("kan-31", make_settings(tmp_path)) == "KAN-31"
+
+
+def test_document_ticket_key_accepts_a_ticket_url_too(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, jira_base_url="https://acme.atlassian.net")
+    key = normalize_document_ticket_key("https://acme.atlassian.net/browse/KAN-31", settings)
+    assert key == "KAN-31"
+
+
+def test_document_ticket_key_garbage_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_document_ticket_key("not a ticket", make_settings(tmp_path))
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+def test_document_ticket_key_token_shaped_is_rejected_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_document_ticket_key(FAKE_TOKEN, make_settings(tmp_path))
     assert excinfo.value.code == ErrorCode.INPUT_INVALID
     assert FAKE_TOKEN not in excinfo.value.user_message
 
@@ -282,6 +319,9 @@ def test_oversized_upload_is_rejected(tmp_path: Path) -> None:
 
 def test_known_fields_are_accepted() -> None:
     reject_unknown_form_fields({"ticket", "repo"}, JOB_CREATE_FORM_FIELDS)
+    reject_unknown_form_fields(
+        {"repo", "requirement_document", "document_ticket_key"}, JOB_CREATE_FORM_FIELDS
+    )
 
 
 def test_unknown_field_is_rejected_without_echoing_value() -> None:

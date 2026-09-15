@@ -25,6 +25,10 @@ from app.jobs.runner import CloneResult
 
 logger = get_logger(__name__)
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+# Matches only the hashed fallback key routes.py mints for a document-sourced
+# job with no real ticket key (DOC- + 8 uppercase hex chars) — see the
+# is_synthetic_document_key usage below.
+_SYNTHETIC_DOCUMENT_KEY_RE = re.compile(r"^DOC-[0-9A-F]{8}$")
 
 # Folder-copy safeguard (ALLOW_LOCAL_NON_GIT_FOLDERS): names never copied into
 # the workspace, regardless of .gitignore. A plain folder has no git history
@@ -317,9 +321,15 @@ async def clone_repo(job_id: str, ticket_key: str, repo_url: str, workdir: Path)
         )
         if source_info.is_dirty and not settings.allow_dirty_local_repos:
             raise AppError(ErrorCode.LOCAL_REPO_DIRTY)
-        # A synthetic "DOC-..." key (requirement uploaded as a document, not a
-        # real Jira ticket) never appears in a branch name — nothing to check.
-        is_synthetic_document_key = ticket_key.startswith("DOC-")
+        # A synthetic "DOC-XXXXXXXX" key (hashed from the uploaded PDF's
+        # bytes when a document-sourced job has no real ticket key — typed
+        # or auto-detected from the PDF text — to fall back to; see
+        # app/api/routes.py) never appears in a branch name, so there's
+        # nothing to check. Matched as a full pattern, not a bare prefix, so
+        # a real Jira project abbreviated "DOC" (ticket key "DOC-31") is
+        # never mistaken for the synthetic form and correctly still gets
+        # branch-matched.
+        is_synthetic_document_key = bool(_SYNTHETIC_DOCUMENT_KEY_RE.fullmatch(ticket_key))
         if (
             settings.require_local_branch_ticket_match
             and not is_synthetic_document_key

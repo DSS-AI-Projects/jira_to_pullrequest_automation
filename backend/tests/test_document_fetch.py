@@ -12,7 +12,9 @@ from app.core.config import Settings
 from app.core.errors import AppError, ErrorCode
 from app.jobs.models import Job, RequirementSource
 from app.steps.document_fetch import (
+    detect_ticket_key,
     extract_pdf_text,
+    extract_pdf_text_from_bytes,
     fetch_requirement_document,
     requirement_document_path,
 )
@@ -73,6 +75,52 @@ def test_blank_pages_are_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.steps.document_fetch.PdfReader", FakeReader)
     text = extract_pdf_text(Path("ignored.pdf"), max_chars=1000)
     assert text == "real content"
+
+
+# --- extract_pdf_text_from_bytes ---
+
+
+def test_extract_from_bytes_matches_extract_from_path(tmp_path: Path) -> None:
+    content = make_pdf_bytes("Same content, in-memory vs on-disk.")
+    path = tmp_path / "doc.pdf"
+    path.write_bytes(content)
+
+    assert extract_pdf_text_from_bytes(content, max_chars=1000) == extract_pdf_text(
+        path, max_chars=1000
+    )
+
+
+# --- detect_ticket_key ---
+
+
+def test_detects_a_key_at_the_top_of_the_text() -> None:
+    text = "KAN-31\nAdd a Program Type filter to membership search\n\nDescription..."
+    assert detect_ticket_key(text) == "KAN-31"
+
+
+def test_detects_a_key_embedded_in_a_title_line() -> None:
+    text = "Issue KAN-31: Add a Program Type filter to membership search"
+    assert detect_ticket_key(text) == "KAN-31"
+
+
+def test_ignores_a_key_that_only_appears_far_past_the_scan_window() -> None:
+    # Nothing key-shaped in the first ~500 chars; the only match is buried
+    # deep in the body, where it's far more likely to be an unrelated
+    # reference ("see also KAN-12") than the document's own issue key.
+    padding = "Lorem ipsum dolor sit amet. " * 40
+    text = f"{padding}\n\nSee also KAN-12 for background."
+    assert len(padding) > 500
+    assert detect_ticket_key(text) is None
+
+
+def test_returns_none_when_nothing_key_shaped_is_present() -> None:
+    assert detect_ticket_key("Just a plain requirements paragraph, no ticket key.") is None
+
+
+def test_does_not_match_a_lowercase_look_alike() -> None:
+    # Jira keys are canonically uppercase; a lowercase string like a version
+    # tag ("v2-1") or a casual mention should not be mistaken for one.
+    assert detect_ticket_key("build v2-1 of the service") is None
 
 
 # --- fetch_requirement_document ---

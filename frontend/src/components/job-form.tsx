@@ -31,6 +31,7 @@ export function JobForm() {
   const [requirementDocument, setRequirementDocument] = useState<File | null>(
     null,
   );
+  const [documentTicketKey, setDocumentTicketKey] = useState("");
   const [retriedDocumentName, setRetriedDocumentName] = useState<string | null>(
     null,
   );
@@ -56,6 +57,9 @@ export function JobForm() {
       if (draft.requirementSource === "DOCUMENT") {
         setRequirementMode("document");
         setRetriedDocumentName(draft.requirementDocumentName);
+        // Defensive fallback for a draft saved by an older build of this
+        // app (sessionStorage isn't versioned) that predates this field.
+        setDocumentTicketKey(draft.documentTicketKey ?? "");
       }
     }
   }, []);
@@ -161,6 +165,10 @@ export function JobForm() {
             requirementMode === "document"
               ? (requirementDocument ?? undefined)
               : undefined,
+          document_ticket_key:
+            requirementMode === "document" && documentTicketKey.trim()
+              ? documentTicketKey
+              : undefined,
         });
         savePendingClarifications(result.job_id, retriedClarifications);
         router.push(`/jobs/${result.job_id}`);
@@ -222,6 +230,7 @@ export function JobForm() {
                 onClick={() => {
                   setRequirementMode("jira");
                   setRequirementDocument(null);
+                  setDocumentTicketKey("");
                 }}
                 type="button"
               >
@@ -280,6 +289,26 @@ export function JobForm() {
               </small>
             </label>
           )}
+
+          {requirementMode === "document" ? (
+            <label className="field" key="document-ticket-key-field">
+              <span>Jira ticket key, if known (optional)</span>
+              <input
+                autoComplete="off"
+                className="text-input"
+                name="documentTicketKey"
+                onChange={(event) => setDocumentTicketKey(event.target.value)}
+                placeholder={SAMPLE_TICKET}
+                value={documentTicketKey}
+              />
+              <small>
+                Most requirement PDFs are exported from a Jira ticket — enter
+                its key (or URL) so this job is named and branched the same way
+                a Jira-sourced job would be. Leave blank to auto-detect it from
+                the PDF, or fall back to a generated id.
+              </small>
+            </label>
+          ) : null}
         </div>
 
         <div className="form-step">

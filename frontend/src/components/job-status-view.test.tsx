@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobStatusView } from "@/components/job-status-view";
+import type { RetryDraft } from "@/lib/retry-draft";
 
 const {
   correctValidation,
@@ -478,6 +479,7 @@ describe("JobStatusView", () => {
       repo: "D:\\repos\\abtf-membership",
       repoMode: "local",
       planningNotes: "Use the shared logger, not print().",
+      documentTicketKey: "",
       implementationClarifications: "",
     });
     expect(push).toHaveBeenCalledWith("/");
@@ -579,6 +581,7 @@ describe("JobStatusView", () => {
       repo: "D:\\repos\\j5-frontend",
       repoMode: "local",
       planningNotes: "",
+      documentTicketKey: "",
       implementationClarifications:
         "Stuff Type will be form based field i.e. F=factory, D=dock.",
     });
@@ -1341,6 +1344,7 @@ describe("JobStatusView", () => {
       repo: "D:\\repos\\plain-folder",
       repoMode: "local",
       planningNotes: "",
+      documentTicketKey: "",
       implementationClarifications: "",
     });
   });
@@ -1397,8 +1401,63 @@ describe("JobStatusView", () => {
       planningNotes: "",
       requirementSource: "DOCUMENT",
       requirementDocumentName: "requirements.pdf",
+      documentTicketKey: "",
       implementationClarifications: "",
     });
+  });
+
+  it("prefills the real ticket key on retry for a DOCUMENT job resolved to one", async () => {
+    // Unlike the synthetic DOC-A1B2C3D4 case above, a DOCUMENT job whose
+    // ticket_key was typed or auto-detected as a real Jira key (routes.py's
+    // _resolve_document_ticket_key) IS worth carrying forward — the user
+    // shouldn't have to retype it after a retry.
+    sessionStorage.clear();
+    fetchJob.mockResolvedValue({
+      id: "job-doc-failed-real-key",
+      ticket_key: "KAN-31",
+      requirement_source: "DOCUMENT",
+      requirement_document_name: "requirements.pdf",
+      repo_url: "https://github.com/acme/repo.git",
+      planning_notes: null,
+      state: "FAILED",
+      error: {
+        code: "DOCUMENT_EMPTY",
+        message: "The uploaded requirement document has no extractable text.",
+        stage: "FETCHING_TICKET",
+      },
+      repo_info: {
+        source_kind: "REMOTE",
+        branch: "main",
+        commit_sha: "e".repeat(40),
+        origin_url: "https://github.com/acme/repo.git",
+        is_dirty: false,
+        local_path: null,
+      },
+      workspace_path: "D:\\workdir\\job-doc-failed-real-key\\repo",
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-08-05T17:54:02Z",
+      updated_at: "2026-08-05T17:57:53Z",
+    });
+
+    render(<JobStatusView jobId="job-doc-failed-real-key" />);
+
+    const retryButton = await screen.findByRole("button", { name: "Retry" });
+    fireEvent.click(retryButton);
+
+    const draft = JSON.parse(
+      sessionStorage.getItem("jira2pullreq:retry-draft")!,
+    ) as RetryDraft;
+    expect(draft.documentTicketKey).toBe("KAN-31");
+    expect(draft.ticket).toBe(""); // still not treated as a Jira-sourced job
   });
 
   it("does not show a Retry button for a job that has not failed", async () => {

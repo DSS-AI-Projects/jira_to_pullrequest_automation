@@ -83,6 +83,13 @@ function githubCompareUrl(remoteUrl: string, branch: string): string | null {
   return `https://github.com/${owner}/${repo}/compare/${branch}?expand=1`;
 }
 
+// Mirrors _SYNTHETIC_DOCUMENT_KEY_RE in backend/app/steps/repo_clone.py —
+// matches only the hashed fallback key routes.py mints when a document-
+// sourced job has no real ticket key (typed or auto-detected). A DOCUMENT
+// job's ticket_key can now be a real Jira key, so this — not
+// requirement_source alone — decides whether it's worth prefilling on retry.
+const SYNTHETIC_DOCUMENT_KEY_RE = /^DOC-[0-9A-F]{8}$/;
+
 export function JobStatusView(props: { jobId: string }) {
   const router = useRouter();
   const [job, setJob] = useState<Job | null>(null);
@@ -235,15 +242,26 @@ export function JobStatusView(props: { jobId: string }) {
     if (!job) {
       return;
     }
+    const isSyntheticDocumentKey = SYNTHETIC_DOCUMENT_KEY_RE.test(
+      job.ticket_key,
+    );
     saveRetryDraft({
-      // A DOCUMENT job's ticket_key is a synthetic "DOC-..." id, not a real
-      // Jira ticket — never prefill it as if it were one.
+      // A DOCUMENT job's ticket_key is a synthetic "DOC-XXXXXXXX" id when no
+      // real key could be resolved — never prefill it as if it were one. It
+      // can also be omitted here (kept as "") for a JIRA job since the
+      // ticket field below already carries it in that case.
       ticket: job.requirement_source === "DOCUMENT" ? "" : job.ticket_key,
       repo: job.repo_url,
       repoMode: isLocalSource(job) ? "local" : "remote",
       planningNotes: job.planning_notes ?? "",
       requirementSource: job.requirement_source,
       requirementDocumentName: job.requirement_document_name,
+      // The reverse case: a real key (typed or auto-detected) worth
+      // prefilling back into the optional document-ticket-key field.
+      documentTicketKey:
+        job.requirement_source === "DOCUMENT" && !isSyntheticDocumentKey
+          ? job.ticket_key
+          : "",
       implementationClarifications: job.implementation_clarifications ?? "",
     });
     router.push("/");

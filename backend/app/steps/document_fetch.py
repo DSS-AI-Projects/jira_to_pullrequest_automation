@@ -11,6 +11,8 @@ module never receives raw upload bytes over the network itself.
 from __future__ import annotations
 
 import asyncio
+import io
+import re
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -31,9 +33,7 @@ def requirement_document_path(job_id: str, upload_dir: Path) -> Path:
     return upload_dir / job_id / "requirement.pdf"
 
 
-def extract_pdf_text(path: Path, max_chars: int) -> str:
-    """Best-effort text extraction, capped to keep planning prompts bounded."""
-    reader = PdfReader(str(path))
+def _extract_text_from_reader(reader: PdfReader, max_chars: int) -> str:
     parts: list[str] = []
     total = 0
     for page in reader.pages:
@@ -48,6 +48,40 @@ def extract_pdf_text(path: Path, max_chars: int) -> str:
     if len(combined) > max_chars:
         combined = combined[:max_chars] + "\n[... document truncated ...]"
     return combined
+
+
+def extract_pdf_text(path: Path, max_chars: int) -> str:
+    """Best-effort text extraction, capped to keep planning prompts bounded."""
+    return _extract_text_from_reader(PdfReader(str(path)), max_chars)
+
+
+def extract_pdf_text_from_bytes(content: bytes, max_chars: int) -> str:
+    """Same extraction as extract_pdf_text, but from in-memory bytes rather
+    than a saved path — used by the create-job route for best-effort ticket-
+    key auto-detection (see detect_ticket_key below) before the upload is
+    written to disk, since the background fetch_requirement_document step
+    (the authoritative extraction) only runs later, in the job pipeline."""
+    return _extract_text_from_reader(PdfReader(io.BytesIO(content)), max_chars)
+
+
+# Matches a bare Jira issue key (e.g. KAN-31) inside a blob of free text —
+# distinct from app.schemas.inputs.TICKET_KEY_RE, which anchors the *whole*
+# value of the Jira-ticket form field rather than searching within text.
+_TICKET_KEY_IN_TEXT_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b")
+# Jira's own "Export to PDF" puts the issue key in the document's title/
+# header, right at the top — restricting the scan to that region avoids
+# picking up an unrelated key mentioned later in the description or a
+# comment (e.g. "see also KAN-12" three paragraphs in).
+_DETECT_TICKET_KEY_SCAN_CHARS = 500
+
+
+def detect_ticket_key(text: str) -> str | None:
+    """Best-effort: find a Jira-key-shaped token near the top of PDF text —
+    most uploaded requirement PDFs are themselves exported from a Jira
+    ticket. Returns None rather than guessing when nothing matches; the
+    caller falls back to a deterministic hash-based synthetic key."""
+    match = _TICKET_KEY_IN_TEXT_RE.search(text[:_DETECT_TICKET_KEY_SCAN_CHARS])
+    return match.group(0) if match else None
 
 
 async def fetch_requirement_document(job: Job, store: JobStore) -> TicketData:

@@ -116,7 +116,9 @@ def normalize_ticket(raw: str, settings: Settings) -> str:
     )
 
 
-JOB_CREATE_FORM_FIELDS = frozenset({"ticket", "repo", "planning_notes", "requirement_document"})
+JOB_CREATE_FORM_FIELDS = frozenset(
+    {"ticket", "repo", "planning_notes", "requirement_document", "document_ticket_key"}
+)
 
 
 def reject_unknown_form_fields(field_names: set[str], allowed: frozenset[str]) -> None:
@@ -147,6 +149,23 @@ def require_exactly_one_requirement_source(ticket: str | None, has_document: boo
             ErrorCode.INPUT_INVALID,
             user_message="Provide a Jira ticket key/URL or upload a requirement document.",
         )
+
+
+def normalize_document_ticket_key(raw: str | None, settings: Settings) -> str | None:
+    """Optional real Jira ticket key/URL, submitted alongside an uploaded PDF
+    so the job is named/branched the same way a Jira-sourced job would be
+    (most requirement PDFs are themselves exported from a Jira ticket)
+    instead of always getting an opaque synthetic DOC-XXXXXXXX key. Blank
+    input means "not provided" — this field is optional, unlike the ticket
+    field on the Jira submission path, where the same blank check happens
+    one level up in require_exactly_one_requirement_source — so the caller
+    falls back to auto-detecting a key from the PDF text, then a
+    deterministic hash. Reuses normalize_ticket()'s validation (bare key or
+    full ticket URL, credential-shape rejection) so it accepts exactly the
+    same input shapes as the ticket field itself."""
+    if raw is None or not raw.strip():
+        return None
+    return normalize_ticket(raw, settings)
 
 
 def validate_uploaded_document(content: bytes, settings: Settings) -> None:

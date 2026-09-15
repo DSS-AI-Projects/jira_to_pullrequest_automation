@@ -433,6 +433,12 @@ export async function createJob(
     repo: string;
     planning_notes?: string;
     requirement_document?: File;
+    // Optional real Jira ticket key/URL alongside an uploaded PDF — most
+    // requirement PDFs are themselves exported from a Jira ticket, so this
+    // lets the job be named/branched like a Jira-sourced job instead of
+    // getting an opaque DOC-XXXXXXXX key. Ignored server-side unless
+    // requirement_document is also present.
+    document_ticket_key?: string;
   },
   signal?: AbortSignal,
 ): Promise<JobCreated> {
@@ -449,6 +455,9 @@ export async function createJob(
   }
   if (payload.requirement_document) {
     formData.append("requirement_document", payload.requirement_document);
+  }
+  if (payload.document_ticket_key !== undefined) {
+    formData.append("document_ticket_key", payload.document_ticket_key);
   }
   const response = await apiFetch("/api/jobs", {
     method: "POST",
