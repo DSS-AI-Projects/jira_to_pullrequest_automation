@@ -397,6 +397,208 @@ async def test_implementation_happy_path_reaches_implementation_ready(tmp_path: 
     assert final.implementation_finished_at is not None
 
 
+async def test_implementation_normalizes_crlf_before_the_agent_and_restores_after(
+    tmp_path: Path,
+) -> None:
+    """See app/steps/line_endings.py: the implementation agent's Edit tool
+    needs LF to match reliably, but the diff/branch/commit the user reviews
+    must still show the repo's original CRLF convention."""
+    store, settings, job = make_env(tmp_path)
+    seen_content: dict[str, bytes] = {}
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        (clone_path / "Legacy.java").write_bytes(b"class Legacy {\r\n}\r\n")
+        subprocess.run(["git", "-C", str(clone_path), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(clone_path), "commit", "-m", "Add Legacy.java"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch="PROJ-1",
+                commit_sha="c" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def implement_changes(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        # Proves normalization already ran before this call.
+        seen_content["Legacy.java"] = (workspace_path / "Legacy.java").read_bytes()
+        (workspace_path / "Legacy.java").write_bytes(b"class Legacy {\n  // updated\n}\n")
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Updated Legacy.java.",
+                changed_files=[
+                    ImplementationChange(path="Legacy.java", action="modify", rationale="x")
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=0.1),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(), clone_repo=local_clone, implement_plan=implement_changes
+    )
+    await run_job(job.id, store, settings, steps)
+    planned = store.get(job.id)
+    assert planned is not None
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_READY
+    assert seen_content["Legacy.java"] == b"class Legacy {\n}\n"  # LF when the agent saw it
+    assert final.workspace_path is not None
+    on_disk = (Path(final.workspace_path) / "Legacy.java").read_bytes()
+    # restored to CRLF afterward, including the agent's own new content
+    assert on_disk == b"class Legacy {\r\n  // updated\r\n}\r\n"
+
+
+async def test_implementation_restores_line_endings_even_when_the_agent_call_fails(
+    tmp_path: Path,
+) -> None:
+    store, settings, job = make_env(tmp_path)
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        (clone_path / "Legacy.java").write_bytes(b"class Legacy {\r\n}\r\n")
+        subprocess.run(["git", "-C", str(clone_path), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(clone_path), "commit", "-m", "Add Legacy.java"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch="PROJ-1",
+                commit_sha="c" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def failing_implement(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        assert b"\r\n" not in (workspace_path / "Legacy.java").read_bytes()
+        raise AppError(ErrorCode.BUDGET_EXCEEDED)
+
+    steps = dataclasses.replace(
+        make_fake_steps(), clone_repo=local_clone, implement_plan=failing_implement
+    )
+    await run_job(job.id, store, settings, steps)
+    planned = store.get(job.id)
+    assert planned is not None
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_FAILED
+    assert final.workspace_path is not None
+    on_disk = (Path(final.workspace_path) / "Legacy.java").read_bytes()
+    # restored despite the failure — a later _refresh_diff_best_effort call
+    # (or a developer inspecting the workspace by hand) must not see
+    # line-ending-only noise.
+    assert on_disk == b"class Legacy {\r\n}\r\n"
+
+
+async def test_implementation_skips_normalization_when_disabled(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        workdir=tmp_path / "workdir",
+        workspace_normalize_line_endings=False,
+    )
+    job = Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo")
+    store.create(job)
+
+    async def local_clone(
+        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+    ) -> CloneResult:
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        (clone_path / "Legacy.java").write_bytes(b"class Legacy {\r\n}\r\n")
+        subprocess.run(["git", "-C", str(clone_path), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(clone_path), "commit", "-m", "Add Legacy.java"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch="PROJ-1",
+                commit_sha="c" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    seen_content: dict[str, bytes] = {}
+
+    async def implement_noop(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        seen_content["Legacy.java"] = (workspace_path / "Legacy.java").read_bytes()
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="No changes.", changed_files=[], warnings=[], follow_up_questions=[]
+            ),
+            usage=AgentUsage(duration_seconds=0.1),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(), clone_repo=local_clone, implement_plan=implement_noop
+    )
+    await run_job(job.id, store, settings, steps)
+    planned = store.get(job.id)
+    assert planned is not None
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    assert seen_content["Legacy.java"] == b"class Legacy {\r\n}\r\n"  # untouched, still CRLF
+
+
 async def test_implementation_is_supported_for_local_folder_sources(tmp_path: Path) -> None:
     """LOCAL_FOLDER (a plain, non-git source folder populated via
     ALLOW_LOCAL_NON_GIT_FOLDERS) must be accepted by the implement-phase gate
@@ -1250,3 +1452,64 @@ async def test_validation_correction_requires_correcting_state(tmp_path: Path) -
     assert (
         final.implementation_correction_error.code == ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE
     )
+
+
+async def test_validation_correction_normalizes_crlf_before_the_agent_and_restores_after(
+    tmp_path: Path,
+) -> None:
+    """Mirrors the run_implementation line-ending tests above — the
+    corrective pass reuses the same implement_plan step, so it needs the
+    same CRLF<->LF wrap around its own agent call."""
+    store = JobStore(tmp_path / "jobs.db")
+    settings = Settings(_env_file=None, workdir=tmp_path / "workdir")  # type: ignore[call-arg]
+    workspace_path = tmp_path / "workdir" / "job-correction-crlf" / "repo"
+    init_git_workspace(workspace_path)
+    (workspace_path / "Legacy.java").write_bytes(b"class Legacy {\r\n}\r\n")
+    subprocess.run(["git", "-C", str(workspace_path), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(workspace_path), "commit", "-m", "Add Legacy.java"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    baseline = subprocess.run(
+        ["git", "-C", str(workspace_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    job = Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo")
+    job.workspace_path = str(workspace_path)
+    job.implementation_baseline_commit_sha = baseline
+    job.state = JobState.CORRECTING
+    store.create(job)
+
+    seen_content: dict[str, bytes] = {}
+
+    async def correct_changes(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        seen_content["Legacy.java"] = (workspace_path / "Legacy.java").read_bytes()
+        (workspace_path / "Legacy.java").write_bytes(b"class Legacy {\n  // fixed\n}\n")
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary="Fixed the lint failure.",
+                changed_files=[
+                    ImplementationChange(path="Legacy.java", action="modify", rationale="x")
+                ],
+                warnings=[],
+                follow_up_questions=[],
+            ),
+            usage=AgentUsage(duration_seconds=0.1),
+        )
+
+    steps = dataclasses.replace(make_fake_steps(), implement_plan=correct_changes)
+    await run_validation_correction(job.id, store, settings, steps)
+
+    assert seen_content["Legacy.java"] == b"class Legacy {\n}\n"  # LF when the agent saw it
+    on_disk = (workspace_path / "Legacy.java").read_bytes()
+    assert on_disk == b"class Legacy {\r\n  // fixed\r\n}\r\n"

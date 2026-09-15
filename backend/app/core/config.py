@@ -131,6 +131,18 @@ class Settings(BaseSettings):
     agent_repo_digest_enabled: bool = True
     agent_repo_digest_cache_enabled: bool = True
     agent_repo_digest_max_chars: int = 3000
+    # Best-effort CRLF<->LF normalization wrapped tightly around each
+    # implementation-agent call. Edit requires a literal old_string match
+    # against the bytes on disk; a repo that stores CRLF line endings
+    # (common for a Windows-developed codebase with no .gitattributes
+    # normalization rule) can otherwise make every multi-line edit silently
+    # fail to apply. Safe to leave on for an LF-only repo — the pass finds
+    # nothing to convert and is a no-op. See app/steps/line_endings.py.
+    workspace_normalize_line_endings: bool = True
+    # Files larger than this are left untouched by the normalization pass —
+    # a performance safety valve, not a correctness requirement (the
+    # implementation agent is very unlikely to Edit a file this large).
+    workspace_line_ending_max_file_bytes: int = 2_000_000
 
 
 @lru_cache

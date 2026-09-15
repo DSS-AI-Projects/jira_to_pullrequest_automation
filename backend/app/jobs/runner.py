@@ -312,7 +312,6 @@ async def _refresh_diff_best_effort(job: Job) -> None:
 async def run_implementation(
     job_id: str, store: JobStore, settings: Settings, steps: JobSteps
 ) -> None:
-    del settings  # reserved for future implementation-step configuration
     job = store.get(job_id)
     if job is None:  # pragma: no cover - defensive
         logger.error("run_implementation: job %s not found", job_id)
@@ -341,12 +340,29 @@ async def run_implementation(
         job.implementation_baseline_commit_sha = base_ref
         job.implementation_started_at = store.save(job).updated_at
         job = _advance(store, job, JobState.IMPLEMENTING)
-        # Deferred import: app.steps.__init__ imports JobSteps from this
+        # Deferred imports: app.steps.__init__ imports JobSteps from this
         # module, so a top-level import here would be circular.
         from app.steps.agent_progress import report_progress_to
+        from app.steps.line_endings import normalize_to_lf, restore_original_line_endings
 
-        with report_progress_to(_start_activity_log(store, job)):
-            implementation = await steps.implement_plan(job, workspace_path, None)
+        converted_line_endings: frozenset[Path] = frozenset()
+        if settings.workspace_normalize_line_endings:
+            converted_line_endings = await asyncio.to_thread(
+                normalize_to_lf, workspace_path, settings.workspace_line_ending_max_file_bytes
+            )
+        try:
+            with report_progress_to(_start_activity_log(store, job)):
+                implementation = await steps.implement_plan(job, workspace_path, None)
+        finally:
+            # Always restore — including on a raise — so a diff collected
+            # afterward (the happy path below, or _refresh_diff_best_effort
+            # on a failure) never shows line-ending-only noise, and the
+            # branch/commit the user eventually reviews keeps the repo's
+            # original convention.
+            if converted_line_endings:
+                await asyncio.to_thread(
+                    restore_original_line_endings, workspace_path, converted_line_endings
+                )
         # Recorded as soon as the agent call returns, before the consistency
         # check below can raise — so even the "claimed changes never landed"
         # failure path still reports what the (completed, cost-incurring)
@@ -456,7 +472,6 @@ async def run_validation_correction(
     # so a top-level import here would be circular.
     from app.steps.validation_runner import correctable_failures
 
-    del settings  # reserved for future correction-step configuration
     job = store.get(job_id)
     if job is None:  # pragma: no cover - defensive
         logger.error("run_validation_correction: job %s not found", job_id)
@@ -482,12 +497,24 @@ async def run_validation_correction(
             base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
             base_ref = base_ref or "HEAD"
 
-        # Deferred import: app.steps.__init__ imports JobSteps from this
+        # Deferred imports: app.steps.__init__ imports JobSteps from this
         # module, so a top-level import here would be circular.
         from app.steps.agent_progress import report_progress_to
+        from app.steps.line_endings import normalize_to_lf, restore_original_line_endings
 
-        with report_progress_to(_start_activity_log(store, job)):
-            correction = await steps.implement_plan(job, workspace_path, failed_results)
+        converted_line_endings: frozenset[Path] = frozenset()
+        if settings.workspace_normalize_line_endings:
+            converted_line_endings = await asyncio.to_thread(
+                normalize_to_lf, workspace_path, settings.workspace_line_ending_max_file_bytes
+            )
+        try:
+            with report_progress_to(_start_activity_log(store, job)):
+                correction = await steps.implement_plan(job, workspace_path, failed_results)
+        finally:
+            if converted_line_endings:
+                await asyncio.to_thread(
+                    restore_original_line_endings, workspace_path, converted_line_endings
+                )
         job.implementation_correction_result = correction.result
         job.implementation_correction_usage = correction.usage
         store.save(job)

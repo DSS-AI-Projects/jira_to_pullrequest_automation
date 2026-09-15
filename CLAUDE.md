@@ -139,6 +139,39 @@ repo state, cached (`AGENT_REPO_DIGEST_*`), and injected into every plan so the
 agent orients without exploring. Context management/compaction is handled by the
 harness.
 
+**Diagnosing and avoiding `BUDGET_EXCEEDED`:** it's one error code for three
+different underlying limits — turns, cost, and wall-clock (see Failure
+behavior below) — so before raising any cap, check the failed job's recorded
+`usage` (turns/cost/duration — now populated even on failure, see **Cost is
+recorded even when the job fails**) against the three `AGENT_PLAN_*` config
+values to see which one actually tripped, and read the job's `activity_log`
+(**Live activity log during agent phases**) to see what the agent was doing
+right before it stopped:
+
+- A **converging** search (progressively narrowing toward one area) that
+  simply ran long → raising the relevant cap is the right call.
+- A **wide, unconverged** search bouncing between unrelated files/modules →
+  the ticket needs a map, not more budget. Two levers, in priority order:
+  1. **Ticket-specific `planning_notes`** naming the actual relevant files —
+     free, immediate, and the single highest-leverage fix since it skips
+     exploration entirely instead of paying to re-discover it.
+  2. **A repo-root `CLAUDE.md`/`AGENTS.md`/`README`** (front-loaded per
+     token-saving controls above) — zero-token, but repo-wide, so it helps
+     every ticket touching that area a little rather than one ticket a lot;
+     it won't fully compensate for a ticket that genuinely spans several
+     modules a generic doc can't enumerate in advance.
+  3. Only after both of the above: raise the cap as a stopgap. Caps live in
+     `backend/.env` (`AGENT_PLAN_MAX_TURNS`, `AGENT_PLAN_MAX_BUDGET_USD`,
+     `AGENT_TIMEOUT_SECONDS`); raising one just pays more to search just as
+     blindly if the real cause is #1/#2.
+  4. If a ticket genuinely requires coordinated cross-module changes, consider
+     whether it should be split — the plan's own `complexity_level` /
+     `estimated_story_points` fields exist to flag exactly this.
+- The plan cache only stores *successful* plans, so a ticket that has already
+  failed with `BUDGET_EXCEEDED` gets no cache discount on retry — every
+  attempt (including "just testing whether it works now") costs full price
+  until one succeeds.
+
 ## The plan schema is a versioned contract
 
 Defined ONCE as a Pydantic model (`backend/app/schemas/plan.py`) with `schema_version`
@@ -191,10 +224,68 @@ version — verified empirically, not assumed); the smuggled-extra-field protect
 `request.form()` keys against an explicit allowlist
 (`reject_unknown_form_fields`).
 
-A document-sourced job gets a synthetic `DOC-XXXXXXXX` ticket key (`Job.new()`,
-`RequirementSource.DOCUMENT`) rather than a real Jira key, and skips
-`REQUIRE_LOCAL_BRANCH_TICKET_MATCH` (a synthetic key can never appear in a real
-branch name). Text extraction (`backend/app/steps/document_fetch.py`, `pypdf`) is
+A document-sourced job's ticket key (`RequirementSource.DOCUMENT`) is resolved
+in priority order by `_resolve_document_ticket_key()` (`app/api/routes.py`),
+since most requirement PDFs are themselves exported from a Jira ticket and it's
+worth naming/branching the job the same way a truly Jira-sourced job would be,
+rather than always showing an opaque generated id:
+
+1. **An explicitly typed/pasted key**, submitted via the optional
+   `document_ticket_key` form field next to the PDF upload (validated by
+   `normalize_document_ticket_key()` — the same bare-key-or-URL parsing and
+   credential-shape rejection as the Jira ticket field itself).
+2. **Auto-detected from the PDF's own text** (`detect_ticket_key()` in
+   `app/steps/document_fetch.py`): a best-effort, timeout-guarded regex scan of
+   just the first ~500 chars extracted from the upload (Jira's own "Export to
+   PDF" puts the issue key in the document's title/header) — deliberately not
+   the whole document body, to avoid picking up an unrelated key mentioned
+   later in the description or a comment.
+3. **A deterministic hash fallback**, `DOC-` + the first 8 hex characters of a
+   SHA-256 hash of the uploaded PDF's raw bytes — used only when neither of the
+   above resolves. Matched by `_SYNTHETIC_DOCUMENT_KEY_RE` in `repo_clone.py`
+   as a full pattern (`DOC-` + exactly 8 uppercase hex chars), not a bare
+   prefix, so a real Jira project abbreviated "DOC" (ticket key `DOC-31`) is
+   never mistaken for it.
+
+This resolution runs synchronously in the request handler, before the PDF is
+even saved to disk — the auto-detect step does its own lightweight, capped,
+best-effort text extraction (`extract_pdf_text_from_bytes`) purely to search
+for a key; it is not the authoritative extraction (that's still
+`fetch_requirement_document`, run later in the background job pipeline with
+the full `DOCUMENT_MAX_EXTRACTED_CHARS` budget), and any failure here (a
+malformed PDF, a timeout) just means falling through to the hash, never a
+failed job submission.
+
+**Why this matters beyond naming:** the planning prompt embeds `ticket.key`
+(`plan_agent.build_prompt`), and the plan cache (`AGENT_PLAN_CACHE_ENABLED`)
+memoizes on a hash of the *full rendered prompt* — so whichever key gets
+resolved must be deterministic across resubmissions, or every PDF-sourced job
+is a guaranteed cache miss even when nothing about the request actually
+changed (this was a real, reported bug before the hash fallback was made
+deterministic — a random `uuid4()` key per upload, the original behavior,
+defeated the cache on every single PDF-sourced job). Re-uploading the exact
+same PDF bytes still reproduces the same key at every priority level and hits
+the cache; a PDF with different bytes — even one that resolves to visibly
+identical text after extraction (e.g. re-exported through different
+PDF-generation software) with no explicit field and no auto-detected key —
+only cache-hits if it happens to still auto-detect to the same key, since the
+hash fallback runs on raw bytes, not extracted text.
+
+**Branch naming and the local-branch-match check both already key off
+`Job.requirement_source`, not the ticket key's shape, so a real resolved key
+needed no changes there:** `default_branch_name` (`branch_prep.py`) still
+appends a slugified plan summary for every `DOCUMENT`-sourced job regardless
+of what the key looks like (`jira2pullreq/kan-31-<slug>` reads better than the
+bare `jira2pullreq/<hash>` a synthetic key would produce, but both are
+handled identically by that function); and `REQUIRE_LOCAL_BRANCH_TICKET_MATCH`
+is correctly still skipped only for the hash-fallback case (via
+`_SYNTHETIC_DOCUMENT_KEY_RE`) — a document job resolved to a real key is
+correctly branch-matched just like a genuine Jira-sourced job would be, since
+in that case the key really could (and, if the PDF was exported from that
+ticket and the developer is working the same ticket locally, likely does)
+appear in the branch name.
+
+Text extraction (`backend/app/steps/document_fetch.py`, `pypdf`) is
 deterministic and LLM-free, exactly like the Jira fetch step, and produces the same
 `TicketData` shape — the planner never knows or cares which source was used. A
 small dispatcher (`app/steps/fetch_requirement`) routes to one step or the other
@@ -211,7 +302,13 @@ uploaded file is saved to `var/uploads/<job_id>/requirement.pdf` before the
 background job starts (mirroring how `var/workdir/` holds clone workspaces) and is
 never re-used across jobs — retrying a failed document-sourced job requires
 re-uploading the file (sessionStorage can't persist a `File` object across the
-Retry redirect; the job form shows which filename to re-upload).
+Retry redirect; the job form shows which filename to re-upload). The optional
+typed ticket key *is* carried forward in the retry draft — but only when the
+failed job actually resolved to a real key rather than the hash fallback
+(`SYNTHETIC_DOCUMENT_KEY_RE` in `job-status-view.tsx`, mirroring the backend's
+own check), so the user isn't asked to retype something they already provided
+or the app already detected, while a hash key (meaningless to a human) is
+correctly left for auto-detection or the fallback to resolve again.
 
 ## Jira ticket attachments (PDF only)
 
@@ -293,6 +390,35 @@ surfaces this as a distinct "Changes made before the failure" panel on an
 with, the normal `IMPLEMENTATION_READY` result panel, since this diff was never
 validated and the agent's own summary for it is not trusted (`implementation_result`
 is deliberately left unset on this path).
+
+**Normalizing CRLF line endings around the implementation agent.** The
+implementation agent's `Edit` tool needs a byte-exact match between the
+`old_string` it composes and what's actually on disk. A repo that stores CRLF
+line endings (common for a Windows-developed codebase with no
+`.gitattributes` text-normalization rule) can make every multi-line edit
+silently fail to apply — diagnosed from a real job's recorded activity log
+and usage: ~15 `Edit` calls repeated across the same handful of files, zero
+net diff in the workspace afterward, and a garbled final structured summary.
+`app/steps/line_endings.py`'s `normalize_to_lf()` runs right before each
+`implement_plan` call in `run_implementation`/`run_validation_correction`
+(never around planning, which only reads/greps), converting every CRLF text
+file in the workspace to LF in place and recording which paths it touched;
+`restore_original_line_endings()` runs in a `finally` block immediately
+after — including on a raised `AppError`, so a diff collected afterward (the
+happy path, or `_refresh_diff_best_effort` on a failure) never shows
+line-ending-only noise — converting exactly those paths back to CRLF,
+*including* any new content the agent wrote into them, so the file's
+original convention survives into the diff, branch, and commit unchanged.
+Binary detection mirrors git's own heuristic (a NUL byte in the first 8KB);
+`.git`, common vendor/build directories, and files over
+`WORKSPACE_LINE_ENDING_MAX_FILE_BYTES` are skipped untouched. On an LF-only
+repo the whole mechanism is a no-op (nothing to convert), so
+`WORKSPACE_NORMALIZE_LINE_ENDINGS` defaults to on. Known limitation: a file
+with genuinely *mixed* CRLF and bare-LF endings loses that per-line
+distinction on restore (every line comes back as CRLF) — accepted as a small
+amount of diff noise on an already-inconsistent file, in exchange for keeping
+the mechanism simple; a consistently-endian file (the common case) round-trips
+exactly.
 
 The validation runner (`backend/app/steps/validation_runner.py`) auto-detects a
 Python profile (`ruff`/`pytest`, run via the *backend's own* `sys.executable` — not
@@ -382,9 +508,11 @@ in this app, both are explicitly triggered by the user, never automatic.
   (200, not 202 + poll) instead of going through the async job-state-machine
   pattern the other mutating endpoints use.
 - **Branch naming:** `jira2pullreq/<TICKET-KEY>` for Jira-sourced jobs;
-  `jira2pullreq/<synthetic-key>-<slugified-plan-summary>` for a document-sourced job,
-  since its synthetic `DOC-XXXXXXXX` key alone means nothing to a reviewer
-  (`default_branch_name`). Both the branch name and the commit message (default:
+  `jira2pullreq/<ticket-key>-<slugified-plan-summary>` for a document-sourced job
+  (`default_branch_name`) — always with the summary slug appended, since the
+  key alone means nothing to a reviewer when it's the hash fallback (see
+  **Requirement source** above for when a document job's key is a real Jira
+  key vs. that fallback). Both the branch name and the commit message (default:
   `<ticket-key>: <plan summary>`) can be overridden per request
   (`CreateBranchRequest`, same free-text length/credential-shape checks as every
   other user-provided field).
