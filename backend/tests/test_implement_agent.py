@@ -383,7 +383,12 @@ async def test_max_structured_output_retries_is_implementation_invalid(
 ) -> None:
     bad = AgentRunOutcome(
         subtype="error_max_structured_output_retries",
-        structured_output=None,
+        # Neither is populated on every real failure, but when the SDK does
+        # report them even on this subtype, they're the most useful part of
+        # the diagnostic — the model's own last (invalid) attempt, not just
+        # the terse "failed after N attempts" summary.
+        structured_output={"summary": "partial, missing changed_files"},
+        result="I couldn't format the changes correctly.",
         usage=None,
         total_cost_usd=0.78,
         num_turns=20,
@@ -394,7 +399,12 @@ async def test_max_structured_output_retries_is_implementation_invalid(
     with pytest.raises(AppError) as excinfo:
         await implement_plan(implementation_job(), tmp_path)
     assert excinfo.value.code == ErrorCode.IMPLEMENTATION_INVALID
-    assert "Failed to provide valid structured output" in (excinfo.value.internal_detail or "")
+    detail = excinfo.value.internal_detail or ""
+    assert "Failed to provide valid structured output" in detail
+    # the enriched detail: the model's last natural-language remark...
+    assert "I couldn't format the changes correctly." in detail
+    # ...and its last (invalid) structured attempt, not just the summary.
+    assert "partial, missing changed_files" in detail
     assert "could not produce a properly formatted result" in excinfo.value.user_message
     assert excinfo.value.usage is not None
     assert excinfo.value.usage["total_cost_usd"] == 0.78

@@ -172,6 +172,27 @@ right before it stopped:
   attempt (including "just testing whether it works now") costs full price
   until one succeeds.
 
+**Diagnosing `error_max_structured_output_retries`** (surfaced as
+`PLAN_INVALID` after the single retry, or `IMPLEMENTATION_INVALID` with the
+"could not produce a properly formatted result" message): a *different*
+failure from `BUDGET_EXCEEDED` — the harness gave up trying to get the
+model's final answer to validate against the plan/implementation schema, not
+a turns/cost/timeout cap. All caps can be well within budget when this
+happens. `AgentRunOutcome.errors` (both `plan_agent.py` and
+`implement_agent.py`) is typically just a terse summary ("Failed to provide
+valid structured output after 5 attempts") — not enough to tell *why*
+validation kept failing. `_describe_structured_output_failure()` (in each
+module) additionally captures `AgentRunOutcome.result` (the harness's own
+natural-language remark, when reported) and `structured_output` (the model's
+last, invalid attempt, when the SDK still populates it on this subtype) into
+`internal_detail`, each capped at `_FAILURE_DETAIL_MAX_CHARS` (2000) so one
+huge field can't crowd the others out of the log line — logged (redacted) but
+never returned to the client, same as every other `internal_detail`. Neither
+field is guaranteed to be populated by the harness on every failure, but when
+they are, they're usually far more diagnostic than the summary alone. Check
+the backend log for the job in question rather than guessing at a cause from
+the generic user-facing message.
+
 ## The plan schema is a versioned contract
 
 Defined ONCE as a Pydantic model (`backend/app/schemas/plan.py`) with `schema_version`

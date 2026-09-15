@@ -253,6 +253,15 @@ class AgentRunOutcome:
     duration_ms: int
     api_error_status: int | None = None
     errors: list[str] | None = None
+    # The harness's own natural-language result text, kept separate from
+    # `errors` (which already falls back to this when the SDK reports no
+    # `errors` list — see execute_agent() below) so a structured-output
+    # failure's diagnostic detail can show both independently: `errors`
+    # carries the terse "Failed to provide valid structured output after N
+    # attempts" summary; `result` sometimes carries the model's own last
+    # words about it, and `structured_output` sometimes still holds its
+    # last (invalid) attempt — see _describe_structured_output_failure().
+    result: str | None = None
 
 
 async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOutcome:
@@ -281,6 +290,7 @@ async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOut
                     duration_ms=message.duration_ms,
                     api_error_status=message.api_error_status,
                     errors=message.errors or ([message.result] if message.result else None),
+                    result=message.result,
                 )
     raise AppError(ErrorCode.INTERNAL, internal_detail="implementation run produced no result")
 
@@ -311,6 +321,31 @@ def _usage_from(outcome: AgentRunOutcome) -> AgentUsage:
         num_turns=outcome.num_turns,
         duration_seconds=outcome.duration_ms / 1000,
     )
+
+
+_FAILURE_DETAIL_MAX_CHARS = 2000  # per field; keeps a log line bounded, not the model's output
+
+
+def _describe_structured_output_failure(outcome: AgentRunOutcome) -> str:
+    """Best-effort diagnostic detail for a harness-side structured-output
+    failure (`error_max_structured_output_retries`, or the retry-exhausted
+    PLAN_INVALID case in plan_agent.py) — logged via internal_detail
+    (redacted) but never returned to the client. The harness's `errors` list
+    is typically just a terse summary ("Failed to provide valid structured
+    output after N attempts"); `result` and `structured_output` are worth
+    including too when the SDK populates them even on this failure subtype,
+    since either can hold the model's actual last (invalid) attempt — far
+    more useful for diagnosing *why* validation kept failing than the
+    summary alone. Each is capped independently so one huge field can't
+    crowd the others out of the log line."""
+    parts = [f"errors={outcome.errors}"]
+    if outcome.result:
+        parts.append(f"result={outcome.result[:_FAILURE_DETAIL_MAX_CHARS]!r}")
+    if outcome.structured_output is not None:
+        parts.append(
+            f"structured_output={str(outcome.structured_output)[:_FAILURE_DETAIL_MAX_CHARS]!r}"
+        )
+    return "; ".join(parts)
 
 
 async def implement_plan(
@@ -387,7 +422,9 @@ async def implement_plan(
         )
 
     if outcome.subtype == "error_max_structured_output_retries":
-        detail = redact(f"harness stopped: {outcome.subtype} errors={outcome.errors}")
+        detail = redact(
+            f"harness stopped: {outcome.subtype}; {_describe_structured_output_failure(outcome)}"
+        )
         raise AppError(
             ErrorCode.IMPLEMENTATION_INVALID,
             user_message=_STRUCTURED_OUTPUT_RETRIES_EXHAUSTED_MESSAGE,

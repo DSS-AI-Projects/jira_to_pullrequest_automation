@@ -261,6 +261,32 @@ async def test_malformed_twice_is_plan_invalid(
     assert excinfo.value.usage["total_cost_usd"] == 0.01
 
 
+async def test_plan_invalid_detail_includes_the_last_attempts_result_and_output(
+    agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The harness's `errors` list is typically just a terse summary; when it
+    also reports `result`/`structured_output` for the failing attempt, that's
+    the most useful part for diagnosing *why* — see
+    _describe_structured_output_failure() in plan_agent.py."""
+    bad = AgentRunOutcome(
+        subtype="error_max_structured_output_retries",
+        structured_output={"summary": "a plan, but missing required fields"},
+        result="I could not produce a schema-valid plan.",
+        usage=None,
+        total_cost_usd=0.02,
+        num_turns=3,
+        duration_ms=2000,
+        errors=["Failed to provide valid structured output after 5 attempts"],
+    )
+    install_fake_agent(monkeypatch, [bad, bad])
+    with pytest.raises(AppError) as excinfo:
+        await generate_plan(ticket(), repo_map(), tmp_path)
+    assert excinfo.value.code == ErrorCode.PLAN_INVALID
+    detail = excinfo.value.internal_detail or ""
+    assert "I could not produce a schema-valid plan." in detail
+    assert "a plan, but missing required fields" in detail
+
+
 async def test_schema_violating_output_is_plan_invalid_after_retry(
     agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
