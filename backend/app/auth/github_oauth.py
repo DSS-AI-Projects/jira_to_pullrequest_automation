@@ -120,9 +120,9 @@ async def complete_github_authorization(
         account_id=str(user_profile["id"]),
         account_url=str(user_profile["html_url"]),
         scopes=token_bundle.scopes or settings.github_oauth_scopes,
-        access_token_encrypted=encrypt_secret(token_bundle.access_token),
+        access_token_encrypted=encrypt_secret(token_bundle.access_token, provider="github"),
         refresh_token_encrypted=(
-            encrypt_secret(token_bundle.refresh_token)
+            encrypt_secret(token_bundle.refresh_token, provider="github")
             if token_bundle.refresh_token is not None
             else None
         ),

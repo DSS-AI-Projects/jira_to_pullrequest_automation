@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.auth.models import RepoHostingAuthKind, RepoHostingConnection, RepoHostingProvider
 from app.core.config import get_settings
-from app.core.crypto import encrypt_secret
+from app.core.crypto import decrypt_secret, encrypt_secret
 from app.jobs.models import AgentUsage, Job
 from app.jobs.store import JobStore
 from app.main import create_app
@@ -568,6 +568,88 @@ def test_github_repo_callback_persists_connection(
     assert stored.account_name == "octocat"
     assert stored.access_token_encrypted is not None
     assert stored.access_token_encrypted != "github-access-token"
+    # Must actually round-trip through the "github" provider key — this is
+    # what complete_github_authorization() previously got wrong: it called
+    # encrypt_secret() without provider="github", silently defaulting to the
+    # "jira" key, so any real-world connection (where the Jira and GitHub
+    # keys legitimately differ) could never be decrypted again by
+    # list_github_repositories()'s explicit provider="github" decrypt.
+    assert decrypt_secret(stored.access_token_encrypted, provider="github") == "github-access-token"
+
+
+@respx.mock
+def test_github_connection_survives_end_to_end_when_jira_and_github_keys_differ(
+    auth_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact regression this bug produced: a connection completed via
+    the real callback (complete_github_authorization) must still be usable
+    by a later repo-listing call (list_github_repositories), when
+    JIRA_OAUTH_ENCRYPTION_KEY and GITHUB_OAUTH_ENCRYPTION_KEY are
+    deliberately set to two different keys — the normal, expected
+    real-world configuration. Explicit about both keys (rather than relying
+    on GITHUB_OAUTH_ENCRYPTION_KEY alone and whatever the developer's local
+    .env happens to have for Jira) so this test's outcome never depends on
+    ambient environment state."""
+    monkeypatch.setenv("JIRA_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    monkeypatch.setenv("GITHUB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITHUB_OAUTH_CLIENT_ID", "github-client")
+    monkeypatch.setenv("GITHUB_OAUTH_CALLBACK_URL", "http://testserver/auth/github/callback")
+    monkeypatch.setenv("GITHUB_OAUTH_CLIENT_SECRET", "github-secret")
+    monkeypatch.setenv("GITHUB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    login(auth_client)
+
+    connect = auth_client.post("/api/auth/repo-hosting/github/connect")
+    assert connect.status_code == 200
+    state = parse_qs(urlparse(connect.json()["authorization_url"]).query)["state"][0]
+
+    respx.post("https://github.com/login/oauth/access_token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "github-access-token",
+                "scope": "repo,read:user",
+                "token_type": "bearer",
+            },
+        )
+    )
+    respx.get("https://api.github.com/user").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 12345,
+                "login": "octocat",
+                "html_url": "https://github.com/octocat",
+            },
+        )
+    )
+    callback = auth_client.get(
+        f"/api/auth/repo-hosting/github/callback?code=test-code&state={state}"
+    )
+    assert callback.status_code == 200
+
+    respx.get("https://api.github.com/user/repos").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1001,
+                    "name": "repo-one",
+                    "full_name": "octocat/repo-one",
+                    "html_url": "https://github.com/octocat/repo-one",
+                    "clone_url": "https://github.com/octocat/repo-one.git",
+                    "default_branch": "main",
+                    "private": False,
+                    "owner": {"login": "octocat"},
+                }
+            ],
+        )
+    )
+
+    response = auth_client.get("/api/auth/repo-hosting/github/repos")
+
+    assert response.status_code == 200
+    assert response.json()["repos"][0]["full_name"] == "octocat/repo-one"
 
 
 @respx.mock

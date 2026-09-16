@@ -47,6 +47,28 @@ typing a secret into this app's forms. Sources:
   both still inherit the machine's ambient git auth (SSH key / credential helper);
   delegated *git* auth is not built yet. GitLab has a connection-model foundation
   but no flow.
+  **Each provider's tokens are encrypted under that provider's own Fernet key** —
+  `encrypt_secret()`/`decrypt_secret()` (`backend/app/core/crypto.py`) both take an
+  explicit `provider=` ("jira" or "github", each resolving to its own
+  `..._OAUTH_ENCRYPTION_KEY`) — **every call site must pass it explicitly**; the
+  `provider: str = "jira"` default exists only for Jira's own call sites (which
+  predate GitHub's) and is not a safe "don't care" default for any other provider.
+  A real bug shipped from getting this wrong: `complete_github_authorization()`
+  called `encrypt_secret()` with no `provider=`, silently encrypting under the
+  *Jira* key, while `list_github_repositories()` correctly decrypted with
+  `provider="github"` — every GitHub connection completed while the two keys
+  differed (the normal case) became permanently undecryptable, degrading to the
+  same "Connect your GitHub account before loading repositories" message a
+  never-connected user sees, even though the connect/callback step itself
+  reported success. Caught by extending `test_auth_api.py`'s callback test to
+  actually decrypt what got stored (it previously only checked "not plaintext"),
+  plus a new end-to-end test that deliberately sets differing Jira/GitHub keys —
+  the two existing repo-listing tests had bypassed the bug entirely by
+  constructing their `RepoHostingConnection` fixtures with a correctly-provider'd
+  `encrypt_secret()` call directly, never exercising the real callback code path.
+  No store migration needed for connections saved before the fix: reconnecting
+  overwrites the row (`save_repo_hosting_connection`'s `ON CONFLICT ... DO
+  UPDATE`), so the existing "Disconnect" + "Connect" flow is already the fix.
 - **Anthropic:** `ANTHROPIC_API_KEY` from env, consumed only by the Agent SDK steps.
 
 Security-architecture changes require the owner's sign-off — propose, don't implement.
