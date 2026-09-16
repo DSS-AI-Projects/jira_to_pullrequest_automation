@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   correctValidation,
@@ -106,6 +106,21 @@ export function JobStatusView(props: { jobId: string }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
     "idle",
   );
+  // Approving implementation can be triggered after scrolling down to read
+  // the plan — without this, the status/pipeline panel the user actually
+  // wants to watch is off-screen above, and they'd have to scroll back up
+  // themselves to see anything change.
+  const statusPanelRef = useRef<HTMLElement>(null);
+
+  const focusStatusPanel = useCallback(() => {
+    statusPanelRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+    // preventScroll: the browser's own focus-triggered jump would fight the
+    // smooth scroll above — let scrollIntoView own the motion.
+    statusPanelRef.current?.focus({ preventScroll: true });
+  }, []);
 
   const loadJob = useCallback(
     async (signal: AbortSignal) => {
@@ -271,6 +286,7 @@ export function JobStatusView(props: { jobId: string }) {
     if (!job) {
       return;
     }
+    focusStatusPanel();
     setImplementing(true);
     setError(null);
     try {
@@ -380,7 +396,11 @@ export function JobStatusView(props: { jobId: string }) {
   return (
     <div className="job-layout">
       <div className="status-row">
-        <section className="panel status-header">
+        <section
+          className="panel status-header"
+          ref={statusPanelRef}
+          tabIndex={-1}
+        >
           <div className="status-heading">
             <div>
               <span className="eyebrow">Job status</span>

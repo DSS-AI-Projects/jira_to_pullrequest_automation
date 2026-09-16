@@ -307,6 +307,17 @@ ol {
   padding: 1.5rem;
 }
 
+/* Programmatically focused (tabIndex=-1) after "Approve and Implement" so
+   the user lands back on the status panel instead of the browser's bare
+   default outline — see focusStatusPanel() in job-status-view.tsx. Plain
+   :focus (not :focus-visible) so the cue always shows for this deliberate,
+   script-triggered focus move, regardless of the browser's own
+   keyboard-vs-pointer heuristic. */
+.status-header:focus {
+  outline: 3px solid rgba(36, 88, 230, 0.16);
+  outline-offset: 2px;
+}
+
 .panel-heading,
 .section-heading,
 .status-heading {

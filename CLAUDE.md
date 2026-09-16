@@ -686,6 +686,24 @@ knowing when diagnosing why a job failed or budgeting spend.
   cost" row alongside planning/implementation/total whenever a correction
   attempt recorded usage.
 
+**Approving implementation scrolls focus back to the status panel.** A plan
+review can be long (impacted files, proposed changes, risks, open questions),
+so "Approve and Implement" is often clicked from far down the page — without
+this, the pipeline stepper the user actually wants to watch next is
+off-screen above, and they'd have to scroll back up themselves to see
+anything change. `focusStatusPanel()` (`job-status-view.tsx`) calls
+`scrollIntoView({ behavior: "smooth", block: "start" })` then
+`.focus({ preventScroll: true })` on the status-header section (`tabIndex={-1}`,
+so it's programmatically focusable without joining the tab order) at the
+start of `handleImplement()`, before the `implementJob()` call — the move
+happens immediately on click, not after the network round-trip. `preventScroll`
+stops the browser's own focus-triggered jump from fighting the smooth scroll.
+Styled with a plain `:focus` (not `:focus-visible`) outline so the cue always
+shows for this deliberate, script-triggered focus move, regardless of the
+browser's keyboard-vs-pointer heuristic. (Test-environment note: jsdom doesn't
+implement `scrollIntoView` at all — `src/test/setup.ts` polyfills a no-op so
+tests that click this button don't throw; real browsers have always had it.)
+
 ## Job history and admin cost reporting
 
 `GET /jobs` lists jobs most-recent-first with keyset (`created_at`-cursor)

@@ -259,6 +259,82 @@ describe("JobStatusView", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
   });
 
+  it("scrolls and moves focus back to the status panel when Approve and Implement is clicked", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-123",
+      ticket_key: "KAN-25",
+      repo_url: "D:\\workspaces\\hello-world-debug",
+      planning_notes: null,
+      state: "PLAN_READY",
+      error: null,
+      repo_info: {
+        source_kind: "LOCAL",
+        branch: "KAN-25",
+        commit_sha: "a".repeat(40),
+        origin_url: null,
+        is_dirty: false,
+        local_path: "D:\\workspaces\\hello-world-debug",
+      },
+      workspace_path: "D:\\workdir\\job-123\\repo",
+      plan: {
+        schema_version: 2,
+        summary: "Update the greeting text.",
+        ticket_type: "chore",
+        estimated_story_points: 2,
+        complexity_level: "low",
+        impacted_files: [{ path: "README", reason: "Contains the greeting" }],
+        proposed_changes: [
+          {
+            file: "README",
+            action: "modify",
+            description: "Replace Hello World text.",
+          },
+        ],
+        test_strategy: "Inspect README manually.",
+        risks: [],
+        open_questions: [],
+      },
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-07-17T00:00:00Z",
+      updated_at: "2026-07-17T00:00:00Z",
+    });
+    implementJob.mockResolvedValue({ job_id: "job-123" });
+
+    const scrollIntoView = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView")
+      .mockImplementation(() => undefined);
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+
+    render(<JobStatusView jobId="job-123" />);
+
+    const button = await screen.findByRole("button", {
+      name: /Approve and Implement/i,
+    });
+    fireEvent.click(button);
+
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "start",
+    });
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    // Focus landed on the status panel itself, not some other element.
+    const statusPanel = screen.getByText("Job status").closest("section");
+    expect(statusPanel).toHaveFocus();
+
+    await waitFor(() => expect(implementJob).toHaveBeenCalled());
+
+    scrollIntoView.mockRestore();
+    focus.mockRestore();
+  });
+
   it("allows implementation approval for remote jobs too", async () => {
     fetchJob.mockResolvedValue({
       id: "job-remote",
