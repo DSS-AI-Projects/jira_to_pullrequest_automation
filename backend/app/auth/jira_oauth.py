@@ -146,9 +146,9 @@ async def complete_authorization(
         user_id=user.id,
         site=site,
         scopes=scopes,
-        access_token_encrypted=encrypt_secret(token_bundle.access_token),
+        access_token_encrypted=encrypt_secret(token_bundle.access_token, provider="jira"),
         refresh_token_encrypted=(
-            encrypt_secret(token_bundle.refresh_token)
+            encrypt_secret(token_bundle.refresh_token, provider="jira")
             if token_bundle.refresh_token is not None
             else None
         ),
@@ -170,7 +170,7 @@ async def get_user_access_token(
         return None
     if _is_token_stale(connection.access_token_expires_at):
         connection = await _refresh_connection(connection, store, settings)
-    return connection, decrypt_secret(connection.access_token_encrypted)
+    return connection, decrypt_secret(connection.access_token_encrypted, provider="jira")
 
 
 def build_delegated_api_base(cloud_id: str) -> str:
@@ -216,12 +216,14 @@ async def _refresh_connection(
             "grant_type": "refresh_token",
             "client_id": client_id,
             "client_secret": client_secret,
-            "refresh_token": decrypt_secret(connection.refresh_token_encrypted),
+            "refresh_token": decrypt_secret(connection.refresh_token_encrypted, provider="jira"),
         }
     )
-    connection.access_token_encrypted = encrypt_secret(token_bundle.access_token)
+    connection.access_token_encrypted = encrypt_secret(token_bundle.access_token, provider="jira")
     if token_bundle.refresh_token is not None:
-        connection.refresh_token_encrypted = encrypt_secret(token_bundle.refresh_token)
+        connection.refresh_token_encrypted = encrypt_secret(
+            token_bundle.refresh_token, provider="jira"
+        )
     connection.access_token_expires_at = token_bundle.expires_at
     store.save_jira_connection(connection)
     return connection

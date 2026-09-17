@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -40,7 +41,21 @@ class Settings(BaseSettings):
     gitlab_oauth_enabled: bool = False
     gitlab_oauth_client_id: str | None = None
     gitlab_oauth_callback_url: str | None = None
-    gitlab_oauth_scopes: list[str] = ["api", "read_user"]
+    # read_api (not the broader read-write "api") + read_user is enough to
+    # list projects and resolve the account profile — matches this app's own
+    # "repository discovery only, never git operations" boundary for
+    # delegated tokens (see CLAUDE.md).
+    gitlab_oauth_scopes: list[str] = ["read_api", "read_user"]
+    gitlab_oauth_state_ttl_minutes: int = 10
+    # Supports self-hosted GitLab, not just gitlab.com — mirrors JIRA_BASE_URL
+    # selecting which Jira Cloud site to target. No trailing slash; callers
+    # build "{gitlab_instance_url}/oauth/authorize" etc.
+    gitlab_instance_url: str = "https://gitlab.com"
+
+    @field_validator("gitlab_instance_url")
+    @classmethod
+    def _strip_gitlab_instance_url_trailing_slash(cls, value: str) -> str:
+        return value.rstrip("/")
 
     # Repo input validation (security invariant 5)
     allowed_git_hosts: list[str] = ["github.com"]

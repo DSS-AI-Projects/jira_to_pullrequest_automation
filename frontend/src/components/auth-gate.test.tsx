@@ -13,6 +13,7 @@ const {
   logout,
   redirectBrowser,
   startGitHubConnect,
+  startGitLabConnect,
   startJiraConnect,
 } = vi.hoisted(() => ({
   devLogin: vi.fn(),
@@ -24,6 +25,7 @@ const {
   logout: vi.fn(),
   redirectBrowser: vi.fn(),
   startGitHubConnect: vi.fn(),
+  startGitLabConnect: vi.fn(),
   startJiraConnect: vi.fn(),
 }));
 
@@ -40,6 +42,7 @@ vi.mock("@/lib/api", async () => {
     logout,
     redirectBrowser,
     startGitHubConnect,
+    startGitLabConnect,
     startJiraConnect,
   };
 });
@@ -55,6 +58,7 @@ describe("AuthGate", () => {
     logout.mockReset();
     redirectBrowser.mockReset();
     startGitHubConnect.mockReset();
+    startGitLabConnect.mockReset();
     startJiraConnect.mockReset();
     window.history.replaceState({}, "", "/");
   });
@@ -417,6 +421,57 @@ describe("AuthGate", () => {
     await waitFor(() => expect(startGitHubConnect).toHaveBeenCalled());
     expect(redirectBrowser).toHaveBeenCalledWith(
       "https://github.com/login/oauth/authorize?state=github123",
+    );
+  });
+
+  it("starts the GitLab connect flow for configured GitLab access", async () => {
+    fetchSession.mockResolvedValue({
+      auth_enabled: true,
+      can_dev_login: true,
+      user: {
+        id: "user-1",
+        email: "sam@example.com",
+        display_name: "Sam",
+        role: "USER",
+      },
+    });
+    fetchJiraAuthStatus.mockResolvedValue({
+      oauth_enabled: true,
+      oauth_configured: true,
+      shared_configured: true,
+      effective_mode: "SHARED",
+      connected: false,
+      connection: null,
+    });
+    fetchRepoHostingStatus.mockResolvedValue({
+      providers: [
+        {
+          provider: "GITLAB",
+          display_name: "GitLab",
+          enabled: true,
+          configured: true,
+          connected: false,
+          connection: null,
+        },
+      ],
+    });
+    startGitLabConnect.mockResolvedValue({
+      authorization_url: "https://gitlab.com/oauth/authorize?state=gitlab123",
+    });
+
+    render(
+      <AuthGate>
+        <div>App content</div>
+      </AuthGate>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect GitLab" }),
+    );
+
+    await waitFor(() => expect(startGitLabConnect).toHaveBeenCalled());
+    expect(redirectBrowser).toHaveBeenCalledWith(
+      "https://gitlab.com/oauth/authorize?state=gitlab123",
     );
   });
 

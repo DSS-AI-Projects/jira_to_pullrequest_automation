@@ -15,6 +15,7 @@ import {
   logout,
   redirectBrowser,
   startGitHubConnect,
+  startGitLabConnect,
   startJiraConnect,
   type JiraAuthStatus,
   type RepoHostingProvider,
@@ -67,6 +68,23 @@ function readConnectionFlash(): JiraFlash | null {
         "GitHub sign-in did not complete. Try connecting your GitHub account again.",
     };
   }
+  const gitlab = params.get("gitlab");
+  if (gitlab === "connected") {
+    const accountName = params.get("gitlab_account");
+    return {
+      kind: "success",
+      message: accountName
+        ? `Connected GitLab account ${accountName}.`
+        : "Connected your GitLab account.",
+    };
+  }
+  if (gitlab === "connect_failed") {
+    return {
+      kind: "error",
+      message:
+        "GitLab sign-in did not complete. Try connecting your GitLab account again.",
+    };
+  }
   return null;
 }
 
@@ -100,13 +118,15 @@ export function AuthGate(props: { children: ReactNode }) {
       return;
     }
     const params = new URLSearchParams(window.location.search);
-    if (!params.get("jira") && !params.get("github")) {
+    if (!params.get("jira") && !params.get("github") && !params.get("gitlab")) {
       return;
     }
     params.delete("jira");
     params.delete("jira_site");
     params.delete("github");
     params.delete("github_account");
+    params.delete("gitlab");
+    params.delete("gitlab_account");
     const nextSearch = params.toString();
     const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
     window.history.replaceState({}, "", nextUrl);
@@ -276,6 +296,11 @@ export function AuthGate(props: { children: ReactNode }) {
         redirectBrowser(response.authorization_url);
         return;
       }
+      if (provider === "GITLAB") {
+        const response = await startGitLabConnect();
+        redirectBrowser(response.authorization_url);
+        return;
+      }
       setError(
         "Connect flow for this repository provider is not available yet.",
       );
@@ -415,12 +440,6 @@ export function AuthGate(props: { children: ReactNode }) {
                       : `Connect ${provider.display_name}`}
                   </button>
                 </div>
-                {provider.provider !== "GITHUB" ? (
-                  <p className="meta-muted">
-                    The connection flow for {provider.display_name} will be
-                    added in a later slice.
-                  </p>
-                ) : null}
               </div>
             );
           }

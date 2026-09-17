@@ -4,14 +4,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobForm } from "@/components/job-form";
 
-const { push, createJob, fetchGitHubRepositories, fetchRepos } = vi.hoisted(
-  () => ({
-    push: vi.fn(),
-    createJob: vi.fn(),
-    fetchGitHubRepositories: vi.fn(),
-    fetchRepos: vi.fn(),
-  }),
-);
+const {
+  push,
+  createJob,
+  fetchGitHubRepositories,
+  fetchGitLabRepositories,
+  fetchRepos,
+} = vi.hoisted(() => ({
+  push: vi.fn(),
+  createJob: vi.fn(),
+  fetchGitHubRepositories: vi.fn(),
+  fetchGitLabRepositories: vi.fn(),
+  fetchRepos: vi.fn(),
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -25,6 +30,7 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     createJob,
     fetchGitHubRepositories,
+    fetchGitLabRepositories,
     fetchRepos,
   };
 });
@@ -34,6 +40,14 @@ describe("JobForm", () => {
     push.mockReset();
     createJob.mockReset();
     fetchGitHubRepositories.mockReset();
+    fetchGitLabRepositories.mockReset();
+    // Most tests here don't care about GitLab specifically — default to
+    // "not connected" (mirroring the GitHub default below) so each existing
+    // test doesn't have to configure it individually; tests that do care
+    // override this with their own mockResolvedValue/mockRejectedValue.
+    fetchGitLabRepositories.mockRejectedValue(
+      new Error("Connect your GitLab account before loading repositories."),
+    );
     fetchRepos.mockReset();
     sessionStorage.clear();
   });
@@ -248,6 +262,60 @@ describe("JobForm", () => {
       }),
     );
     expect(push).toHaveBeenCalledWith("/jobs/job-github");
+  });
+
+  it("shows connected GitLab repos and submits the selected clone url", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["gitlab.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+    fetchGitLabRepositories.mockResolvedValue({
+      repos: [
+        {
+          id: 2001,
+          name: "project-one",
+          path_with_namespace: "octocat/project-one",
+          web_url: "https://gitlab.com/octocat/project-one",
+          http_url_to_repo: "https://gitlab.com/octocat/project-one.git",
+          default_branch: "main",
+          namespace: "octocat",
+          private: false,
+        },
+      ],
+    });
+    createJob.mockResolvedValue({ job_id: "job-gitlab" });
+
+    render(<JobForm />);
+
+    await screen.findByText("Connected GitLab repos");
+    fireEvent.click(
+      screen.getByRole("button", { name: "octocat/project-one" }),
+    );
+    fireEvent.change(screen.getByLabelText(/Jira ticket key or URL/i), {
+      target: { value: "PROJ-77" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Generate implementation plan/i }),
+    );
+
+    await waitFor(() =>
+      expect(createJob).toHaveBeenCalledWith({
+        ticket: "PROJ-77",
+        repo: "https://gitlab.com/octocat/project-one.git",
+        planning_notes: "",
+      }),
+    );
+    expect(push).toHaveBeenCalledWith("/jobs/job-gitlab");
   });
 
   it("prefills from a retry draft left by the job-detail page and clears it", async () => {

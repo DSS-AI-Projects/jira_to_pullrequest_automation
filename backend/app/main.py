@@ -8,22 +8,33 @@ leave the server; they are logged through the redactor instead.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+import truststore
 
-from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+# Must run before any ssl.SSLContext is created (httpx builds one on first use
+# inside jira_oauth.py/github_oauth.py/gitlab_oauth.py) — swaps Python's default
+# certifi-only trust store for the OS's own (Windows Certificate Store /
+# macOS Keychain / OpenSSL default on Linux), so an outbound HTTPS call to an
+# internal/self-hosted provider instance (e.g. a corporate GitLab behind an
+# internal CA already trusted by the OS, the way a browser trusts it) verifies
+# correctly instead of failing with CERTIFICATE_VERIFY_FAILED.
+truststore.inject_into_ssl()
 
-from app.api.auth import router as auth_router
-from app.api.routes import router as api_router
-from app.core.config import get_settings
-from app.core.errors import AppError, ErrorCode
-from app.core.logging import configure_logging, get_logger
-from app.jobs.runner import JobSteps
-from app.jobs.store import JobStore
-from app.steps import default_steps
+from collections.abc import AsyncGenerator  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
+
+from fastapi import FastAPI, Request  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+from app.api.auth import router as auth_router  # noqa: E402
+from app.api.routes import router as api_router  # noqa: E402
+from app.core.config import get_settings  # noqa: E402
+from app.core.errors import AppError, ErrorCode  # noqa: E402
+from app.core.logging import configure_logging, get_logger  # noqa: E402
+from app.jobs.runner import JobSteps  # noqa: E402
+from app.jobs.store import JobStore  # noqa: E402
+from app.steps import default_steps  # noqa: E402
 
 logger = get_logger(__name__)
 

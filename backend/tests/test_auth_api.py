@@ -1,5 +1,6 @@
 import time
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
@@ -751,3 +752,368 @@ def test_github_repo_listing_treats_undecryptable_token_as_not_connected(
     body = response.json()
     assert body["error"]["code"] == "REPO_PROVIDER_NOT_AVAILABLE"
     assert body["error"]["message"] == "Connect your GitHub account before loading repositories."
+
+
+# --- GitLab: same coverage shape as GitHub above, plus two GitLab-only
+# scenarios GitHub's tests don't need — a configurable (self-hosted)
+# instance URL, and access-token refresh before listing. ---
+
+
+def test_gitlab_repo_connect_returns_authorization_url(
+    auth_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
+    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://localhost:3000/auth/gitlab/callback")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    login(auth_client)
+
+    response = auth_client.post("/api/auth/repo-hosting/gitlab/connect")
+
+    assert response.status_code == 200
+    authorization_url = response.json()["authorization_url"]
+    parsed = urlparse(authorization_url)
+    params = parse_qs(parsed.query)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "gitlab.com"
+    assert parsed.path == "/oauth/authorize"
+    assert params["client_id"] == ["gitlab-client"]
+    assert params["redirect_uri"] == ["http://localhost:3000/auth/gitlab/callback"]
+    assert params["response_type"] == ["code"]
+    assert params["scope"] == ["read_api read_user"]
+    assert params["state"]
+
+
+def test_gitlab_repo_connect_honors_a_self_hosted_instance_url(
+    auth_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitLab is commonly self-hosted, unlike this app's GitHub integration
+    (hardcoded to github.com) — GITLAB_INSTANCE_URL must actually be used to
+    build the authorization URL, not just accepted and ignored."""
+    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
+    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://localhost:3000/auth/gitlab/callback")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    monkeypatch.setenv("GITLAB_INSTANCE_URL", "https://gitlab.acme.internal")
+    get_settings.cache_clear()
+    login(auth_client)
+
+    response = auth_client.post("/api/auth/repo-hosting/gitlab/connect")
+
+    assert response.status_code == 200
+    parsed = urlparse(response.json()["authorization_url"])
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "gitlab.acme.internal"
+    assert parsed.path == "/oauth/authorize"
+
+
+@respx.mock
+def test_gitlab_repo_callback_persists_connection(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
+    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://testserver/auth/gitlab/callback")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+
+    connect = auth_client.post("/api/auth/repo-hosting/gitlab/connect")
+    assert connect.status_code == 200
+    state = parse_qs(urlparse(connect.json()["authorization_url"]).query)["state"][0]
+
+    respx.post("https://gitlab.com/oauth/token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "gitlab-access-token",
+                "refresh_token": "gitlab-refresh-token",
+                "scope": "read_api read_user",
+                "token_type": "bearer",
+                "expires_in": 7200,
+            },
+        )
+    )
+    respx.get("https://gitlab.com/api/v4/user").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 54321,
+                "username": "octocat",
+                "web_url": "https://gitlab.com/octocat",
+            },
+        )
+    )
+
+    callback = auth_client.get(
+        f"/api/auth/repo-hosting/gitlab/callback?code=test-code&state={state}"
+    )
+    assert callback.status_code == 200
+    assert callback.json()["connection"]["provider"] == "GITLAB"
+    assert callback.json()["connection"]["account_name"] == "octocat"
+
+    stored = auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.GITLAB)
+    assert stored is not None
+    assert stored.account_name == "octocat"
+    assert stored.access_token_encrypted is not None
+    assert stored.access_token_encrypted != "gitlab-access-token"
+    assert stored.refresh_token_encrypted is not None
+    # Must round-trip through the "gitlab" provider key — the exact mistake
+    # complete_github_authorization() made (see CLAUDE.md's GitHub OAuth
+    # note): encrypting under the wrong provider's key silently corrupts the
+    # connection the moment Jira/GitHub/GitLab keys legitimately differ.
+    assert decrypt_secret(stored.access_token_encrypted, provider="gitlab") == "gitlab-access-token"
+    assert (
+        decrypt_secret(stored.refresh_token_encrypted, provider="gitlab") == "gitlab-refresh-token"
+    )
+
+
+@respx.mock
+def test_gitlab_connection_survives_end_to_end_when_jira_and_gitlab_keys_differ(
+    auth_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors test_github_connection_survives_end_to_end_when_jira_and_github_keys_differ —
+    proves the same class of bug was not repeated for GitLab."""
+    monkeypatch.setenv("JIRA_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
+    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://testserver/auth/gitlab/callback")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    login(auth_client)
+
+    connect = auth_client.post("/api/auth/repo-hosting/gitlab/connect")
+    assert connect.status_code == 200
+    state = parse_qs(urlparse(connect.json()["authorization_url"]).query)["state"][0]
+
+    respx.post("https://gitlab.com/oauth/token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "gitlab-access-token",
+                "scope": "read_api read_user",
+                "token_type": "bearer",
+                "expires_in": 7200,
+            },
+        )
+    )
+    respx.get("https://gitlab.com/api/v4/user").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 54321, "username": "octocat", "web_url": "https://gitlab.com/octocat"},
+        )
+    )
+    callback = auth_client.get(
+        f"/api/auth/repo-hosting/gitlab/callback?code=test-code&state={state}"
+    )
+    assert callback.status_code == 200
+
+    respx.get("https://gitlab.com/api/v4/projects").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 2001,
+                    "name": "project-one",
+                    "path_with_namespace": "octocat/project-one",
+                    "web_url": "https://gitlab.com/octocat/project-one",
+                    "http_url_to_repo": "https://gitlab.com/octocat/project-one.git",
+                    "default_branch": "main",
+                    "visibility": "private",
+                    "namespace": {"path": "octocat"},
+                }
+            ],
+        )
+    )
+
+    response = auth_client.get("/api/auth/repo-hosting/gitlab/repos")
+
+    assert response.status_code == 200
+    assert response.json()["repos"][0]["path_with_namespace"] == "octocat/project-one"
+
+
+@respx.mock
+def test_gitlab_repo_listing_returns_connected_user_repositories(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+    auth_store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id=user["id"],
+            provider=RepoHostingProvider.GITLAB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="54321",
+            account_url="https://gitlab.com/octocat",
+            scopes=["read_api", "read_user"],
+            access_token_encrypted=encrypt_secret("gitlab-access-token", provider="gitlab"),
+            # Far in the future so the listing call never tries to refresh.
+            access_token_expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+    respx.get("https://gitlab.com/api/v4/projects").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 2001,
+                    "name": "project-one",
+                    "path_with_namespace": "octocat/project-one",
+                    "web_url": "https://gitlab.com/octocat/project-one",
+                    "http_url_to_repo": "https://gitlab.com/octocat/project-one.git",
+                    "default_branch": "main",
+                    "visibility": "public",
+                    "namespace": {"path": "octocat"},
+                }
+            ],
+        )
+    )
+
+    response = auth_client.get("/api/auth/repo-hosting/gitlab/repos")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "repos": [
+            {
+                "id": 2001,
+                "name": "project-one",
+                "path_with_namespace": "octocat/project-one",
+                "web_url": "https://gitlab.com/octocat/project-one",
+                "http_url_to_repo": "https://gitlab.com/octocat/project-one.git",
+                "default_branch": "main",
+                "namespace": "octocat",
+                "private": False,
+            }
+        ]
+    }
+
+
+@respx.mock
+def test_gitlab_repo_listing_refreshes_an_expired_token_before_listing(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitLab access tokens expire (2h by default) with rotating refresh
+    tokens — unlike GitHub's OAuth Apps in this app's configuration, so this
+    scenario has no GitHub equivalent test."""
+    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
+    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://testserver/auth/gitlab/callback")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+    auth_store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id=user["id"],
+            provider=RepoHostingProvider.GITLAB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="54321",
+            account_url="https://gitlab.com/octocat",
+            scopes=["read_api", "read_user"],
+            access_token_encrypted=encrypt_secret("stale-access-token", provider="gitlab"),
+            refresh_token_encrypted=encrypt_secret("stale-refresh-token", provider="gitlab"),
+            access_token_expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+    )
+    respx.post("https://gitlab.com/oauth/token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "refreshed-access-token",
+                "refresh_token": "refreshed-refresh-token",
+                "scope": "read_api read_user",
+                "token_type": "bearer",
+                "expires_in": 7200,
+            },
+        )
+    )
+    repos_route = respx.get("https://gitlab.com/api/v4/projects").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    response = auth_client.get("/api/auth/repo-hosting/gitlab/repos")
+
+    assert response.status_code == 200
+    assert repos_route.calls[0].request.headers["Authorization"] == "Bearer refreshed-access-token"
+    persisted = auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.GITLAB)
+    assert persisted is not None
+    assert persisted.access_token_encrypted is not None
+    assert (
+        decrypt_secret(persisted.access_token_encrypted, provider="gitlab")
+        == "refreshed-access-token"
+    )
+
+
+def test_gitlab_repo_listing_requires_connected_account(auth_client: TestClient) -> None:
+    login(auth_client)
+
+    response = auth_client.get("/api/auth/repo-hosting/gitlab/repos")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "REPO_PROVIDER_NOT_AVAILABLE"
+
+
+def test_gitlab_repo_listing_treats_undecryptable_token_as_not_connected(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+    auth_store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id=user["id"],
+            provider=RepoHostingProvider.GITLAB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="54321",
+            account_url="https://gitlab.com/octocat",
+            scopes=["read_api", "read_user"],
+            access_token_encrypted=encrypt_secret("gitlab-access-token", provider="gitlab"),
+            access_token_expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+
+    response = auth_client.get("/api/auth/repo-hosting/gitlab/repos")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "REPO_PROVIDER_NOT_AVAILABLE"
+    assert body["error"]["message"] == "Connect your GitLab account before loading repositories."
+
+
+def test_repo_hosting_disconnect_removes_stored_gitlab_connection(
+    auth_client: TestClient, auth_store: JobStore
+) -> None:
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+    auth_store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id=user["id"],
+            provider=RepoHostingProvider.GITLAB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="54321",
+            account_url="https://gitlab.com/octocat",
+            scopes=["read_api", "read_user"],
+        )
+    )
+
+    disconnect = auth_client.delete("/api/auth/repo-hosting/GITLAB")
+
+    assert disconnect.status_code == 200
+    assert auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.GITLAB) is None

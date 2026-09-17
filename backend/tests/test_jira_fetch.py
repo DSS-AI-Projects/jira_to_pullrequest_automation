@@ -221,8 +221,8 @@ async def test_fetch_uses_delegated_connection_when_available(
             user_id=user.id,
             site=JiraCloudSite(id="cloud-123", name="Acme", url=BASE),
             scopes=["read:jira-work", "offline_access"],
-            access_token_encrypted=encrypt_secret("delegated-access-token"),
-            refresh_token_encrypted=encrypt_secret("delegated-refresh-token"),
+            access_token_encrypted=encrypt_secret("delegated-access-token", provider="jira"),
+            refresh_token_encrypted=encrypt_secret("delegated-refresh-token", provider="jira"),
             access_token_expires_at=datetime.now(UTC) + timedelta(minutes=30),
         )
     )
@@ -263,8 +263,8 @@ async def test_fetch_refreshes_delegated_tokens_before_calling_jira(
             user_id=user.id,
             site=JiraCloudSite(id="cloud-123", name="Acme", url=BASE),
             scopes=["read:jira-work", "offline_access"],
-            access_token_encrypted=encrypt_secret("stale-access-token"),
-            refresh_token_encrypted=encrypt_secret("refresh-token"),
+            access_token_encrypted=encrypt_secret("stale-access-token", provider="jira"),
+            refresh_token_encrypted=encrypt_secret("refresh-token", provider="jira"),
             access_token_expires_at=datetime.now(UTC) - timedelta(minutes=1),
         )
     )
@@ -293,8 +293,11 @@ async def test_fetch_refreshes_delegated_tokens_before_calling_jira(
     assert route.calls[0].request.headers["Authorization"] == f"Bearer {REFRESHED_TOKEN}"
     persisted = jira_store.get_jira_connection(user.id)
     assert persisted is not None
-    assert decrypt_secret(persisted.access_token_encrypted) == REFRESHED_TOKEN
-    assert decrypt_secret(persisted.refresh_token_encrypted or "") == REFRESHED_REFRESH_TOKEN
+    assert decrypt_secret(persisted.access_token_encrypted, provider="jira") == REFRESHED_TOKEN
+    assert (
+        decrypt_secret(persisted.refresh_token_encrypted or "", provider="jira")
+        == REFRESHED_REFRESH_TOKEN
+    )
 
 
 def test_adf_flattening_handles_lists_and_code() -> None:

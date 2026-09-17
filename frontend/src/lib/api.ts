@@ -126,6 +126,21 @@ export type GitHubRepositoryListResponse = {
   repos: GitHubRepositorySummary[];
 };
 
+export type GitLabRepositorySummary = {
+  id: number;
+  name: string;
+  path_with_namespace: string;
+  web_url: string;
+  http_url_to_repo: string;
+  default_branch: string | null;
+  namespace: string;
+  private: boolean;
+};
+
+export type GitLabRepositoryListResponse = {
+  repos: GitLabRepositorySummary[];
+};
+
 export type JobError = {
   code: string;
   message: string;
@@ -717,6 +732,41 @@ export async function fetchGitHubRepositories(
     cache: "no-store",
   });
   return parseJson<GitHubRepositoryListResponse>(response);
+}
+
+export async function startGitLabConnect(
+  signal?: AbortSignal,
+): Promise<RepoHostingConnectStartResponse> {
+  const response = await apiFetch("/api/auth/repo-hosting/gitlab/connect", {
+    method: "POST",
+    signal,
+  });
+  return parseJson<RepoHostingConnectStartResponse>(response);
+}
+
+export async function completeGitLabConnect(
+  params: { code: string; state: string },
+  signal?: AbortSignal,
+): Promise<RepoHostingConnectCallbackResponse> {
+  const search = new URLSearchParams(params).toString();
+  const response = await apiFetch(
+    `/api/auth/repo-hosting/gitlab/callback?${search}`,
+    {
+      signal,
+      cache: "no-store",
+    },
+  );
+  return parseJson<RepoHostingConnectCallbackResponse>(response);
+}
+
+export async function fetchGitLabRepositories(
+  signal?: AbortSignal,
+): Promise<GitLabRepositoryListResponse> {
+  const response = await apiFetch("/api/auth/repo-hosting/gitlab/repos", {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<GitLabRepositoryListResponse>(response);
 }
 
 export function redirectBrowser(url: string): void {

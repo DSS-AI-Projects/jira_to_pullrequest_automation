@@ -42,33 +42,36 @@ typing a secret into this app's forms. Sources:
     access tokens are **encrypted at rest** (Fernet, `backend/app/core/crypto.py`)
     in SQLite and used preferentially, falling back to shared creds when a user has
     not connected. `JIRA_BASE_URL` still selects which Jira Cloud site to target.
-- **GitHub — delegated OAuth** (`GITHUB_OAUTH_*`): per-user tokens encrypted at rest,
-  used **for repository discovery / quick-picks only**. `git clone` and `git push`
-  both still inherit the machine's ambient git auth (SSH key / credential helper);
-  delegated *git* auth is not built yet. GitLab has a connection-model foundation
-  but no flow.
+- **GitHub and GitLab — delegated OAuth** (`GITHUB_OAUTH_*` / `GITLAB_OAUTH_*`):
+  per-user tokens encrypted at rest, used **for repository discovery / quick-picks
+  only**. `git clone` and `git push` both still inherit the machine's ambient git
+  auth (SSH key / credential helper); delegated *git* auth is not built yet for
+  either provider (see **GitLab OAuth integration** below for the full picture).
   **Each provider's tokens are encrypted under that provider's own Fernet key** —
-  `encrypt_secret()`/`decrypt_secret()` (`backend/app/core/crypto.py`) both take an
-  explicit `provider=` ("jira" or "github", each resolving to its own
-  `..._OAUTH_ENCRYPTION_KEY`) — **every call site must pass it explicitly**; the
-  `provider: str = "jira"` default exists only for Jira's own call sites (which
-  predate GitHub's) and is not a safe "don't care" default for any other provider.
-  A real bug shipped from getting this wrong: `complete_github_authorization()`
-  called `encrypt_secret()` with no `provider=`, silently encrypting under the
-  *Jira* key, while `list_github_repositories()` correctly decrypted with
-  `provider="github"` — every GitHub connection completed while the two keys
-  differed (the normal case) became permanently undecryptable, degrading to the
-  same "Connect your GitHub account before loading repositories" message a
-  never-connected user sees, even though the connect/callback step itself
-  reported success. Caught by extending `test_auth_api.py`'s callback test to
-  actually decrypt what got stored (it previously only checked "not plaintext"),
-  plus a new end-to-end test that deliberately sets differing Jira/GitHub keys —
-  the two existing repo-listing tests had bypassed the bug entirely by
-  constructing their `RepoHostingConnection` fixtures with a correctly-provider'd
-  `encrypt_secret()` call directly, never exercising the real callback code path.
-  No store migration needed for connections saved before the fix: reconnecting
-  overwrites the row (`save_repo_hosting_connection`'s `ON CONFLICT ... DO
-  UPDATE`), so the existing "Disconnect" + "Connect" flow is already the fix.
+  `encrypt_secret()`/`decrypt_secret()` (`backend/app/core/crypto.py`) both take a
+  **required, no-default** `provider=` keyword argument ("jira", "github", or
+  "gitlab", each resolving to its own `..._OAUTH_ENCRYPTION_KEY` via a small
+  per-provider config table). A real bug shipped from `provider` having a default:
+  `complete_github_authorization()` called `encrypt_secret()` with no `provider=`,
+  silently encrypting under whatever the (then-)default was, while
+  `list_github_repositories()` correctly decrypted with `provider="github"` —
+  every GitHub connection completed while the two keys differed (the normal case)
+  became permanently undecryptable, degrading to the same "Connect your GitHub
+  account before loading repositories" message a never-connected user sees, even
+  though the connect/callback step itself reported success. Caught by extending
+  `test_auth_api.py`'s callback test to actually decrypt what got stored (it
+  previously only checked "not plaintext"), plus a new end-to-end test that
+  deliberately sets differing Jira/GitHub keys — the two existing repo-listing
+  tests had bypassed the bug entirely by constructing their `RepoHostingConnection`
+  fixtures with a correctly-provider'd `encrypt_secret()` call directly, never
+  exercising the real callback code path. No store migration needed for
+  connections saved before the fix: reconnecting overwrites the row
+  (`save_repo_hosting_connection`'s `ON CONFLICT ... DO UPDATE`), so the existing
+  "Disconnect" + "Connect" flow is already the fix. Fixed at the root rather than
+  just at the one call site: `provider` was made a required keyword-only argument
+  with no default at all, so a future provider forgetting to pass it is an
+  immediate `TypeError` (caught by pyright/the first test run) instead of a
+  silent wrong-key bug discovered only when decryption fails, weeks later.
 - **Anthropic:** `ANTHROPIC_API_KEY` from env, consumed only by the Agent SDK steps.
 
 Security-architecture changes require the owner's sign-off — propose, don't implement.
@@ -84,6 +87,101 @@ enabled (`backend/app/auth/`, `backend/app/api/auth.py`):
 - Two bootstrap modes: **dev login** (`AUTH_ALLOW_DEV_LOGIN`) and **trusted-proxy
   headers** (`AUTH_TRUSTED_PROXY_*`), the latter validated against an allowlisted
   source CIDR set before any identity header is trusted.
+
+## GitLab OAuth integration
+
+Delegated per-user GitLab OAuth, mirroring the shape of the GitHub integration
+(`backend/app/auth/gitlab_oauth.py`, `app/api/auth.py`'s `POST
+/repo-hosting/gitlab/connect` / `GET /repo-hosting/gitlab/callback` / `GET
+/repo-hosting/gitlab/repos`) — used for repository discovery/quick-picks only,
+same as every other delegated provider in this app; `git clone`/`git push`
+still never see a GitLab token.
+
+- **Supports both gitlab.com and self-hosted instances**, not just gitlab.com:
+  `settings.gitlab_instance_url` (default `https://gitlab.com`) is one
+  configurable base URL used to build every GitLab endpoint the module calls
+  (`/oauth/authorize`, `/oauth/token`, `/api/v4/user`, `/api/v4/projects`) —
+  a self-hosted deployment just points this at its own instance, with no code
+  change. The URL is normalized to strip any trailing slash (a
+  `field_validator` on `Settings.gitlab_instance_url`), since every call site
+  builds paths as an f-string (`f"{gitlab_instance_url}/oauth/token"`) and a
+  trailing slash in the configured value would silently double it.
+- **Outbound HTTPS calls trust the OS certificate store, not just `certifi`.**
+  A self-hosted instance behind a corporate network (this app's own dev/test
+  case: `gitlab.dsslp.com`, issued by an internal Active Directory CA) is
+  trusted by Windows — and therefore by a browser completing the OAuth
+  redirect — but `httpx`'s default `ssl` context only trusts the public roots
+  bundled in `certifi`, so the backend's own token-exchange/user-lookup calls
+  failed with `CERTIFICATE_VERIFY_FAILED` even though the browser leg of the
+  same flow worked fine. `truststore.inject_into_ssl()` (`backend/app/main.py`,
+  called before any other import that could construct an `ssl.SSLContext`)
+  swaps in the OS-native trust store globally for every `httpx` call in the
+  process — not a GitLab-specific patch, so it also covers Jira/GitHub/GitLab
+  OAuth and the Anthropic SDK's own HTTP calls against any future
+  internally-hosted or corporately-proxied endpoint.
+  **Symptom this produces if the underlying SSL failure isn't the first thing
+  checked:** the OAuth state row is consumed (deleted) by
+  `consume_provider_oauth_state()` *before* the token exchange runs, so the
+  callback fails with a generic `REPO_PROVIDER_CALLBACK_FAILED` — but React
+  StrictMode's double-invoked effect (`gitlab-callback-page.tsx`, dev-mode
+  only) fires the callback request twice with the same code/state; the first
+  (real) attempt's response is discarded because the component's cleanup
+  already set `active = false`, and the *second*, redundant attempt is what
+  renders — and since the state was already consumed by attempt one, it
+  reports `REPO_PROVIDER_STATE_INVALID` ("sign-in attempt is missing or
+  expired") instead of the actual SSL error, which is only visible in the
+  backend log. Diagnose from the backend log, not the browser-visible message,
+  the same way `error_max_structured_output_retries` failures are diagnosed
+  above.
+- **Token refresh, unlike GitHub.** This app's GitHub OAuth App config issues
+  long-lived tokens with nothing to refresh, but GitLab access tokens expire
+  in ~2 hours and rotate a refresh token on each use. `_is_token_stale()` /
+  `_get_valid_access_token()` / `_refresh_connection()` model this on
+  `jira_oauth.py`'s existing stale-token/refresh pattern (Jira access tokens
+  have the same short-lived-plus-refresh shape) rather than GitHub's
+  simpler no-refresh module, since GitLab's token lifecycle is the closer
+  match.
+- **Crypto hardening landed alongside this feature, not after it.** Building
+  a third provider onto `crypto.py` was the trigger for removing its unsafe
+  `provider: str = "jira"` default (see the GitHub encryption-key bug above)
+  — `encrypt_secret()`/`decrypt_secret()` now require `provider=` as an
+  explicit keyword with no default, so a GitLab call site that forgot to pass
+  `provider="gitlab"` fails immediately (`TypeError`) instead of silently
+  encrypting under the Jira key the way the GitHub bug did. `_PROVIDERS`, a
+  `dict[str, _ProviderCryptoConfig]` keyed by provider name (`"jira"` /
+  `"github"` / `"gitlab"`, each with its own key-getter, error codes, and
+  label), replaced the old if/elif chain so adding a fourth provider later is
+  a dict entry, not a new branch to remember.
+- **No store or model changes needed.** `RepoHostingConnection`,
+  `RepoHostingConnectionInfo`, and the `store.*_repo_hosting_connection`
+  functions were already provider-agnostic (a `provider` column/field, not a
+  GitHub-specific shape), and the generic `DELETE /repo-hosting/{provider}`
+  route already worked for any provider string. Only
+  `GitLabRepositorySummary`/`GitLabRepositoryListResponse` (`app/auth/models.py`)
+  were new, for GitLab API v4's own repo-list response shape (`path_with_namespace`,
+  `http_url_to_repo`, etc., distinct from GitHub's field names).
+- **No `disconnect_gitlab_connection()` was added, deliberately.** Reading
+  `github_oauth.py` for this feature surfaced that its own
+  `disconnect_github_connection()` is dead code — the real disconnect route
+  uses the generic `disconnect_repo_hosting_connection`
+  (`app/auth/repo_hosting.py`) instead. Replicating the same redundancy for
+  GitLab would just be more unused code to maintain.
+- **Frontend:** `startGitLabConnect()` / `completeGitLabConnect()` /
+  `fetchGitLabRepositories()` (`frontend/src/lib/api.ts`); a dedicated
+  callback page (`gitlab-callback-page.tsx`, routed at
+  `src/app/auth/gitlab/callback/page.tsx`, mirroring the GitHub callback
+  page); `auth-gate.tsx`'s `handleRepoProviderConnect` gained a `GITLAB`
+  branch plus flash-message/URL-cleanup handling for the GitLab redirect.
+  `job-form.tsx` fetches GitLab repos alongside GitHub ones and lists
+  "Connected GitLab repos" as quick-picks the same way; fixed in the same
+  change — the GitHub-fetch failure path used to `return` early out of the
+  loading effect, which would have skipped the GitLab fetch entirely once it
+  was added right after; it now falls through instead.
+- **Tests:** 9 new backend tests (`test_auth_api.py`) covering connect/callback/repos
+  happy paths, token-refresh-on-stale-token, and the self-hosted-instance-URL
+  case; 2 new frontend tests for the callback page
+  (`gitlab-callback-page.test.tsx`) plus updated `auth-gate.test.tsx` /
+  `job-form.test.tsx` coverage for the connect flow and quick-picks.
 
 ## Security invariants — each backed by a mechanical check
 
@@ -747,23 +845,23 @@ the header only when the signed-in user's role is `ADMIN`.
 
 **In:** non-secret form; a Jira ticket or an uploaded PDF requirement document as
 alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
-delegated Jira/GitHub OAuth with encrypted-at-rest tokens (used for repository
-discovery only — see below); async jobs with SQLite store + polling status
-screen; the plan pipeline (fetch/clone/map/plan); an isolated-clone implement +
-validate phase, available for local *and* remote repos alike; a single,
-explicitly opt-in validation-correction pass after a failed validation; creating
-a branch and committing the reviewed diff inside the isolated workspace, then
-pushing it to the repo's real remote using ambient git auth (never force-pushes,
-never opens a pull request); plan and diff review screens; a paginated
-job-history list scoped to the owner (admins/no-auth-mode see all); an
-admin-only per-user cost-usage dashboard; typed errors; quality gates;
+delegated Jira/GitHub/GitLab OAuth with encrypted-at-rest tokens (used for
+repository discovery only — see below); async jobs with SQLite store + polling
+status screen; the plan pipeline (fetch/clone/map/plan); an isolated-clone
+implement + validate phase, available for local *and* remote repos alike; a
+single, explicitly opt-in validation-correction pass after a failed validation;
+creating a branch and committing the reviewed diff inside the isolated
+workspace, then pushing it to the repo's real remote using ambient git auth
+(never force-pushes, never opens a pull request); plan and diff review screens;
+a paginated job-history list scoped to the owner (admins/no-auth-mode see all);
+an admin-only per-user cost-usage dashboard; typed errors; quality gates;
 security-invariant tests; a reference shared-deployment stack under `deploy/`.
 
 **Out (not built; do not scaffold):** opening a pull request; delegated *git*
 auth (clone and push both still use ambient credentials only — no per-user
-token, including the already-connected GitHub OAuth token, is ever handed to a
-git subprocess); the GitLab OAuth flow; a durable workflow engine; a
-network-locked sandbox; an embeddings/vector index.
+token, including the already-connected GitHub/GitLab OAuth token, is ever
+handed to a git subprocess); a durable workflow engine; a network-locked
+sandbox; an embeddings/vector index.
 
 ## Stack
 
@@ -777,6 +875,10 @@ network-locked sandbox; an embeddings/vector index.
 - Requirement documents: `pypdf` for PDF text extraction; `python-multipart` for
   the job-create endpoint's multipart form/file handling.
 - Crypto: Fernet for provider tokens at rest.
+- TLS trust: `truststore` (injected in `app/main.py`) makes every outbound
+  `httpx` call use the OS certificate store instead of `certifi`'s public-only
+  bundle — required for any self-hosted/internal provider instance whose
+  certificate chains to an internal CA (see **GitLab OAuth integration**).
 - Deploy: `deploy/` holds an nginx + oauth2-proxy reference stack, Dockerfiles, and
   provider setup docs (e.g. Azure Entra ID).
 

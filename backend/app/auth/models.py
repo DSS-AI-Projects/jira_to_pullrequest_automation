@@ -373,6 +373,28 @@ class GitHubRepositoryListResponse(BaseModel):
     repos: list[GitHubRepositorySummary]
 
 
+class GitLabRepositorySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    name: str
+    # GitLab's own field name for what GitHub calls full_name — kept as-is
+    # (not renamed to full_name) so it's obvious this is GitLab's own shape,
+    # e.g. "group/subgroup/project", not a 1:1 re-skin of the GitHub type.
+    path_with_namespace: str
+    web_url: str
+    http_url_to_repo: str
+    default_branch: str | None = None
+    namespace: str
+    private: bool
+
+
+class GitLabRepositoryListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repos: list[GitLabRepositorySummary]
+
+
 class ProviderOAuthState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

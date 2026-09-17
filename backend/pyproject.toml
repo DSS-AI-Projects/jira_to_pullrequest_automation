@@ -16,6 +16,7 @@ dependencies = [
     "claude-agent-sdk>=0.2.115",
     "pypdf>=5.0",
     "python-multipart>=0.0.20",
+    "truststore>=0.9",
 ]
 
 [dependency-groups]

@@ -7,9 +7,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createJob,
   fetchGitHubRepositories,
+  fetchGitLabRepositories,
   fetchRepos,
   isAbortError,
   type GitHubRepositorySummary,
+  type GitLabRepositorySummary,
   type RepoChoice,
   type RepoList,
 } from "@/lib/api";
@@ -38,6 +40,7 @@ export function JobForm() {
   const [retriedClarifications, setRetriedClarifications] = useState("");
   const [repos, setRepos] = useState<RepoChoice[]>([]);
   const [githubRepos, setGitHubRepos] = useState<GitHubRepositorySummary[]>([]);
+  const [gitlabRepos, setGitLabRepos] = useState<GitLabRepositorySummary[]>([]);
   const [allowedHosts, setAllowedHosts] = useState<string[]>([]);
   const [localRepoSupport, setLocalRepoSupport] = useState<
     RepoList["local_repo_support"] | null
@@ -96,9 +99,33 @@ export function JobForm() {
             if (active) {
               setGitHubRepos([]);
             }
+          } else {
+            throw githubError;
+          }
+        }
+        try {
+          const gitlabResponse = await fetchGitLabRepositories(
+            controller.signal,
+          );
+          if (active) {
+            setGitLabRepos(gitlabResponse.repos);
+          }
+        } catch (gitlabError) {
+          if (!active || isAbortError(gitlabError)) {
             return;
           }
-          throw githubError;
+          if (
+            gitlabError instanceof Error &&
+            /connect your gitlab account before loading repositories/i.test(
+              gitlabError.message,
+            )
+          ) {
+            if (active) {
+              setGitLabRepos([]);
+            }
+            return;
+          }
+          throw gitlabError;
         }
       } catch (repoError) {
         if (!active || isAbortError(repoError)) {
@@ -128,17 +155,28 @@ export function JobForm() {
         ? "Enter an approved absolute local path to a Git working tree, or a plain source folder (no .git required)."
         : "Enter an approved absolute local path to a Git working tree.";
     }
-    if (githubRepos.length > 0 && repos.length > 0) {
-      return "Pick a connected GitHub repo, use a pre-configured repo, or enter an allowed repository URL.";
+    const connectedLabels = [
+      githubRepos.length > 0 ? "GitHub" : null,
+      gitlabRepos.length > 0 ? "GitLab" : null,
+    ].filter((label): label is string => label !== null);
+
+    if (connectedLabels.length > 0 && repos.length > 0) {
+      return `Pick a connected ${connectedLabels.join("/")} repo, use a pre-configured repo, or enter an allowed repository URL.`;
     }
-    if (githubRepos.length > 0) {
-      return "Pick a connected GitHub repo below or enter an allowed repository URL.";
+    if (connectedLabels.length > 0) {
+      return `Pick a connected ${connectedLabels.join("/")} repo below or enter an allowed repository URL.`;
     }
     if (repos.length === 0) {
       return "Enter an allowed repository URL or pre-configured repo name.";
     }
     return "Pick a pre-configured repo below or enter an allowed repository URL.";
-  }, [githubRepos.length, localRepoSupport, repoMode, repos.length]);
+  }, [
+    githubRepos.length,
+    gitlabRepos.length,
+    localRepoSupport,
+    repoMode,
+    repos.length,
+  ]);
 
   const repoLabel =
     repoMode === "local"
@@ -383,6 +421,11 @@ export function JobForm() {
                 {repoOption.full_name}
               </option>
             ))}
+            {gitlabRepos.map((repoOption) => (
+              <option key={repoOption.id} value={repoOption.http_url_to_repo}>
+                {repoOption.path_with_namespace}
+              </option>
+            ))}
             {repos.map((repoOption) => (
               <option key={repoOption.name} value={repoOption.name}>
                 {repoOption.url}
@@ -402,6 +445,24 @@ export function JobForm() {
                     type="button"
                   >
                     {repoOption.full_name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {repoMode === "remote" && gitlabRepos.length > 0 ? (
+            <div className="quick-picks">
+              <span className="quick-picks-label">Connected GitLab repos</span>
+              <div className="pill-row">
+                {gitlabRepos.map((repoOption) => (
+                  <button
+                    className="pill-button"
+                    key={repoOption.id}
+                    onClick={() => setRepo(repoOption.http_url_to_repo)}
+                    type="button"
+                  >
+                    {repoOption.path_with_namespace}
                   </button>
                 ))}
               </div>

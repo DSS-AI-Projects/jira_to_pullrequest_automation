@@ -9,6 +9,11 @@ from app.auth.github_oauth import (
     create_github_authorization_request,
     list_github_repositories,
 )
+from app.auth.gitlab_oauth import (
+    complete_gitlab_authorization,
+    create_gitlab_authorization_request,
+    list_gitlab_repositories,
+)
 from app.auth.jira_oauth import (
     complete_authorization,
     create_authorization_request,
@@ -19,6 +24,7 @@ from app.auth.models import (
     CurrentUser,
     DevLoginRequest,
     GitHubRepositoryListResponse,
+    GitLabRepositoryListResponse,
     JiraAuthStatus,
     JiraConnectCallbackResponse,
     JiraConnectStartResponse,
@@ -220,6 +226,61 @@ async def github_repo_hosting_repos(request: Request) -> GitHubRepositoryListRes
             ),
         )
     return await list_github_repositories(user, _store(request))
+
+
+@router.post("/repo-hosting/gitlab/connect", response_model=RepoHostingConnectStartResponse)
+async def gitlab_repo_hosting_connect(request: Request) -> RepoHostingConnectStartResponse:
+    user = require_current_user(request)
+    if user is None:
+        raise AppError(
+            ErrorCode.AUTH_NOT_AVAILABLE,
+            user_message=(
+                "Per-user repository provider connections require app authentication to be enabled."
+            ),
+        )
+    return create_gitlab_authorization_request(user, _store(request), get_settings())
+
+
+@router.get("/repo-hosting/gitlab/callback", response_model=RepoHostingConnectCallbackResponse)
+async def gitlab_repo_hosting_callback(
+    request: Request,
+    code: str,
+    state: str,
+    error: str | None = None,
+) -> RepoHostingConnectCallbackResponse:
+    user = require_current_user(request)
+    if user is None:
+        raise AppError(
+            ErrorCode.AUTH_NOT_AVAILABLE,
+            user_message=(
+                "Per-user repository provider connections require app authentication to be enabled."
+            ),
+        )
+    if error:
+        raise AppError(
+            ErrorCode.REPO_PROVIDER_CALLBACK_FAILED,
+            internal_detail=f"gitlab callback error={error}",
+        )
+    return await complete_gitlab_authorization(
+        user=user,
+        store=_store(request),
+        settings=get_settings(),
+        code=code,
+        state=state,
+    )
+
+
+@router.get("/repo-hosting/gitlab/repos", response_model=GitLabRepositoryListResponse)
+async def gitlab_repo_hosting_repos(request: Request) -> GitLabRepositoryListResponse:
+    user = require_current_user(request)
+    if user is None:
+        raise AppError(
+            ErrorCode.AUTH_NOT_AVAILABLE,
+            user_message=(
+                "Per-user repository provider connections require app authentication to be enabled."
+            ),
+        )
+    return await list_gitlab_repositories(user, _store(request), get_settings())
 
 
 @router.delete("/repo-hosting/{provider}", response_model=LogoutResponse)

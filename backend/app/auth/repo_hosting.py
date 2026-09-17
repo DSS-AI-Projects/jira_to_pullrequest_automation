@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.auth.github_oauth import github_oauth_is_configured
+from app.auth.gitlab_oauth import gitlab_oauth_is_configured
 from app.auth.models import (
     RepoHostingConnectionInfo,
     RepoHostingProvider,
@@ -26,18 +28,14 @@ def _provider_enabled(provider: RepoHostingProvider, settings: Settings) -> bool
 
 
 def _provider_configured(provider: RepoHostingProvider, settings: Settings) -> bool:
+    # Delegates to each module's own is_configured() check — the single
+    # source of truth for "can this provider's flow actually run", since it
+    # also checks the client secret and encryption key (secrets.py), not
+    # just the non-secret Settings fields checked here before GitLab's flow
+    # existed.
     if provider == RepoHostingProvider.GITHUB:
-        return bool(
-            settings.github_oauth_enabled
-            and settings.github_oauth_client_id
-            and settings.github_oauth_callback_url
-            and settings.github_oauth_scopes
-        )
-    return bool(
-        settings.gitlab_oauth_enabled
-        and settings.gitlab_oauth_client_id
-        and settings.gitlab_oauth_callback_url
-    )
+        return github_oauth_is_configured(settings)
+    return gitlab_oauth_is_configured(settings)
 
 
 def get_repo_hosting_status(user: User, store: JobStore, settings: Settings) -> RepoHostingStatus:
