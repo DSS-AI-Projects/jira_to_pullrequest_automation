@@ -136,8 +136,9 @@ class Settings(BaseSettings):
     agent_timeout_seconds: int = 600
     # Token-saving controls (see docs). Stub returns a canned plan with NO API
     # call (pipeline testing without credits). Cache reuses a prior plan for the
-    # same ticket+repo inputs. Repo-doc injection front-loads CLAUDE.md/AGENTS.md
-    # so the agent needs fewer exploration reads.
+    # same ticket+repo inputs. Repo-doc injection front-loads CLAUDE.md/AGENTS.md/
+    # SKILLS.md/README.md (first present wins) so the agent needs fewer
+    # exploration reads.
     agent_plan_stub: bool = False
     agent_plan_cache_enabled: bool = True
     agent_repo_doc_max_chars: int = 8000

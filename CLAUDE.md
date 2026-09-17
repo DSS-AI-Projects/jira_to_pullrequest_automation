@@ -251,8 +251,12 @@ every stub plan carries an unmistakable marker so it is never confused with a
 real, model-generated plan; `AGENT_PLAN_CACHE_ENABLED` (on by default) memoizes plans on a
 hash of prompt+model+effort+schema so identical ticket+repo re-runs cost zero
 tokens (`backend/app/steps/plan_cache.py`); the planner front-loads the repo's own
-`CLAUDE.md`/`AGENTS.md`/`README` (capped by `AGENT_REPO_DOC_MAX_CHARS`) so it needs
-fewer exploration reads; and a **deterministic repo digest**
+`CLAUDE.md`/`AGENTS.md`/`SKILLS.md`/`README.md` (`_REPO_DOC_NAMES` in
+`plan_agent.py`, first one present wins, capped by `AGENT_REPO_DOC_MAX_CHARS`) so
+it needs fewer exploration reads — this is planning-only: the implementation
+step (`implement_agent.py`) doesn't front-load any doc file, though its
+`Read`/`Grep`/`Glob` tools can still surface one incidentally during its own
+exploration of the clone; and a **deterministic repo digest**
 (`backend/app/steps/repo_digest.py`, zero tokens) — languages, top-level layout,
 key files, core modules by symbol count, README excerpt — is computed once per
 repo state, cached (`AGENT_REPO_DIGEST_*`), and injected into every plan so the

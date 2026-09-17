@@ -57,9 +57,9 @@ ticket against a checked-out repository.
 
 You are given the ticket content, text extracted from any PDF attachments on
 the ticket, a repo map, and (when present) the repository's own guidance file
-(CLAUDE.md / AGENTS.md / README). You can read and search files with your
-tools. Investigate enough to make the plan concrete: name real files, real
-symbols, and specific changes.
+(CLAUDE.md / AGENTS.md / SKILLS.md / README). You can read and search files
+with your tools. Investigate enough to make the plan concrete: name real
+files, real symbols, and specific changes.
 
 Be economical: lean on the repo guidance and the repo map first, then read only
 the few files you actually need. Do not re-read files, and do not explore
@@ -91,7 +91,7 @@ starts; call that out explicitly as an open question or risk when it applies.
 """
 
 
-_REPO_DOC_NAMES = ("CLAUDE.md", "AGENTS.md", "README.md")
+_REPO_DOC_NAMES = ("CLAUDE.md", "AGENTS.md", "SKILLS.md", "README.md")
 
 
 def read_repo_doc(clone_path: Path, max_chars: int) -> str | None:

@@ -450,6 +450,24 @@ def test_repo_doc_is_capped(tmp_path: Path) -> None:
     assert "repo guidance truncated" in doc
 
 
+def test_repo_doc_finds_skills_md_when_present(tmp_path: Path) -> None:
+    (tmp_path / "SKILLS.md").write_text("Skill: run tests with `make test`.", encoding="utf-8")
+    doc = plan_agent.read_repo_doc(tmp_path, max_chars=8000)
+    assert doc is not None and "run tests with `make test`" in doc
+    prompt = build_prompt(ticket(), repo_map(), doc)
+    assert "<repo_guidance note=" in prompt
+    assert "run tests with `make test`" in prompt
+
+
+def test_repo_doc_prefers_claude_md_over_skills_md(tmp_path: Path) -> None:
+    (tmp_path / "CLAUDE.md").write_text("Architecture overview.", encoding="utf-8")
+    (tmp_path / "SKILLS.md").write_text("Skill: run tests with `make test`.", encoding="utf-8")
+    doc = plan_agent.read_repo_doc(tmp_path, max_chars=8000)
+    assert doc is not None
+    assert "Architecture overview" in doc
+    assert "make test" not in doc
+
+
 async def test_cache_token_usage_is_recorded(
     agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
