@@ -80,8 +80,14 @@ def _scrub_origin_url(url: str | None) -> str | None:
     return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
-def build_clone_command(repo_url: str, dest: Path, *, local_source: bool = False) -> list[str]:
-    """Pure command builder (tested): shallow, single-branch, no credentials."""
+def build_clone_command(
+    repo_url: str, dest: Path, *, local_source: bool = False, branch: str | None = None
+) -> list[str]:
+    """Pure command builder (tested): shallow, single-branch, no credentials.
+
+    `branch`, when given, clones that branch instead of the remote's default
+    (e.g. "develop", or an existing ticket branch) — see Job.base_branch.
+    """
     command = [
         "git",
         "clone",
@@ -90,6 +96,8 @@ def build_clone_command(repo_url: str, dest: Path, *, local_source: bool = False
         "--single-branch",
         "--no-tags",
     ]
+    if branch:
+        command.extend(["--branch", branch])
     if local_source:
         # Prevent local clones from using shared local clone optimizations.
         command.extend(["--no-local", "--no-hardlinks"])
@@ -104,6 +112,17 @@ def _is_local_repo_path(repo_url: str) -> bool:
 def _branch_matches_ticket(branch: str, ticket_key: str) -> bool:
     pattern = re.compile(rf"(^|[^A-Z0-9]){re.escape(ticket_key.upper())}($|[^A-Z0-9])")
     return bool(pattern.search(branch.upper()))
+
+
+def _looks_like_missing_branch_error(stderr_text: str) -> bool:
+    """Heuristic, not exact: git's own wording for "that --branch doesn't
+    exist" has been stable across versions ("Remote branch <name> not found
+    in upstream <remote>") but isn't a documented contract. Used only to pick
+    a clearer typed error (BASE_BRANCH_NOT_FOUND) when a base_branch was
+    explicitly requested; any other clone failure still falls through to the
+    generic CLONE_FAILED."""
+    lowered = stderr_text.lower()
+    return "remote branch" in lowered and "not found" in lowered
 
 
 def _run_git(args: list[str], cwd: Path, env: dict[str, str], timeout_seconds: int) -> str:
@@ -288,7 +307,13 @@ def _populate_folder_workspace(
     )
 
 
-async def clone_repo(job_id: str, ticket_key: str, repo_url: str, workdir: Path) -> CloneResult:
+async def clone_repo(
+    job_id: str,
+    ticket_key: str,
+    repo_url: str,
+    workdir: Path,
+    base_branch: str | None = None,
+) -> CloneResult:
     settings = get_settings()
     dest = workdir / job_id / "repo"
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -303,6 +328,16 @@ async def clone_repo(job_id: str, ticket_key: str, repo_url: str, workdir: Path)
         if not is_git and not settings.allow_local_non_git_folders:
             raise AppError(ErrorCode.LOCAL_REPO_NOT_GIT)
         if not is_git:
+            # A plain folder has no git history at all, so there is no branch
+            # to clone from — a base_branch here is a contradiction, not
+            # something to silently ignore.
+            if base_branch:
+                raise AppError(
+                    ErrorCode.INPUT_INVALID,
+                    user_message=(
+                        "A base branch cannot be specified for a local folder with no Git history."
+                    ),
+                )
             logger.info("job %s: populating workspace from non-git folder %s", job_id, repo_url)
             repo_info = await asyncio.to_thread(
                 _populate_folder_workspace,
@@ -330,17 +365,21 @@ async def clone_repo(job_id: str, ticket_key: str, repo_url: str, workdir: Path)
         # never mistaken for the synthetic form and correctly still gets
         # branch-matched.
         is_synthetic_document_key = bool(_SYNTHETIC_DOCUMENT_KEY_RE.fullmatch(ticket_key))
+        # When base_branch is given, check *that* against the ticket key —
+        # it's the branch the workspace will actually be built on, not
+        # whatever happens to be checked out in the source right now.
+        branch_to_check = base_branch or source_info.branch or ""
         if (
             settings.require_local_branch_ticket_match
             and not is_synthetic_document_key
-            and not _branch_matches_ticket(source_info.branch or "", ticket_key)
+            and not _branch_matches_ticket(branch_to_check, ticket_key)
         ):
             raise AppError(
                 ErrorCode.LOCAL_REPO_BRANCH_MISMATCH,
-                internal_detail=f"branch={source_info.branch} ticket={ticket_key}",
+                internal_detail=f"branch={branch_to_check} ticket={ticket_key}",
             )
 
-    command = build_clone_command(repo_url, dest, local_source=is_local_source)
+    command = build_clone_command(repo_url, dest, local_source=is_local_source, branch=base_branch)
     logger.info("job %s: cloning %s", job_id, repo_url)
 
     try:
@@ -365,7 +404,10 @@ async def clone_repo(job_id: str, ticket_key: str, repo_url: str, workdir: Path)
         ) from exc
 
     if completed.returncode != 0:
-        detail = redact((completed.stderr or completed.stdout or "").strip())[:2000]
+        raw_stderr = completed.stderr or completed.stdout or ""
+        detail = redact(raw_stderr.strip())[:2000]
+        if base_branch and _looks_like_missing_branch_error(raw_stderr):
+            raise AppError(ErrorCode.BASE_BRANCH_NOT_FOUND, internal_detail=detail)
         raise AppError(ErrorCode.CLONE_FAILED, internal_detail=detail)
 
     logger.info("job %s: clone complete", job_id)
@@ -375,4 +417,10 @@ async def clone_repo(job_id: str, ticket_key: str, repo_url: str, workdir: Path)
         env,
         settings.clone_timeout_seconds,
     )
+    if source_info is not None and base_branch:
+        # source_info.branch reflects the LOCAL source's own ambient checkout
+        # (captured before cloning), which is no longer necessarily what got
+        # cloned into the workspace once a base_branch override is honored —
+        # report the branch actually in play, not the source's unrelated one.
+        repo_info = repo_info.model_copy(update={"branch": base_branch})
     return CloneResult(clone_path=dest, repo_info=repo_info)

@@ -268,6 +268,7 @@ export function JobStatusView(props: { jobId: string }) {
       ticket: job.requirement_source === "DOCUMENT" ? "" : job.ticket_key,
       repo: job.repo_url,
       repoMode: isLocalSource(job) ? "local" : "remote",
+      baseBranch: job.base_branch ?? "",
       planningNotes: job.planning_notes ?? "",
       requirementSource: job.requirement_source,
       requirementDocumentName: job.requirement_document_name,

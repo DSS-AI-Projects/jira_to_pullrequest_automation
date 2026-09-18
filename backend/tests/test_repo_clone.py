@@ -67,6 +67,17 @@ def test_local_clone_command_disables_hardlinks() -> None:
     assert "--no-local" in command
 
 
+def test_clone_command_omits_branch_flag_by_default() -> None:
+    command = build_clone_command("https://github.com/acme/repo", Path("dest"))
+    assert "--branch" not in command
+
+
+def test_clone_command_includes_branch_flag_when_base_branch_given() -> None:
+    command = build_clone_command("https://github.com/acme/repo", Path("dest"), branch="develop")
+    assert "--branch" in command
+    assert command[command.index("--branch") + 1] == "develop"
+
+
 async def test_clone_succeeds_from_local_fixture_repo(tmp_path: Path) -> None:
     source = make_source_repo(tmp_path)
     result = await clone_repo("job1", "PROJ-1", str(source), tmp_path / "workdir")
@@ -361,3 +372,77 @@ async def test_local_repo_branch_match_is_accepted_when_required(
     result = await clone_repo("job_branch_ok", "KAN-25", str(source), tmp_path / "workdir")
 
     assert result.repo_info.branch == "feature/KAN-25-local"
+
+
+async def test_remote_clone_with_base_branch_checks_out_that_branch(tmp_path: Path) -> None:
+    source = make_source_repo(tmp_path)
+    subprocess.run(["git", "-C", str(source), "branch", "develop"], check=True)
+    repo_url = (source / ".git").as_uri()
+
+    result = await clone_repo(
+        "job_base_branch", "PROJ-20", repo_url, tmp_path / "workdir", base_branch="develop"
+    )
+
+    assert result.repo_info.branch == "develop"
+
+
+async def test_clone_with_nonexistent_base_branch_is_a_typed_error(tmp_path: Path) -> None:
+    source = make_source_repo(tmp_path)
+    repo_url = (source / ".git").as_uri()
+
+    with pytest.raises(AppError) as excinfo:
+        await clone_repo(
+            "job_bad_base_branch",
+            "PROJ-21",
+            repo_url,
+            tmp_path / "workdir",
+            base_branch="does-not-exist",
+        )
+
+    assert excinfo.value.code == ErrorCode.BASE_BRANCH_NOT_FOUND
+
+
+async def test_base_branch_is_rejected_for_non_git_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "plain-folder"
+    source.mkdir()
+    (source / "app.py").write_text("print('hi')\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.steps.repo_clone.get_settings", _with_non_git_folders_allowed)
+
+    with pytest.raises(AppError) as excinfo:
+        await clone_repo(
+            "job_folder_base_branch",
+            "PROJ-22",
+            str(source),
+            tmp_path / "workdir",
+            base_branch="develop",
+        )
+
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+async def test_local_repo_branch_match_checks_base_branch_not_checked_out_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The source is checked out on a branch that does NOT match the ticket,
+    but base_branch names one that does — the match check must validate
+    base_branch, since that's what the workspace is actually built on."""
+    source = make_source_repo(tmp_path)
+    subprocess.run(["git", "-C", str(source), "branch", "feature/KAN-30-local"], check=True)
+
+    monkeypatch.setattr(
+        "app.steps.repo_clone.get_settings",
+        lambda: Settings(_env_file=None, require_local_branch_ticket_match=True),  # type: ignore[arg-type]
+    )
+
+    result = await clone_repo(
+        "job_base_branch_match",
+        "KAN-30",
+        str(source),
+        tmp_path / "workdir",
+        base_branch="feature/KAN-30-local",
+    )
+
+    assert result.repo_info.branch == "feature/KAN-30-local"

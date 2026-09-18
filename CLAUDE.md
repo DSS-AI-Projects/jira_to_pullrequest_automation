@@ -341,7 +341,8 @@ auth — `UNAUTHENTICATED`, `FORBIDDEN`, `AUTH_NOT_AVAILABLE`; Jira — `JIRA_CO
 `DOCUMENT_TOO_LARGE`, `DOCUMENT_UNREADABLE`, `DOCUMENT_EMPTY`; repo providers —
 `REPO_PROVIDER_*`; repo/clone —
 `REPO_HOST_NOT_ALLOWED`, `LOCAL_REPO_*` (not-allowed / not-found / not-directory /
-outside-root / not-git / dirty / branch-mismatch), `CLONE_FAILED`, `REPO_MAP_FAILED`;
+outside-root / not-git / dirty / branch-mismatch), `BASE_BRANCH_NOT_FOUND`,
+`CLONE_FAILED`, `REPO_MAP_FAILED`;
 planning — `AGENT_CONFIG_MISSING`, `AGENT_REQUEST_FAILED`, `PLAN_INVALID`,
 `BUDGET_EXCEEDED`; implementation — `IMPLEMENTATION_NOT_READY`,
 `IMPLEMENTATION_NOT_SUPPORTED`, `IMPLEMENTATION_WORKSPACE_MISSING`, `VALIDATION_FAILED`;
@@ -494,6 +495,39 @@ By default a local path must point to a Git work tree; dirty repos are rejected
 unless `ALLOW_DIRTY_LOCAL_REPOS`, and `REQUIRE_LOCAL_BRANCH_TICKET_MATCH` optionally
 requires the branch name contain the ticket key. `RepoInfo` (source kind, branch,
 commit SHA, origin URL, dirty flag) is captured on the job.
+
+**Optional base branch.** The job-creation form also accepts an optional
+`base_branch` (`Job.base_branch`) — an existing branch to clone from (e.g.
+`develop`, or an in-progress ticket branch) instead of the repo's default
+branch. Blank means today's unchanged behavior. It's threaded straight into
+the clone command (`build_clone_command`'s `branch=` param → `git clone
+--branch <name>`) for both `REMOTE` and `LOCAL` (git work tree) sources —
+`git clone --branch` accepts a local path exactly like a remote URL, so no
+separate code path was needed. A `LOCAL_FOLDER` source (no git history) has
+no branch to clone from at all, so a supplied `base_branch` there is rejected
+with `INPUT_INVALID` rather than silently ignored.
+
+- **A bad branch name gets a distinct, clearer error.** `BASE_BRANCH_NOT_FOUND`
+  is raised instead of the generic `CLONE_FAILED` when `base_branch` was set
+  and git's own stderr looks like a missing-ref error (`_looks_like_missing_branch_error`
+  — a heuristic string match on git's stable-but-undocumented wording, not a
+  guaranteed contract; any other clone failure still falls through to
+  `CLONE_FAILED` as before).
+- **`REQUIRE_LOCAL_BRANCH_TICKET_MATCH` validates `base_branch`, not the
+  source's ambient checkout, when one is given.** For a `LOCAL` source this
+  check used to always validate whatever branch happened to be checked out
+  in the developer's own working copy — correct when that's also what gets
+  cloned, but once `base_branch` can differ from the ambient checkout, the
+  check must validate the branch the workspace is actually being built on.
+- **`RepoInfo.branch` reflects what was actually cloned, not the source's
+  ambient checkout.** For a `LOCAL` source, `RepoInfo` is normally captured
+  from the source *before* cloning (a deliberate choice — it reports the
+  developer's own local checkout state). With `base_branch` in play that
+  source-side snapshot would be stale the moment the override differs
+  from what's checked out locally, so `clone_repo` overwrites just the
+  `branch` field with `base_branch` afterward when one was given — everything
+  else about the source snapshot (dirty flag, origin URL, local path) is
+  still correct and left alone.
 
 A separate opt-in, `ALLOW_LOCAL_NON_GIT_FOLDERS`, additionally accepts a plain source
 folder with no `.git` (`RepoSourceKind.LOCAL_FOLDER`) — e.g. an unpacked source tree

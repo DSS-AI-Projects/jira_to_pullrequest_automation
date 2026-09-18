@@ -41,6 +41,7 @@ class ErrorCode(StrEnum):
     LOCAL_REPO_NOT_GIT = "LOCAL_REPO_NOT_GIT"
     LOCAL_REPO_DIRTY = "LOCAL_REPO_DIRTY"
     LOCAL_REPO_BRANCH_MISMATCH = "LOCAL_REPO_BRANCH_MISMATCH"
+    BASE_BRANCH_NOT_FOUND = "BASE_BRANCH_NOT_FOUND"
     CLONE_FAILED = "CLONE_FAILED"
     REPO_MAP_FAILED = "REPO_MAP_FAILED"
     AGENT_CONFIG_MISSING = "AGENT_CONFIG_MISSING"
@@ -125,6 +126,9 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ),
     ErrorCode.LOCAL_REPO_BRANCH_MISMATCH: (
         "The local repository branch does not match the Jira ticket key."
+    ),
+    ErrorCode.BASE_BRANCH_NOT_FOUND: (
+        "The specified base branch does not exist on that repository."
     ),
     ErrorCode.CLONE_FAILED: (
         "Cloning the repository failed. Check the URL and that your machine's "
@@ -211,6 +215,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.LOCAL_REPO_NOT_GIT: 400,
     ErrorCode.LOCAL_REPO_DIRTY: 400,
     ErrorCode.LOCAL_REPO_BRANCH_MISMATCH: 400,
+    ErrorCode.BASE_BRANCH_NOT_FOUND: 400,
     ErrorCode.IMPLEMENTATION_NOT_READY: 400,
     ErrorCode.IMPLEMENTATION_NOT_SUPPORTED: 400,
     ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING: 400,

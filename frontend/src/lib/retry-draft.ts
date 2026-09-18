@@ -8,6 +8,11 @@ export type RetryDraft = {
   ticket: string;
   repo: string;
   repoMode: "remote" | "local";
+  // The branch the failed job was cloned from, if any — "" means "use the
+  // repo's default branch" (today's unchanged behavior). Defensive fallback
+  // for a draft saved by an older build predates this field, so
+  // consumeRetryDraft's caller must still handle it being undefined.
+  baseBranch: string;
   planningNotes: string;
   // A document upload can't be carried forward (files aren't persisted in
   // sessionStorage) — requirementDocumentName is shown so the user knows

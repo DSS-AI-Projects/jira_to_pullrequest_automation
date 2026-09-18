@@ -27,6 +27,7 @@ from app.schemas.inputs import (
     PushBranchRequest,
     RepoChoice,
     load_preconfigured_repos,
+    normalize_base_branch,
     normalize_branch_name,
     normalize_clarifications,
     normalize_commit_message,
@@ -204,6 +205,7 @@ async def create_job(
     request: Request,
     ticket: str | None = Form(default=None, max_length=2000),
     repo: str = Form(..., min_length=1, max_length=2000),
+    base_branch: str | None = Form(default=None, max_length=2000),
     planning_notes: str | None = Form(default=None, max_length=4000),
     requirement_document: UploadFile | None = File(default=None),  # noqa: B008
     document_ticket_key: str | None = Form(default=None, max_length=2000),
@@ -214,6 +216,7 @@ async def create_job(
     reject_unknown_form_fields(set(form.keys()), JOB_CREATE_FORM_FIELDS)
     require_exactly_one_requirement_source(ticket, requirement_document is not None)
     repo_url = normalize_repo(repo, settings)
+    base_branch_normalized = normalize_base_branch(base_branch)
     planning_notes_normalized = normalize_planning_notes(planning_notes)
 
     document_content: bytes | None = None
@@ -239,6 +242,7 @@ async def create_job(
         planning_notes=planning_notes_normalized,
         requirement_source=requirement_source,
         requirement_document_name=requirement_document_name,
+        base_branch=base_branch_normalized,
     )
 
     if document_content is not None:

@@ -51,7 +51,14 @@ def make_fake_steps() -> JobSteps:
         del store
         return TicketData(key=job.ticket_key, summary="A ticket", description="Do the thing.")
 
-    async def clone_repo(job_id: str, ticket_key: str, repo_url: str, workdir: Path) -> CloneResult:
+    async def clone_repo(
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
+    ) -> CloneResult:
+        del base_branch
         return CloneResult(
             clone_path=workdir / job_id,
             repo_info=RepoInfo(

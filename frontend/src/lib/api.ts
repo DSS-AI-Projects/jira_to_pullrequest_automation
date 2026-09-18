@@ -211,6 +211,7 @@ export type Job = {
   requirement_source: RequirementSource;
   requirement_document_name: string | null;
   repo_url: string;
+  base_branch: string | null;
   planning_notes: string | null;
   state: JobState;
   error: JobError | null;
@@ -446,6 +447,7 @@ export async function createJob(
   payload: {
     ticket?: string;
     repo: string;
+    base_branch?: string;
     planning_notes?: string;
     requirement_document?: File;
     // Optional real Jira ticket key/URL alongside an uploaded PDF — most
@@ -465,6 +467,9 @@ export async function createJob(
     formData.append("ticket", payload.ticket);
   }
   formData.append("repo", payload.repo);
+  if (payload.base_branch !== undefined) {
+    formData.append("base_branch", payload.base_branch);
+  }
   if (payload.planning_notes !== undefined) {
     formData.append("planning_notes", payload.planning_notes);
   }

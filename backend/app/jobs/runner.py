@@ -71,7 +71,7 @@ class JobSteps:
     """The job steps, injectable for tests."""
 
     fetch_ticket: Callable[[Job, JobStore], Awaitable[TicketData]]
-    clone_repo: Callable[[str, str, str, Path], Awaitable[CloneResult]]
+    clone_repo: Callable[[str, str, str, Path, str | None], Awaitable[CloneResult]]
     build_repo_map: Callable[[Path], Awaitable[RepoMap]]
     generate_plan: Callable[[TicketData, RepoMap, Path, str | None], Awaitable[PlanResult]]
     implement_plan: Callable[
@@ -239,7 +239,7 @@ async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSt
 
         job = _advance(store, job, JobState.CLONING_REPO)
         clone_result = await steps.clone_repo(
-            job.id, job.ticket_key, job.repo_url, settings.workdir
+            job.id, job.ticket_key, job.repo_url, settings.workdir, job.base_branch
         )
         clone_path = clone_result.clone_path
         job.repo_info = clone_result.repo_info

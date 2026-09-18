@@ -142,6 +142,11 @@ class Job(BaseModel):
     requirement_source: RequirementSource = RequirementSource.JIRA
     requirement_document_name: str | None = None
     repo_url: str
+    # An existing branch to clone from instead of the repo's default branch
+    # (e.g. "develop", or an in-progress ticket branch) — None means "use the
+    # remote's default branch", today's unchanged behavior. Distinct from
+    # branch_name below, which is the *new* branch created at commit time.
+    base_branch: str | None = None
     planning_notes: str | None = None
     state: JobState = JobState.QUEUED
     error: JobError | None = None
@@ -220,6 +225,7 @@ class Job(BaseModel):
         planning_notes: str | None = None,
         requirement_source: RequirementSource = RequirementSource.JIRA,
         requirement_document_name: str | None = None,
+        base_branch: str | None = None,
     ) -> Job:
         now = datetime.now(UTC)
         return cls(
@@ -229,6 +235,7 @@ class Job(BaseModel):
             requirement_source=requirement_source,
             requirement_document_name=requirement_document_name,
             repo_url=repo_url,
+            base_branch=base_branch,
             planning_notes=planning_notes,
             created_at=now,
             updated_at=now,

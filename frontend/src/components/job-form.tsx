@@ -26,6 +26,7 @@ export function JobForm() {
   const router = useRouter();
   const [ticket, setTicket] = useState("");
   const [repo, setRepo] = useState("");
+  const [baseBranch, setBaseBranch] = useState("");
   const [planningNotes, setPlanningNotes] = useState("");
   const [repoMode, setRepoMode] = useState<RepoMode>("remote");
   const [requirementMode, setRequirementMode] =
@@ -55,6 +56,7 @@ export function JobForm() {
       setTicket(draft.ticket);
       setRepo(draft.repo);
       setRepoMode(draft.repoMode);
+      setBaseBranch(draft.baseBranch ?? "");
       setPlanningNotes(draft.planningNotes);
       setRetriedClarifications(draft.implementationClarifications);
       if (draft.requirementSource === "DOCUMENT") {
@@ -198,6 +200,7 @@ export function JobForm() {
         const result = await createJob({
           ticket: requirementMode === "jira" ? ticket : undefined,
           repo,
+          base_branch: baseBranch.trim() ? baseBranch : undefined,
           planning_notes: planningNotes,
           requirement_document:
             requirementMode === "document"
@@ -486,6 +489,24 @@ export function JobForm() {
               </div>
             </div>
           ) : null}
+
+          <label className="field">
+            <span>Base branch</span>
+            <small>
+              Optional — clone from this existing branch (e.g. develop, or an
+              in-progress ticket branch) instead of the repo&apos;s default
+              branch.
+            </small>
+            <input
+              autoComplete="off"
+              className="text-input"
+              maxLength={2000}
+              name="baseBranch"
+              onChange={(event) => setBaseBranch(event.target.value)}
+              placeholder="e.g. develop"
+              value={baseBranch}
+            />
+          </label>
 
           <div className="meta-block">
             <span className="meta-label">Allowed hosts</span>

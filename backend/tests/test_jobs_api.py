@@ -85,8 +85,13 @@ def local_client(store: JobStore) -> Iterator[TestClient]:
         )
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -193,8 +198,13 @@ def local_client_with_pushable_remote(store: JobStore, tmp_path: Path) -> Iterat
     )
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         del repo_url
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
@@ -285,8 +295,13 @@ def remote_client(store: JobStore) -> Iterator[TestClient]:
         )
 
     async def remote_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -385,8 +400,13 @@ def local_client_npm_install_failing(store: JobStore) -> Iterator[TestClient]:
         )
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -487,8 +507,13 @@ def local_client_failing_validation(store: JobStore) -> Iterator[TestClient]:
         )
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -606,8 +631,13 @@ def local_folder_client(store: JobStore) -> Iterator[TestClient]:
         )
 
     async def folder_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         del ticket_key
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
@@ -687,6 +717,54 @@ def test_submit_returns_job_id_and_job_reaches_plan_ready(client: TestClient) ->
     plan = body["plan"]
     assert isinstance(plan, dict)
     assert plan["schema_version"] == 2
+
+
+def test_submit_persists_base_branch_and_surfaces_it_on_the_job(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={
+            "ticket": "PROJ-123",
+            "repo": "git@github.com:acme/repo.git",
+            "base_branch": "  develop  ",
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    body = poll_until_terminal(client, job_id)
+    assert body["base_branch"] == "develop"
+
+
+def test_submit_omitted_base_branch_stays_backward_compatible(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs", data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"}
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    body = poll_until_terminal(client, job_id)
+    assert body["base_branch"] is None
+
+
+def test_submit_rejects_credential_shaped_base_branch_never_echoed(
+    client: TestClient, store: JobStore
+) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={
+            "ticket": "PROJ-123",
+            "repo": "git@github.com:acme/repo.git",
+            "base_branch": FAKE_TOKEN,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+    assert FAKE_TOKEN not in response.text
+    with store._lock:  # pyright: ignore[reportPrivateUsage]
+        rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT COUNT(*) FROM jobs"
+        ).fetchone()
+    assert rows[0] == 0
 
 
 def test_submit_persists_planning_notes_and_surfaces_them_on_the_job(

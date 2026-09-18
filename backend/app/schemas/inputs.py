@@ -117,7 +117,14 @@ def normalize_ticket(raw: str, settings: Settings) -> str:
 
 
 JOB_CREATE_FORM_FIELDS = frozenset(
-    {"ticket", "repo", "planning_notes", "requirement_document", "document_ticket_key"}
+    {
+        "ticket",
+        "repo",
+        "base_branch",
+        "planning_notes",
+        "requirement_document",
+        "document_ticket_key",
+    }
 )
 
 
@@ -211,6 +218,17 @@ def normalize_branch_name(raw: str | None) -> str | None:
     the same invariant-1 credential-shape check every free-text field gets.
     """
     return _normalize_free_text(raw, "branch_name")
+
+
+def normalize_base_branch(raw: str | None) -> str | None:
+    """Trim and validate an optional existing branch to clone from (instead
+    of the repo's default branch) at job-creation time.
+
+    Same credential-shape/length check as every other free-text field; git
+    itself is the authority on whether the branch actually exists — that's
+    checked at clone time, not here.
+    """
+    return _normalize_free_text(raw, "base_branch")
 
 
 def normalize_commit_message(raw: str | None) -> str | None:

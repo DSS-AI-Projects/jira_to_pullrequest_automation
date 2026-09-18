@@ -106,6 +106,53 @@ describe("JobForm", () => {
     expect(push).toHaveBeenCalledWith("/jobs/job-123");
   });
 
+  it("submits an optional base branch alongside the repo", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+    createJob.mockResolvedValue({ job_id: "job-base-branch" });
+
+    render(<JobForm />);
+
+    await screen.findByText("github.com");
+    fireEvent.change(screen.getByLabelText(/Jira ticket key or URL/i), {
+      target: { value: "PROJ-42" },
+    });
+    fireEvent.change(
+      screen.getByLabelText(/Repository URL or pre-configured name/i),
+      {
+        target: { value: "https://github.com/acme/repo" },
+      },
+    );
+    fireEvent.change(screen.getByLabelText(/Base branch/i), {
+      target: { value: "develop" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Generate implementation plan/i }),
+    );
+
+    await waitFor(() =>
+      expect(createJob).toHaveBeenCalledWith({
+        ticket: "PROJ-42",
+        repo: "https://github.com/acme/repo",
+        base_branch: "develop",
+        planning_notes: "",
+      }),
+    );
+    expect(push).toHaveBeenCalledWith("/jobs/job-base-branch");
+  });
+
   it("renders backend errors safely", async () => {
     fetchRepos.mockResolvedValue({
       repos: [],

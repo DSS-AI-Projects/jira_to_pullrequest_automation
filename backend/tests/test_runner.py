@@ -90,6 +90,49 @@ async def test_happy_path_reaches_plan_ready(tmp_path: Path) -> None:
     assert final.repo_info.branch == "main"
 
 
+async def test_run_job_passes_base_branch_through_to_clone_repo(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    settings = Settings(_env_file=None, workdir=tmp_path / "workdir")  # type: ignore[call-arg]
+    job = Job.new(
+        ticket_key="PROJ-1", repo_url="https://github.com/acme/repo", base_branch="develop"
+    )
+    store.create(job)
+
+    received: list[str | None] = []
+
+    async def clone_capturing_base_branch(
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
+    ) -> CloneResult:
+        del ticket_key, repo_url
+        received.append(base_branch)
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.REMOTE,
+                branch=base_branch or "main",
+                commit_sha="a" * 40,
+                origin_url="https://github.com/acme/repo",
+                is_dirty=False,
+                local_path=None,
+            ),
+        )
+
+    steps = dataclasses.replace(make_fake_steps(), clone_repo=clone_capturing_base_branch)
+    await run_job(job.id, store, settings, steps)
+
+    assert received == ["develop"]
+    final = store.get(job.id)
+    assert final is not None
+    assert final.repo_info is not None
+    assert final.repo_info.branch == "develop"
+
+
 async def test_run_job_populates_activity_log_from_planning_progress(tmp_path: Path) -> None:
     from app.jobs.runner import PlanResult
     from app.steps.agent_progress import report
@@ -120,8 +163,13 @@ async def test_run_implementation_populates_and_resets_activity_log(tmp_path: Pa
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -261,8 +309,13 @@ async def test_unexpected_crash_yields_generic_internal_error(tmp_path: Path) ->
     store, settings, job = make_env(tmp_path)
 
     async def crashing_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         raise RuntimeError(f"boom with {SECRET}")
 
     steps = dataclasses.replace(make_fake_steps(), clone_repo=crashing_clone)
@@ -282,8 +335,13 @@ async def test_clone_metadata_is_persisted_on_typed_failure(tmp_path: Path) -> N
     store, settings, job = make_env(tmp_path)
 
     async def clone_then_fail(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         return CloneResult(
             clone_path=workdir / job_id,
             repo_info=RepoInfo(
@@ -318,8 +376,13 @@ async def test_implementation_happy_path_reaches_implementation_ready(tmp_path: 
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -407,8 +470,13 @@ async def test_implementation_normalizes_crlf_before_the_agent_and_restores_afte
     seen_content: dict[str, bytes] = {}
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         (clone_path / "Legacy.java").write_bytes(b"class Legacy {\r\n}\r\n")
@@ -479,8 +547,13 @@ async def test_implementation_restores_line_endings_even_when_the_agent_call_fai
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         (clone_path / "Legacy.java").write_bytes(b"class Legacy {\r\n}\r\n")
@@ -545,8 +618,13 @@ async def test_implementation_skips_normalization_when_disabled(tmp_path: Path) 
     store.create(job)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         (clone_path / "Legacy.java").write_bytes(b"class Legacy {\r\n}\r\n")
@@ -606,8 +684,13 @@ async def test_implementation_is_supported_for_local_folder_sources(tmp_path: Pa
     store, settings, job = make_env(tmp_path)
 
     async def folder_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -674,8 +757,13 @@ async def test_implementation_diff_is_captured_even_when_changes_are_committed(
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -742,8 +830,13 @@ async def test_implementation_diff_captures_new_untracked_files(tmp_path: Path) 
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -816,8 +909,13 @@ async def test_claimed_changes_with_no_actual_diff_is_implementation_invalid(
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -895,8 +993,13 @@ async def test_implementation_app_error_yields_typed_failure_with_stage(tmp_path
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -949,8 +1052,13 @@ async def test_implementation_records_usage_from_a_failed_implement_call(tmp_pat
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -1011,8 +1119,13 @@ async def test_implementation_failure_preserves_partial_edits_already_on_disk(
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -1068,8 +1181,13 @@ async def test_validation_app_error_yields_typed_failure_with_stage(tmp_path: Pa
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -1115,8 +1233,13 @@ async def test_reapproval_clears_previous_implementation_artifacts(tmp_path: Pat
     store, settings, job = make_env(tmp_path)
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -1185,8 +1308,13 @@ async def _reach_implementation_ready_with_failed_validation(
     calls: list[str] = []
 
     async def local_clone(
-        job_id: str, ticket_key: str, repo_url: str, workdir: Path
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
     ) -> CloneResult:
+        del base_branch
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
