@@ -177,6 +177,25 @@ still never see a GitLab token.
   change — the GitHub-fetch failure path used to `return` early out of the
   loading effect, which would have skipped the GitLab fetch entirely once it
   was added right after; it now falls through instead.
+  **A related bug shipped from that same fix being too narrow: the GitHub
+  catch only special-cased one exact message** ("Connect your GitHub account
+  before loading repositories." — the *never-connected* case), and re-threw
+  anything else. A *connected-but-rejected* token (expired, revoked,
+  insufficient scope) fails `_fetch_user_repositories`'s own 401/403 check
+  with a *different* message ("GitHub rejected repository access for this
+  connection. Reconnect your GitHub account." — `github_oauth.py`), which
+  the regex missed — re-throwing it past the GitHub `try` still skipped the
+  GitLab fetch (same underlying bug, a different trigger), and surfaced it
+  as a page-level error banner above "Generate implementation plan", even
+  though repo quick-picks are meant to be a best-effort convenience, not a
+  blocker for job creation. Fixed by making both the GitHub and GitLab
+  fetches swallow *any* non-abort failure into an empty repo list — no
+  message-matching at all, so a similar backend wording change can't
+  reintroduce this. Caught by a regression test that reproduces the exact
+  reported symptom (GitHub rejects with that wording, GitLab succeeds) and
+  asserts neither the banner nor a blocked GitLab fetch — verified against
+  the pre-fix code by temporarily reverting just the fix and confirming the
+  test fails with that exact symptom before restoring it.
 - **Tests:** 9 new backend tests (`test_auth_api.py`) covering connect/callback/repos
   happy paths, token-refresh-on-stale-token, and the self-hosted-instance-URL
   case; 2 new frontend tests for the callback page

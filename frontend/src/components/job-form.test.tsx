@@ -365,6 +365,54 @@ describe("JobForm", () => {
     expect(push).toHaveBeenCalledWith("/jobs/job-gitlab");
   });
 
+  it("treats a stale/rejected GitHub token as no quick-picks, not a page error, and still loads GitLab repos", async () => {
+    // Regression test: a connected-but-rejected GitHub token (expired,
+    // revoked, insufficient scope, ...) fails with a *different* message
+    // than "never connected" — the form must not surface that as a
+    // page-level error banner, and must not let it block the GitLab fetch
+    // that runs right after it in the same effect.
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["gitlab.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error(
+        "GitHub rejected repository access for this connection. Reconnect your GitHub account.",
+      ),
+    );
+    fetchGitLabRepositories.mockResolvedValue({
+      repos: [
+        {
+          id: 3001,
+          name: "project-two",
+          path_with_namespace: "octocat/project-two",
+          web_url: "https://gitlab.com/octocat/project-two",
+          http_url_to_repo: "https://gitlab.com/octocat/project-two.git",
+          default_branch: "main",
+          namespace: "octocat",
+          private: false,
+        },
+      ],
+    });
+
+    render(<JobForm />);
+
+    await screen.findByText("Connected GitLab repos");
+    expect(
+      screen.queryByText(/GitHub rejected repository access/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /octocat\/project-two/i }),
+    ).toBeInTheDocument();
+  });
+
   it("prefills from a retry draft left by the job-detail page and clears it", async () => {
     sessionStorage.setItem(
       "jira2pullreq:retry-draft",

@@ -89,21 +89,15 @@ export function JobForm() {
             setGitHubRepos(githubResponse.repos);
           }
         } catch (githubError) {
+          // GitHub quick-picks are a best-effort convenience, never a
+          // blocker for job creation — any failure here (never connected, a
+          // stale/rejected token, a network error, ...) just means "show no
+          // GitHub quick-picks", not a page-level error, and must never stop
+          // the GitLab fetch below from running.
           if (!active || isAbortError(githubError)) {
             return;
           }
-          if (
-            githubError instanceof Error &&
-            /connect your github account before loading repositories/i.test(
-              githubError.message,
-            )
-          ) {
-            if (active) {
-              setGitHubRepos([]);
-            }
-          } else {
-            throw githubError;
-          }
+          setGitHubRepos([]);
         }
         try {
           const gitlabResponse = await fetchGitLabRepositories(
@@ -113,21 +107,11 @@ export function JobForm() {
             setGitLabRepos(gitlabResponse.repos);
           }
         } catch (gitlabError) {
+          // Same best-effort treatment as the GitHub fetch above.
           if (!active || isAbortError(gitlabError)) {
             return;
           }
-          if (
-            gitlabError instanceof Error &&
-            /connect your gitlab account before loading repositories/i.test(
-              gitlabError.message,
-            )
-          ) {
-            if (active) {
-              setGitLabRepos([]);
-            }
-            return;
-          }
-          throw gitlabError;
+          setGitLabRepos([]);
         }
       } catch (repoError) {
         if (!active || isAbortError(repoError)) {
