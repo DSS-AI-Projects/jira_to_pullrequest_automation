@@ -172,8 +172,7 @@ still never see a GitLab token.
   `src/app/auth/gitlab/callback/page.tsx`, mirroring the GitHub callback
   page); `auth-gate.tsx`'s `handleRepoProviderConnect` gained a `GITLAB`
   branch plus flash-message/URL-cleanup handling for the GitLab redirect.
-  `job-form.tsx` fetches GitLab repos alongside GitHub ones and lists
-  "Connected GitLab repos" as quick-picks the same way; fixed in the same
+  `job-form.tsx` fetches GitLab repos alongside GitHub ones; fixed in the same
   change — the GitHub-fetch failure path used to `return` early out of the
   loading effect, which would have skipped the GitLab fetch entirely once it
   was added right after; it now falls through instead.
@@ -196,6 +195,23 @@ still never see a GitLab token.
   asserts neither the banner nor a blocked GitLab fetch — verified against
   the pre-fix code by temporarily reverting just the fix and confirming the
   test fails with that exact symptom before restoring it.
+- **Connected-repo quick-picks render as a tabbed, scrollable list, not two
+  stacked pill rows.** With both providers connected, the job form used to
+  show a separate "Connected GitHub repos" pill row and a separate
+  "Connected GitLab repos" pill row, one after another — fine with a couple
+  of repos each, but it grows without bound and both lists compete for
+  attention at once. `job-form.tsx` now renders one "Connected repositories"
+  block with two tabs (`role="tab"`/`role="tabpanel"`, `.repo-tabs` in
+  `globals.css`) — only one provider's list is visible at a time, inside a
+  fixed-height (`max-height: 12rem`) scrollable panel instead of an
+  unbounded row. The active tab defaults to whichever provider actually has
+  repos (`activeConnectedRepoTab` in `job-form.tsx`) so a user with only
+  GitLab connected doesn't land on an empty GitHub tab; an explicit tab
+  click (`selectedConnectedRepoTab`) overrides that default for the rest of
+  the session. The block itself is hidden entirely when neither provider has
+  any repos, same as before. The unrelated "Pre-configured repos" list
+  (`repos.config.json`) is untouched — this only affects the two delegated-
+  OAuth providers.
 - **Tests:** 9 new backend tests (`test_auth_api.py`) covering connect/callback/repos
   happy paths, token-refresh-on-stale-token, and the self-hosted-instance-URL
   case; 2 new frontend tests for the callback page

@@ -292,7 +292,7 @@ describe("JobForm", () => {
 
     render(<JobForm />);
 
-    await screen.findByText("Connected GitHub repos");
+    await screen.findByText("Connected repositories");
     fireEvent.click(screen.getByRole("button", { name: "octocat/repo-one" }));
     fireEvent.change(screen.getByLabelText(/Jira ticket key or URL/i), {
       target: { value: "PROJ-77" },
@@ -344,7 +344,7 @@ describe("JobForm", () => {
 
     render(<JobForm />);
 
-    await screen.findByText("Connected GitLab repos");
+    await screen.findByText("Connected repositories");
     fireEvent.click(
       screen.getByRole("button", { name: "octocat/project-one" }),
     );
@@ -404,13 +404,71 @@ describe("JobForm", () => {
 
     render(<JobForm />);
 
-    await screen.findByText("Connected GitLab repos");
+    await screen.findByText("Connected repositories");
     expect(
       screen.queryByText(/GitHub rejected repository access/i),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /octocat\/project-two/i }),
     ).toBeInTheDocument();
+  });
+
+  it("shows connected repos in separate GitHub/GitLab tabs, one list visible at a time", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com", "gitlab.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockResolvedValue({
+      repos: [
+        {
+          id: 1001,
+          name: "repo-one",
+          full_name: "octocat/repo-one",
+          html_url: "https://github.com/octocat/repo-one",
+          clone_url: "https://github.com/octocat/repo-one.git",
+          default_branch: "main",
+          owner_login: "octocat",
+          private: false,
+        },
+      ],
+    });
+    fetchGitLabRepositories.mockResolvedValue({
+      repos: [
+        {
+          id: 2001,
+          name: "project-one",
+          path_with_namespace: "octocat/project-one",
+          web_url: "https://gitlab.com/octocat/project-one",
+          http_url_to_repo: "https://gitlab.com/octocat/project-one.git",
+          default_branch: "main",
+          namespace: "octocat",
+          private: false,
+        },
+      ],
+    });
+
+    render(<JobForm />);
+
+    // GitHub tab is active by default; only its repos are visible.
+    await screen.findByRole("button", { name: "octocat/repo-one" });
+    expect(
+      screen.queryByRole("button", { name: "octocat/project-one" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /GitLab/i }));
+
+    // Switching tabs swaps the visible list, not accumulates both.
+    await screen.findByRole("button", { name: "octocat/project-one" });
+    expect(
+      screen.queryByRole("button", { name: "octocat/repo-one" }),
+    ).not.toBeInTheDocument();
   });
 
   it("prefills from a retry draft left by the job-detail page and clears it", async () => {

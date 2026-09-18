@@ -485,6 +485,72 @@ ol {
   color: var(--success);
 }
 
+.repo-tabs {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.9rem;
+  overflow: hidden;
+}
+
+.repo-tabs__nav {
+  display: flex;
+  border-bottom: 1px solid var(--panel-border);
+  background: #fbfcff;
+}
+
+.repo-tab {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 700;
+  padding: 0.7rem 1rem;
+  cursor: pointer;
+}
+
+.repo-tab.is-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.repo-tab-panel {
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.repo-tab-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.repo-tab-item {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+}
+
+.repo-tab-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.repo-tab-empty {
+  margin: 0;
+  padding: 1rem 0.7rem;
+  color: var(--muted);
+}
+
 .meta-block,
 .meta-note,
 .policy-list,

@@ -42,6 +42,13 @@ export function JobForm() {
   const [repos, setRepos] = useState<RepoChoice[]>([]);
   const [githubRepos, setGitHubRepos] = useState<GitHubRepositorySummary[]>([]);
   const [gitlabRepos, setGitLabRepos] = useState<GitLabRepositorySummary[]>([]);
+  // null means "no explicit choice yet" — the effective tab (see
+  // activeConnectedRepoTab below) then defaults to whichever provider
+  // actually has repos, so a user with only GitLab connected doesn't land
+  // on an empty GitHub tab.
+  const [selectedConnectedRepoTab, setSelectedConnectedRepoTab] = useState<
+    "github" | "gitlab" | null
+  >(null);
   const [allowedHosts, setAllowedHosts] = useState<string[]>([]);
   const [localRepoSupport, setLocalRepoSupport] = useState<
     RepoList["local_repo_support"] | null
@@ -163,6 +170,14 @@ export function JobForm() {
     repoMode,
     repos.length,
   ]);
+
+  const hasConnectedGitHubRepos = githubRepos.length > 0;
+  const hasConnectedGitLabRepos = gitlabRepos.length > 0;
+  const showConnectedRepoTabs =
+    repoMode === "remote" &&
+    (hasConnectedGitHubRepos || hasConnectedGitLabRepos);
+  const activeConnectedRepoTab: "github" | "gitlab" =
+    selectedConnectedRepoTab ?? (hasConnectedGitHubRepos ? "github" : "gitlab");
 
   const repoLabel =
     repoMode === "local"
@@ -420,38 +435,85 @@ export function JobForm() {
             ))}
           </datalist>
 
-          {repoMode === "remote" && githubRepos.length > 0 ? (
+          {showConnectedRepoTabs ? (
             <div className="quick-picks">
-              <span className="quick-picks-label">Connected GitHub repos</span>
-              <div className="pill-row">
-                {githubRepos.map((repoOption) => (
+              <span className="quick-picks-label">Connected repositories</span>
+              <div className="repo-tabs">
+                <div className="repo-tabs__nav" role="tablist">
                   <button
-                    className="pill-button"
-                    key={repoOption.id}
-                    onClick={() => setRepo(repoOption.clone_url)}
+                    aria-selected={activeConnectedRepoTab === "github"}
+                    className={
+                      "repo-tab" +
+                      (activeConnectedRepoTab === "github" ? " is-active" : "")
+                    }
+                    id="repo-tab-github"
+                    onClick={() => setSelectedConnectedRepoTab("github")}
+                    role="tab"
                     type="button"
                   >
-                    {repoOption.full_name}
+                    GitHub{" "}
+                    {hasConnectedGitHubRepos ? `(${githubRepos.length})` : ""}
                   </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {repoMode === "remote" && gitlabRepos.length > 0 ? (
-            <div className="quick-picks">
-              <span className="quick-picks-label">Connected GitLab repos</span>
-              <div className="pill-row">
-                {gitlabRepos.map((repoOption) => (
                   <button
-                    className="pill-button"
-                    key={repoOption.id}
-                    onClick={() => setRepo(repoOption.http_url_to_repo)}
+                    aria-selected={activeConnectedRepoTab === "gitlab"}
+                    className={
+                      "repo-tab" +
+                      (activeConnectedRepoTab === "gitlab" ? " is-active" : "")
+                    }
+                    id="repo-tab-gitlab"
+                    onClick={() => setSelectedConnectedRepoTab("gitlab")}
+                    role="tab"
                     type="button"
                   >
-                    {repoOption.path_with_namespace}
+                    GitLab{" "}
+                    {hasConnectedGitLabRepos ? `(${gitlabRepos.length})` : ""}
                   </button>
-                ))}
+                </div>
+                <div
+                  aria-labelledby={`repo-tab-${activeConnectedRepoTab}`}
+                  className="repo-tab-panel"
+                  role="tabpanel"
+                >
+                  {activeConnectedRepoTab === "github" ? (
+                    hasConnectedGitHubRepos ? (
+                      <ul className="repo-tab-list">
+                        {githubRepos.map((repoOption) => (
+                          <li key={repoOption.id}>
+                            <button
+                              className="repo-tab-item"
+                              onClick={() => setRepo(repoOption.clone_url)}
+                              type="button"
+                            >
+                              {repoOption.full_name}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="repo-tab-empty">
+                        No connected GitHub repositories.
+                      </p>
+                    )
+                  ) : hasConnectedGitLabRepos ? (
+                    <ul className="repo-tab-list">
+                      {gitlabRepos.map((repoOption) => (
+                        <li key={repoOption.id}>
+                          <button
+                            className="repo-tab-item"
+                            onClick={() => setRepo(repoOption.http_url_to_repo)}
+                            type="button"
+                          >
+                            {repoOption.path_with_namespace}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="repo-tab-empty">
+                      No connected GitLab repositories.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           ) : null}
