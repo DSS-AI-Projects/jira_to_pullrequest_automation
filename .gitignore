@@ -2,6 +2,13 @@
 .env
 *.env.local
 
+# Extra CA certificates for a self-hosted provider instance behind an
+# internal CA (see backend/certs/README.md) — deployment-specific, never
+# committed; the directory itself (with its README) stays tracked so the
+# Dockerfile's COPY always has something to copy.
+backend/certs/*.crt
+backend/certs/*.pem
+
 # App runtime data (SQLite DB, repo clones)
 var/
 *.db

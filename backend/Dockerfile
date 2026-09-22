@@ -28,6 +28,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Optional extra CA certificates (e.g. an internal CA fronting a self-hosted
+# Jira/GitHub/GitLab instance — see certs/README.md). Baked in at build time
+# so app/main.py's truststore.inject_into_ssl() trusts them too; a no-op
+# when the directory is empty (the default), so this never changes behavior
+# unless a deployer actually drops a cert in.
+COPY certs/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+
 RUN useradd --create-home --shell /bin/bash appuser
 
 COPY --from=builder /opt/venv /opt/venv
