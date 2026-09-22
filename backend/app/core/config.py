@@ -41,11 +41,15 @@ class Settings(BaseSettings):
     gitlab_oauth_enabled: bool = False
     gitlab_oauth_client_id: str | None = None
     gitlab_oauth_callback_url: str | None = None
-    # read_api (not the broader read-write "api") + read_user is enough to
-    # list projects and resolve the account profile — matches this app's own
-    # "repository discovery only, never git operations" boundary for
-    # delegated tokens (see CLAUDE.md).
-    gitlab_oauth_scopes: list[str] = ["read_api", "read_user"]
+    # read_api + read_user list projects and resolve the account profile;
+    # read_repository additionally lets `git clone` authenticate as the
+    # signed-in user for a repo they can already see via the picker — still
+    # never write-repository/api (no push, ever, via a delegated token; see
+    # CLAUDE.md's "GitLab OAuth integration" and "Branch preparation and
+    # push" sections). A user who connected under an older, narrower scope
+    # must disconnect and reconnect to pick up a broadened scope — GitLab
+    # does not retroactively expand an already-issued token's grant.
+    gitlab_oauth_scopes: list[str] = ["read_api", "read_user", "read_repository"]
     gitlab_oauth_state_ttl_minutes: int = 10
     # Supports self-hosted GitLab, not just gitlab.com — mirrors JIRA_BASE_URL
     # selecting which Jira Cloud site to target. No trailing slash; callers

@@ -90,8 +90,10 @@ def local_client(store: JobStore) -> Iterator[TestClient]:
         repo_url: str,
         workdir: Path,
         base_branch: str | None = None,
+        owner_user_id: str | None = None,
+        store: JobStore | None = None,
     ) -> CloneResult:
-        del base_branch
+        del base_branch, owner_user_id, store
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -203,8 +205,10 @@ def local_client_with_pushable_remote(store: JobStore, tmp_path: Path) -> Iterat
         repo_url: str,
         workdir: Path,
         base_branch: str | None = None,
+        owner_user_id: str | None = None,
+        store: JobStore | None = None,
     ) -> CloneResult:
-        del base_branch
+        del base_branch, owner_user_id, store
         del repo_url
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
@@ -300,8 +304,10 @@ def remote_client(store: JobStore) -> Iterator[TestClient]:
         repo_url: str,
         workdir: Path,
         base_branch: str | None = None,
+        owner_user_id: str | None = None,
+        store: JobStore | None = None,
     ) -> CloneResult:
-        del base_branch
+        del base_branch, owner_user_id, store
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -405,8 +411,10 @@ def local_client_npm_install_failing(store: JobStore) -> Iterator[TestClient]:
         repo_url: str,
         workdir: Path,
         base_branch: str | None = None,
+        owner_user_id: str | None = None,
+        store: JobStore | None = None,
     ) -> CloneResult:
-        del base_branch
+        del base_branch, owner_user_id, store
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -512,8 +520,10 @@ def local_client_failing_validation(store: JobStore) -> Iterator[TestClient]:
         repo_url: str,
         workdir: Path,
         base_branch: str | None = None,
+        owner_user_id: str | None = None,
+        store: JobStore | None = None,
     ) -> CloneResult:
-        del base_branch
+        del base_branch, owner_user_id, store
         clone_path = workdir / job_id
         init_git_workspace(clone_path)
         return CloneResult(
@@ -636,8 +646,10 @@ def local_folder_client(store: JobStore) -> Iterator[TestClient]:
         repo_url: str,
         workdir: Path,
         base_branch: str | None = None,
+        owner_user_id: str | None = None,
+        store: JobStore | None = None,
     ) -> CloneResult:
-        del base_branch
+        del base_branch, owner_user_id, store
         del ticket_key
         clone_path = workdir / job_id
         init_git_workspace(clone_path)

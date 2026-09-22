@@ -1,9 +1,21 @@
 """Job step (b): clone the repo. Deterministic, no LLM.
 
 Auth model: the subprocess inherits the machine's ambient git auth (SSH agent,
-credential helper). The app never constructs, reads, or injects a credential;
-GIT_TERMINAL_PROMPT=0 makes git fail fast instead of prompting, so a missing
-credential becomes a typed CLONE_FAILED rather than a hang.
+credential helper) by default. GIT_TERMINAL_PROMPT=0 makes git fail fast
+instead of prompting, so a missing credential becomes a typed CLONE_FAILED
+rather than a hang.
+
+One deliberate, narrow exception: for a REMOTE clone whose host matches the
+configured GitLab instance, the signed-in user's own delegated GitLab OAuth
+token (read_repository scope — never write) is used to authenticate the
+clone, if they have a valid connection — the same account they already used
+to pick the repo from the connected-repos quick-picks. This never widens to
+`git push`, which still uses ambient credentials only (see CLAUDE.md's
+"Branch preparation and push"). The token is passed via a one-off
+`http.extraHeader` config override at clone-invocation time, never embedded
+in the clone URL — embedding it in the URL would have git persist it into
+the cloned workspace's `.git/config`, which the planning/implementation
+agent can Read/Grep (invariant 3).
 """
 
 from __future__ import annotations
@@ -17,11 +29,13 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from app.core.config import get_settings
+from app.auth.gitlab_oauth import get_valid_gitlab_access_token_for_user
+from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger, redact
 from app.jobs.models import RepoInfo, RepoSourceKind
 from app.jobs.runner import CloneResult
+from app.jobs.store import JobStore
 
 logger = get_logger(__name__)
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -81,21 +95,38 @@ def _scrub_origin_url(url: str | None) -> str | None:
 
 
 def build_clone_command(
-    repo_url: str, dest: Path, *, local_source: bool = False, branch: str | None = None
+    repo_url: str,
+    dest: Path,
+    *,
+    local_source: bool = False,
+    branch: str | None = None,
+    auth_header: str | None = None,
 ) -> list[str]:
-    """Pure command builder (tested): shallow, single-branch, no credentials.
+    """Pure command builder (tested): shallow, single-branch, no credentials
+    embedded in the URL or persisted to any config file.
 
     `branch`, when given, clones that branch instead of the remote's default
     (e.g. "develop", or an existing ticket branch) — see Job.base_branch.
+
+    `auth_header`, when given, is a full HTTP header line (e.g.
+    "Authorization: Bearer <token>") passed as a one-off `-c
+    http.extraHeader=...` override *before* the `clone` subcommand — a
+    runtime override for this single git invocation only, never written into
+    the resulting workspace's `.git/config` the way embedding credentials in
+    `repo_url` itself would be. See repo_clone.py's module docstring.
     """
-    command = [
-        "git",
-        "clone",
-        "--depth",
-        "1",
-        "--single-branch",
-        "--no-tags",
-    ]
+    command = ["git"]
+    if auth_header:
+        command.extend(["-c", f"http.extraHeader={auth_header}"])
+    command.extend(
+        [
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            "--no-tags",
+        ]
+    )
     if branch:
         command.extend(["--branch", branch])
     if local_source:
@@ -107,6 +138,15 @@ def build_clone_command(
 
 def _is_local_repo_path(repo_url: str) -> bool:
     return bool(_WINDOWS_ABS_PATH_RE.match(repo_url))
+
+
+def _is_configured_gitlab_host(repo_url: str, settings: Settings) -> bool:
+    try:
+        target_host = (urlsplit(repo_url).hostname or "").lower()
+        instance_host = (urlsplit(settings.gitlab_instance_url).hostname or "").lower()
+    except ValueError:
+        return False
+    return bool(target_host) and target_host == instance_host
 
 
 def _branch_matches_ticket(branch: str, ticket_key: str) -> bool:
@@ -313,6 +353,8 @@ async def clone_repo(
     repo_url: str,
     workdir: Path,
     base_branch: str | None = None,
+    owner_user_id: str | None = None,
+    store: JobStore | None = None,
 ) -> CloneResult:
     settings = get_settings()
     dest = workdir / job_id / "repo"
@@ -321,6 +363,22 @@ async def clone_repo(
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "Never"}
     source_info: RepoInfo | None = None
     is_local_source = _is_local_repo_path(repo_url)
+
+    # Best-effort: authenticate the clone as the signed-in user's own
+    # delegated GitLab connection, when the target host matches the
+    # configured instance and they have a valid connection. Never applies to
+    # a local source, and any lookup/refresh failure just falls through to
+    # ambient credentials — see the module docstring above.
+    auth_header: str | None = None
+    if (
+        not is_local_source
+        and owner_user_id is not None
+        and store is not None
+        and _is_configured_gitlab_host(repo_url, settings)
+    ):
+        access_token = await get_valid_gitlab_access_token_for_user(owner_user_id, store, settings)
+        if access_token:
+            auth_header = f"Authorization: Bearer {access_token}"
     if is_local_source:
         local_source = Path(repo_url)
         _validate_local_source_path(local_source)
@@ -379,7 +437,13 @@ async def clone_repo(
                 internal_detail=f"branch={branch_to_check} ticket={ticket_key}",
             )
 
-    command = build_clone_command(repo_url, dest, local_source=is_local_source, branch=base_branch)
+    command = build_clone_command(
+        repo_url,
+        dest,
+        local_source=is_local_source,
+        branch=base_branch,
+        auth_header=auth_header,
+    )
     logger.info("job %s: cloning %s", job_id, repo_url)
 
     try:

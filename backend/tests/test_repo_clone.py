@@ -2,7 +2,7 @@
 
 import subprocess
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 
@@ -78,6 +78,30 @@ def test_clone_command_includes_branch_flag_when_base_branch_given() -> None:
     assert command[command.index("--branch") + 1] == "develop"
 
 
+def test_clone_command_omits_auth_header_by_default() -> None:
+    command = build_clone_command("https://gitlab.example.com/group/repo.git", Path("dest"))
+    assert "-c" not in command
+    assert command[:2] == ["git", "clone"]
+
+
+def test_clone_command_passes_auth_header_as_a_one_off_config_override() -> None:
+    command = build_clone_command(
+        "https://gitlab.example.com/group/repo.git",
+        Path("dest"),
+        auth_header="Authorization: Bearer secret-token",
+    )
+    # The -c override must precede "clone" (git's global-options-before-
+    # subcommand rule) and must never appear embedded in the URL itself —
+    # that's the whole point: it's never persisted into .git/config.
+    assert command[:4] == [
+        "git",
+        "-c",
+        "http.extraHeader=Authorization: Bearer secret-token",
+        "clone",
+    ]
+    assert "secret-token" not in " ".join(command[4:])
+
+
 async def test_clone_succeeds_from_local_fixture_repo(tmp_path: Path) -> None:
     source = make_source_repo(tmp_path)
     result = await clone_repo("job1", "PROJ-1", str(source), tmp_path / "workdir")
@@ -124,6 +148,92 @@ async def test_clone_launch_failure_is_typed(
     assert err.code == ErrorCode.CLONE_FAILED
     assert err.internal_detail is not None
     assert "subprocess creation failed" in err.internal_detail
+
+
+async def test_clone_uses_the_users_gitlab_token_when_host_matches_the_instance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "app.steps.repo_clone.get_settings",
+        lambda: Settings(_env_file=None, gitlab_instance_url="https://gitlab.example.com"),  # type: ignore[arg-type]
+    )
+    fake_get_token = AsyncMock(return_value="user-scoped-token")
+    monkeypatch.setattr(
+        "app.steps.repo_clone.get_valid_gitlab_access_token_for_user", fake_get_token
+    )
+    fake_run = Mock(side_effect=OSError("stop before a real clone attempt"))
+    monkeypatch.setattr("app.steps.repo_clone.subprocess.run", fake_run)
+
+    with pytest.raises(AppError):
+        await clone_repo(
+            "job_gitlab_token",
+            "PROJ-30",
+            "https://gitlab.example.com/group/repo.git",
+            tmp_path / "workdir",
+            owner_user_id="user-1",
+            store=Mock(),
+        )
+
+    fake_get_token.assert_awaited_once_with("user-1", ANY, ANY)
+    command = fake_run.call_args[0][0]
+    assert "http.extraHeader=Authorization: Bearer user-scoped-token" in command
+
+
+async def test_clone_skips_user_token_lookup_when_host_is_not_the_gitlab_instance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "app.steps.repo_clone.get_settings",
+        lambda: Settings(_env_file=None, gitlab_instance_url="https://gitlab.example.com"),  # type: ignore[arg-type]
+    )
+    fake_get_token = AsyncMock(return_value="user-scoped-token")
+    monkeypatch.setattr(
+        "app.steps.repo_clone.get_valid_gitlab_access_token_for_user", fake_get_token
+    )
+    fake_run = Mock(side_effect=OSError("stop before a real clone attempt"))
+    monkeypatch.setattr("app.steps.repo_clone.subprocess.run", fake_run)
+
+    with pytest.raises(AppError):
+        await clone_repo(
+            "job_github_not_gitlab",
+            "PROJ-31",
+            "https://github.com/acme/repo.git",
+            tmp_path / "workdir",
+            owner_user_id="user-1",
+            store=Mock(),
+        )
+
+    fake_get_token.assert_not_awaited()
+    command = fake_run.call_args[0][0]
+    assert "-c" not in command
+
+
+async def test_clone_falls_back_to_ambient_auth_when_user_has_no_gitlab_connection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "app.steps.repo_clone.get_settings",
+        lambda: Settings(_env_file=None, gitlab_instance_url="https://gitlab.example.com"),  # type: ignore[arg-type]
+    )
+    fake_get_token = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "app.steps.repo_clone.get_valid_gitlab_access_token_for_user", fake_get_token
+    )
+    fake_run = Mock(side_effect=OSError("stop before a real clone attempt"))
+    monkeypatch.setattr("app.steps.repo_clone.subprocess.run", fake_run)
+
+    with pytest.raises(AppError):
+        await clone_repo(
+            "job_no_connection",
+            "PROJ-32",
+            "https://gitlab.example.com/group/repo.git",
+            tmp_path / "workdir",
+            owner_user_id="user-1",
+            store=Mock(),
+        )
+
+    command = fake_run.call_args[0][0]
+    assert "-c" not in command
 
 
 async def test_non_git_local_repo_is_rejected_with_typed_error(tmp_path: Path) -> None:

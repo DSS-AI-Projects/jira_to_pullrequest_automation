@@ -10,6 +10,7 @@ import respx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+from app.auth.gitlab_oauth import get_valid_gitlab_access_token_for_user
 from app.auth.models import RepoHostingAuthKind, RepoHostingConnection, RepoHostingProvider
 from app.core.config import get_settings
 from app.core.crypto import decrypt_secret, encrypt_secret
@@ -782,7 +783,7 @@ def test_gitlab_repo_connect_returns_authorization_url(
     assert params["client_id"] == ["gitlab-client"]
     assert params["redirect_uri"] == ["http://localhost:3000/auth/gitlab/callback"]
     assert params["response_type"] == ["code"]
-    assert params["scope"] == ["read_api read_user"]
+    assert params["scope"] == ["read_api read_user read_repository"]
     assert params["state"]
 
 
@@ -1117,3 +1118,67 @@ def test_repo_hosting_disconnect_removes_stored_gitlab_connection(
 
     assert disconnect.status_code == 200
     assert auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.GITLAB) is None
+
+
+async def test_get_valid_gitlab_access_token_for_user_returns_the_decrypted_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Used by repo_clone.py to authenticate `git clone` as the signed-in
+    user — a thin wrapper over the same refresh-aware logic the repo-listing
+    endpoint already relies on (test_gitlab_repo_listing_refreshes_an_expired_
+    token_before_listing covers the refresh path itself)."""
+    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
+    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://testserver/auth/gitlab/callback")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    store = JobStore(":memory:")
+    store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id="user-1",
+            provider=RepoHostingProvider.GITLAB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="54321",
+            account_url="https://gitlab.com/octocat",
+            scopes=["read_api", "read_user", "read_repository"],
+            access_token_encrypted=encrypt_secret("gitlab-access-token", provider="gitlab"),
+            access_token_expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    token = await get_valid_gitlab_access_token_for_user("user-1", store, get_settings())
+
+    assert token == "gitlab-access-token"
+    get_settings.cache_clear()
+
+
+async def test_get_valid_gitlab_access_token_for_user_returns_none_when_not_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
+    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://testserver/auth/gitlab/callback")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    store = JobStore(":memory:")
+
+    token = await get_valid_gitlab_access_token_for_user("user-1", store, get_settings())
+
+    assert token is None
+    get_settings.cache_clear()
+
+
+async def test_get_valid_gitlab_access_token_for_user_returns_none_when_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITLAB_OAUTH_ENABLED", raising=False)
+    get_settings.cache_clear()
+    store = JobStore(":memory:")
+
+    token = await get_valid_gitlab_access_token_for_user("user-1", store, get_settings())
+
+    assert token is None
+    get_settings.cache_clear()

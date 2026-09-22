@@ -224,6 +224,32 @@ async def list_gitlab_repositories(
     return GitLabRepositoryListResponse(repos=projects)
 
 
+async def get_valid_gitlab_access_token_for_user(
+    user_id: str, store: JobStore, settings: Settings
+) -> str | None:
+    """Best-effort: a valid (refreshed if needed) GitLab access token for
+    this user's own connection, or None if they have no connection, it
+    can't be decrypted/refreshed, or GitLab OAuth isn't configured.
+
+    Used to let `git clone` authenticate as the signed-in user for a repo
+    they can already see via the connected-repos picker (repo_clone.py) —
+    strictly additive over the existing ambient-credential clone path, so
+    this never raises; any failure here just means "fall back to whatever
+    ambient git auth the machine already has," not a broken job.
+    """
+    if not gitlab_oauth_is_configured(settings):
+        return None
+    connection = store.get_repo_hosting_connection(user_id, RepoHostingProvider.GITLAB)
+    if connection is None or connection.access_token_encrypted is None:
+        return None
+    try:
+        _connection, access_token = await _get_valid_access_token(connection, store, settings)
+    except AppError:
+        return None
+    secrets.register_secret(access_token)
+    return access_token
+
+
 async def _exchange_token(settings: Settings, payload: dict[str, str]) -> GitLabTokenBundle:
     token_url = f"{settings.gitlab_instance_url}/oauth/token"
     try:

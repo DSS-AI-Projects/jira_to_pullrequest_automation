@@ -43,9 +43,11 @@ typing a secret into this app's forms. Sources:
     in SQLite and used preferentially, falling back to shared creds when a user has
     not connected. `JIRA_BASE_URL` still selects which Jira Cloud site to target.
 - **GitHub and GitLab — delegated OAuth** (`GITHUB_OAUTH_*` / `GITLAB_OAUTH_*`):
-  per-user tokens encrypted at rest, used **for repository discovery / quick-picks
-  only**. `git clone` and `git push` both still inherit the machine's ambient git
-  auth (SSH key / credential helper); delegated *git* auth is not built yet for
+  per-user tokens encrypted at rest, used **for repository discovery / quick-picks**
+  and — for GitLab only, `git clone` alone — **read-level git authentication as the
+  signed-in user** (see **Repository input & local execution** below for the
+  clone-auth mechanism). `git push` always still uses the machine's ambient git
+  auth (SSH key / credential helper) — delegated write/push auth is not built for
   either provider (see **GitLab OAuth integration** below for the full picture).
   **Each provider's tokens are encrypted under that provider's own Fernet key** —
   `encrypt_secret()`/`decrypt_secret()` (`backend/app/core/crypto.py`) both take a
@@ -93,9 +95,11 @@ enabled (`backend/app/auth/`, `backend/app/api/auth.py`):
 Delegated per-user GitLab OAuth, mirroring the shape of the GitHub integration
 (`backend/app/auth/gitlab_oauth.py`, `app/api/auth.py`'s `POST
 /repo-hosting/gitlab/connect` / `GET /repo-hosting/gitlab/callback` / `GET
-/repo-hosting/gitlab/repos`) — used for repository discovery/quick-picks only,
-same as every other delegated provider in this app; `git clone`/`git push`
-still never see a GitLab token.
+/repo-hosting/gitlab/repos`) — used for repository discovery/quick-picks, and
+(GitLab only, read-only) to authenticate `git clone` as the signed-in user;
+see **Repository input & local execution**'s "Clone auth" for that mechanism
+and its safeguards. `git push` still never sees a GitLab token, ever — see
+that section's "Never widens to push."
 
 - **Supports both gitlab.com and self-hosted instances**, not just gitlab.com:
   `settings.gitlab_instance_url` (default `https://gitlab.com`) is one
@@ -531,6 +535,51 @@ unless `ALLOW_DIRTY_LOCAL_REPOS`, and `REQUIRE_LOCAL_BRANCH_TICKET_MATCH` option
 requires the branch name contain the ticket key. `RepoInfo` (source kind, branch,
 commit SHA, origin URL, dirty flag) is captured on the job.
 
+**Clone auth: ambient by default, the signed-in user's own GitLab token when
+it applies.** `git clone` inherits the machine's ambient git auth (SSH key /
+credential helper) by default — the same trust model `git push` still always
+uses. One narrow, deliberate exception: when a `REMOTE` clone's host matches
+the configured `GITLAB_INSTANCE_URL` and the job's owning user has a valid
+GitLab connection, `clone_repo()` (`app/steps/repo_clone.py`) authenticates
+the clone as *that user* instead — the same account they already used to
+pick the repo from the connected-repos quick-picks, now also used to read
+it. This directly fixes the alternative this app previously required for
+every GitLab clone: a separately-provisioned, admin-managed ambient
+credential (an SSH deploy key or a `.netrc`-based HTTPS credential) — with
+per-user OAuth, a user who can already *see* a repo via "Connect GitLab" can
+now also *clone* it, with zero additional ops setup.
+
+- **Never widens to push.** `git push` (`branch_prep.py`'s `push_branch()`)
+  is untouched — still ambient-only, always. This is a one-way relaxation of
+  exactly one operation (clone), not a general move toward per-user
+  delegated git auth; see **GitLab OAuth integration** below and the
+  concerns documented there for why push stays ambient-only.
+- **The token never touches the cloned workspace, only the one clone
+  invocation.** The naive approach — embedding the token in the clone URL
+  (`https://oauth2:<token>@gitlab.../repo.git`) — would have git persist
+  that URL, credential included, into the workspace's own `.git/config`,
+  which the planning/implementation agent can `Read`/`Grep` (invariant 3).
+  Instead, `build_clone_command()` passes the token as a one-off `git -c
+  http.extraHeader="Authorization: Bearer <token>"` override *before* the
+  `clone` subcommand — a runtime override for that single git process only,
+  never written to any file in the resulting workspace.
+- **Requires `read_repository` scope, which `read_api` does not include.**
+  GitLab treats REST API access and git-level repository access as separate
+  scopes — the connected-repos picker only ever needed `read_api` +
+  `read_user`. `gitlab_oauth_scopes` now defaults to `["read_api",
+  "read_user", "read_repository"]`; a user who connected under the old,
+  narrower scope must disconnect and reconnect to pick one up — GitLab does
+  not retroactively expand an already-issued token's grant. Still
+  deliberately *not* `write_repository` or the broad `api` scope — this
+  remains read-only, matching "never widens to push" above.
+- **Best-effort, never a hard requirement.** `get_valid_gitlab_access_token_for_user()`
+  (`app/auth/gitlab_oauth.py`) returns `None` — never raises — whenever GitLab
+  OAuth isn't configured, the user has no connection, or a stored token can't
+  be decrypted/refreshed; `clone_repo()` then falls straight through to
+  ambient credentials exactly as before. An unauthenticated deployment
+  (`AUTH_ENABLED=false`, no `owner_user_id`) or a repo on any other host is
+  unaffected either way.
+
 **Optional base branch.** The job-creation form also accepts an optional
 `base_branch` (`Job.base_branch`) — an existing branch to clone from (e.g.
 `develop`, or an in-progress ticket branch) instead of the repo's default
@@ -752,12 +801,15 @@ deliberately, the smallest change that could satisfy "push to GitHub" rather tha
 the larger delegated-credential design also considered:**
 
 - **Ambient git auth only — no per-user credential is ever read or injected.**
-  Exactly the same trust model `git clone` already uses (SSH key / credential
-  helper on the machine running the backend). A shared multi-user deployment
-  where individual developers don't have their own push access on that machine
-  needs a separate, later capability (delegating the user's own connected GitHub
-  OAuth token) — deliberately not built here; seeing this gap is the reason to
-  build it, not a reason to work around it in the meantime.
+  Unlike `git clone` (which now has one narrow exception — the signed-in
+  user's own GitLab token, read-only; see **Repository input & local
+  execution**'s "Clone auth"), `git push` always uses the machine's ambient
+  auth (SSH key / credential helper), with no exception. A shared multi-user
+  deployment where individual developers don't have their own push access on
+  that machine needs a separate, later capability (delegating the user's own
+  connected GitHub/GitLab OAuth token, scoped for write) — deliberately not
+  built here; seeing this gap is the reason to build it, not a reason to
+  work around it in the meantime.
 - **Targets `Job.repo_info.origin_url`, never the workspace clone's own "origin"
   remote.** For a `LOCAL` job those are different things: `origin_url` was
   captured from the *original* local source's own git config before cloning (see
@@ -919,7 +971,8 @@ the header only when the signed-in user's role is `ADMIN`.
 **In:** non-secret form; a Jira ticket or an uploaded PDF requirement document as
 alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
 delegated Jira/GitHub/GitLab OAuth with encrypted-at-rest tokens (used for
-repository discovery only — see below); async jobs with SQLite store + polling
+repository discovery, and — GitLab only, read-only — to authenticate `git
+clone` as the signed-in user; see below); async jobs with SQLite store + polling
 status screen; the plan pipeline (fetch/clone/map/plan); an isolated-clone
 implement + validate phase, available for local *and* remote repos alike; a
 single, explicitly opt-in validation-correction pass after a failed validation;
@@ -930,10 +983,11 @@ a paginated job-history list scoped to the owner (admins/no-auth-mode see all);
 an admin-only per-user cost-usage dashboard; typed errors; quality gates;
 security-invariant tests; a reference shared-deployment stack under `deploy/`.
 
-**Out (not built; do not scaffold):** opening a pull request; delegated *git*
-auth (clone and push both still use ambient credentials only — no per-user
-token, including the already-connected GitHub/GitLab OAuth token, is ever
-handed to a git subprocess); a durable workflow engine; a network-locked
+**Out (not built; do not scaffold):** opening a pull request; delegated *git
+push* auth (`git push` always uses ambient credentials only — no per-user
+token is ever handed to it; `git clone` is the one narrow, deliberate
+exception, GitLab-only, read-only — see **Repository input & local
+execution**'s "Clone auth"); a durable workflow engine; a network-locked
 sandbox; an embeddings/vector index.
 
 ## Stack

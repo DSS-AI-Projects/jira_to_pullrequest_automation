@@ -57,8 +57,10 @@ def make_fake_steps() -> JobSteps:
         repo_url: str,
         workdir: Path,
         base_branch: str | None = None,
+        owner_user_id: str | None = None,
+        store: JobStore | None = None,
     ) -> CloneResult:
-        del base_branch
+        del base_branch, owner_user_id, store
         return CloneResult(
             clone_path=workdir / job_id,
             repo_info=RepoInfo(
