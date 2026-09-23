@@ -224,23 +224,45 @@ async def list_gitlab_repositories(
     return GitLabRepositoryListResponse(repos=projects)
 
 
+_REPO_READ_SCOPES = {"read_repository", "api"}  # "api" is a superset that includes it
+
+
+def _has_repo_read_scope(connection: RepoHostingConnection) -> bool:
+    return not _REPO_READ_SCOPES.isdisjoint(connection.scopes)
+
+
 async def get_valid_gitlab_access_token_for_user(
     user_id: str, store: JobStore, settings: Settings
 ) -> str | None:
     """Best-effort: a valid (refreshed if needed) GitLab access token for
-    this user's own connection, or None if they have no connection, it
-    can't be decrypted/refreshed, or GitLab OAuth isn't configured.
+    this user's own connection, or None if they have no connection, its
+    scope doesn't cover git-level repository access, it can't be
+    decrypted/refreshed, or GitLab OAuth isn't configured.
 
     Used to let `git clone` authenticate as the signed-in user for a repo
     they can already see via the connected-repos picker (repo_clone.py) —
     strictly additive over the existing ambient-credential clone path, so
     this never raises; any failure here just means "fall back to whatever
     ambient git auth the machine already has," not a broken job.
+
+    The scope check matters on its own, not just as an optimization: a
+    connection made before GITLAB_OAUTH_SCOPES included `read_repository`
+    (e.g. before a deployment picked up that config change) has `read_api` +
+    `read_user` only — GitLab's git-over-HTTP endpoint rejects that token
+    with a 401 regardless of how it's presented. Without this check, that
+    401 sends git down its own credential-helper fallback (e.g. Git
+    Credential Manager on Windows), producing a confusing chain of
+    unrelated-looking warnings before the eventual CLONE_FAILED — checking
+    the scope we already have on file skips straight to ambient credentials
+    instead, and this is exactly the case a stale connection needs a
+    reconnect to fix, not something a retry alone resolves.
     """
     if not gitlab_oauth_is_configured(settings):
         return None
     connection = store.get_repo_hosting_connection(user_id, RepoHostingProvider.GITLAB)
     if connection is None or connection.access_token_encrypted is None:
+        return None
+    if not _has_repo_read_scope(connection):
         return None
     try:
         _connection, access_token = await _get_valid_access_token(connection, store, settings)

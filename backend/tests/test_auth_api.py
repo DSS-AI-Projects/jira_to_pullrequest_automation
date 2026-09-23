@@ -10,7 +10,10 @@ import respx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from app.auth.gitlab_oauth import get_valid_gitlab_access_token_for_user
+from app.auth.gitlab_oauth import (
+    _has_repo_read_scope,  # pyright: ignore[reportPrivateUsage]
+    get_valid_gitlab_access_token_for_user,
+)
 from app.auth.models import RepoHostingAuthKind, RepoHostingConnection, RepoHostingProvider
 from app.core.config import get_settings
 from app.core.crypto import decrypt_secret, encrypt_secret
@@ -1151,6 +1154,66 @@ async def test_get_valid_gitlab_access_token_for_user_returns_the_decrypted_toke
     token = await get_valid_gitlab_access_token_for_user("user-1", store, get_settings())
 
     assert token == "gitlab-access-token"
+    get_settings.cache_clear()
+
+
+def test_has_repo_read_scope_accepts_read_repository_or_the_broader_api_scope() -> None:
+    def connection_with(scopes: list[str]) -> RepoHostingConnection:
+        return RepoHostingConnection.new(
+            user_id="user-1",
+            provider=RepoHostingProvider.GITLAB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="54321",
+            account_url="https://gitlab.com/octocat",
+            scopes=scopes,
+        )
+
+    assert _has_repo_read_scope(connection_with(["read_api", "read_user", "read_repository"]))
+    # "api" is GitLab's broad scope, a superset that already includes
+    # repository access even though this app's own connect flow never
+    # requests it — a connection made some other way should still count.
+    assert _has_repo_read_scope(connection_with(["api"]))
+    assert not _has_repo_read_scope(connection_with(["read_api", "read_user"]))
+    assert not _has_repo_read_scope(connection_with([]))
+
+
+async def test_get_valid_gitlab_access_token_for_user_returns_none_for_stale_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: a connection made before GITLAB_OAUTH_SCOPES included
+    read_repository (e.g. one that predates a deployment picking up that
+    config change) has read_api + read_user only. GitLab's git-over-HTTP
+    endpoint rejects that token with a 401 regardless of how it's presented
+    — trying it anyway sends git down its own credential-helper fallback
+    (Git Credential Manager on Windows, for instance), producing a confusing
+    "could not read Username" failure that looks unrelated to scope at all.
+    Checking the scope already on file must skip straight to None (ambient
+    fallback) instead of attempting a token guaranteed to be rejected."""
+    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
+    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://testserver/auth/gitlab/callback")
+    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
+    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+    store = JobStore(":memory:")
+    store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id="user-1",
+            provider=RepoHostingProvider.GITLAB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="54321",
+            account_url="https://gitlab.com/octocat",
+            scopes=["read_api", "read_user"],
+            access_token_encrypted=encrypt_secret("gitlab-access-token", provider="gitlab"),
+            access_token_expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    token = await get_valid_gitlab_access_token_for_user("user-1", store, get_settings())
+
+    assert token is None
     get_settings.cache_clear()
 
 
