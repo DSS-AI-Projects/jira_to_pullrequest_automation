@@ -1,5 +1,6 @@
 """Clone step: ambient auth only, shallow clone, typed failures."""
 
+import base64
 import subprocess
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, Mock
@@ -12,7 +13,7 @@ from app.jobs.models import RepoSourceKind
 from app.steps.repo_clone import (
     _scrub_origin_url as scrub_origin_url,  # pyright: ignore[reportPrivateUsage]
 )
-from app.steps.repo_clone import build_clone_command, clone_repo
+from app.steps.repo_clone import build_clone_command, clone_repo, gitlab_git_auth_header
 
 
 def make_source_repo(tmp_path: Path) -> Path:
@@ -176,7 +177,17 @@ async def test_clone_uses_the_users_gitlab_token_when_host_matches_the_instance(
 
     fake_get_token.assert_awaited_once_with("user-1", ANY, ANY)
     command = fake_run.call_args[0][0]
-    assert "http.extraHeader=Authorization: Bearer user-scoped-token" in command
+    # GitLab's git endpoint needs HTTP Basic with username "oauth2", not
+    # Bearer (Bearer returns 401 there even for a correctly-scoped token).
+    expected = base64.b64encode(b"oauth2:user-scoped-token").decode("ascii")
+    assert f"http.extraHeader=Authorization: Basic {expected}" in command
+    assert not any("Bearer" in part for part in command)
+    assert not any("user-scoped-token" in part for part in command)
+
+
+def test_gitlab_git_auth_header_is_basic_with_oauth2_username() -> None:
+    header = gitlab_git_auth_header("abc123")
+    assert header == "Authorization: Basic " + base64.b64encode(b"oauth2:abc123").decode("ascii")
 
 
 async def test_clone_skips_user_token_lookup_when_host_is_not_the_gitlab_instance(

@@ -560,9 +560,24 @@ now also *clone* it, with zero additional ops setup.
   that URL, credential included, into the workspace's own `.git/config`,
   which the planning/implementation agent can `Read`/`Grep` (invariant 3).
   Instead, `build_clone_command()` passes the token as a one-off `git -c
-  http.extraHeader="Authorization: Bearer <token>"` override *before* the
-  `clone` subcommand — a runtime override for that single git process only,
-  never written to any file in the resulting workspace.
+  http.extraHeader="Authorization: Basic <base64 of oauth2:token>"` override
+  *before* the `clone` subcommand — a runtime override for that single git
+  process only, never written to any file in the resulting workspace.
+- **Basic with username `oauth2`, not Bearer — GitLab's git endpoint is not
+  its REST API.** `/api/v4` accepts `Authorization: Bearer <token>`, but the
+  git-over-HTTP endpoint (`.../repo.git/info/refs`) rejects Bearer with a 401
+  "HTTP Basic: Access denied" *even for a correctly `read_repository`-scoped
+  token* — verified directly against a real self-hosted instance, where the
+  same token returned 200 as `Basic base64("oauth2:" + token)` and 401 as
+  Bearer. The first version of this feature sent Bearer and failed exactly
+  that way; since git then falls back to its credential helper (Git
+  Credential Manager on Windows: "missing OAuth configuration for <host>",
+  then "could not read Username... terminal prompts disabled"), the failure
+  looked identical to a missing-scope or not-deployed problem, and it took
+  testing both header forms against the live endpoint to tell them apart.
+  `gitlab_git_auth_header()` builds the Basic form and registers the encoded
+  value with the log redactor too, since it's a distinct string from the raw
+  token the redactor already knows about.
 - **Requires `read_repository` scope, which `read_api` does not include.**
   GitLab treats REST API access and git-level repository access as separate
   scopes — the connected-repos picker only ever needed `read_api` +

@@ -21,6 +21,7 @@ agent can Read/Grep (invariant 3).
 from __future__ import annotations
 
 import asyncio
+import base64
 import fnmatch
 import os
 import re
@@ -30,6 +31,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from app.auth.gitlab_oauth import get_valid_gitlab_access_token_for_user
+from app.core import secrets
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger, redact
@@ -109,7 +111,7 @@ def build_clone_command(
     (e.g. "develop", or an existing ticket branch) — see Job.base_branch.
 
     `auth_header`, when given, is a full HTTP header line (e.g.
-    "Authorization: Bearer <token>") passed as a one-off `-c
+    "Authorization: Basic <...>", see gitlab_git_auth_header) passed as a one-off `-c
     http.extraHeader=...` override *before* the `clone` subcommand — a
     runtime override for this single git invocation only, never written into
     the resulting workspace's `.git/config` the way embedding credentials in
@@ -138,6 +140,18 @@ def build_clone_command(
 
 def _is_local_repo_path(repo_url: str) -> bool:
     return bool(_WINDOWS_ABS_PATH_RE.match(repo_url))
+
+
+def gitlab_git_auth_header(access_token: str) -> str:
+    """GitLab's git-over-HTTP endpoint rejects `Authorization: Bearer` for an
+    OAuth access token (401 "HTTP Basic: Access denied", verified against a
+    real instance) — it only accepts the token as HTTP Basic with username
+    `oauth2`. The REST API (/api/v4) takes Bearer; git does not."""
+    encoded = base64.b64encode(f"oauth2:{access_token}".encode()).decode("ascii")
+    # The encoded form is a distinct string from the raw token, so the log
+    # redactor wouldn't recognize it as a secret unless registered too.
+    secrets.register_secret(encoded)
+    return f"Authorization: Basic {encoded}"
 
 
 def _is_configured_gitlab_host(repo_url: str, settings: Settings) -> bool:
@@ -378,7 +392,7 @@ async def clone_repo(
     ):
         access_token = await get_valid_gitlab_access_token_for_user(owner_user_id, store, settings)
         if access_token:
-            auth_header = f"Authorization: Bearer {access_token}"
+            auth_header = gitlab_git_auth_header(access_token)
     if is_local_source:
         local_source = Path(repo_url)
         _validate_local_source_path(local_source)
