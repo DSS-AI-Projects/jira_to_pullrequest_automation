@@ -36,7 +36,7 @@ services:
       # These override anything in backend/.env so the local stack is predictable.
       AUTH_ENABLED: "true"
       AUTH_ALLOW_DEV_LOGIN: "true"
-      AUTH_SESSION_COOKIE_SECURE: "false"
+      AUTH_SESSION_COOKIE_SECURE: "true"
       AUTH_TRUSTED_PROXY_ENABLED: "false"
       # Allow the browser origins used for local access (cookie auth needs an
       # explicit allowlist, not "*", because requests send credentials).
@@ -73,11 +73,20 @@ services:
       # NEXT_PUBLIC_API_BASE_URL is intentionally unset: at runtime the browser
       # (on http://localhost:3000) resolves the API base to http://localhost:8000,
       # which is the published backend port above. Set it only for split origins.
-    ports:
-      - "3000:3000"
+#    ports:
+#      - "3000:3000"
     depends_on:
       backend:
         condition: service_healthy
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - frontend
 
 volumes:
   backend_var:
