@@ -8,7 +8,8 @@
 # Dockerfile's COPY always has something to copy.
 backend/certs/*.crt
 backend/certs/*.pem
-
+certs/
+backend/certs/
 # App runtime data (SQLite DB, repo clones)
 var/
 *.db
