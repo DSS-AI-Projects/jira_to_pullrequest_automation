@@ -15,22 +15,24 @@ it's always safely retryable with corrected input.
 
 `push_branch` is a separate, later, explicitly-triggered step — see its own
 docstring below for why it targets `Job.repo_info.origin_url` rather than
-the workspace clone's own "origin" remote, and for the ambient-git-auth
-credential model (Phase A: no per-user token is ever handed to a git
-subprocess — see CLAUDE.md's "Branch preparation" section).
+the workspace clone's own "origin" remote, and for the two credential modes
+(delegated per-user OAuth token vs. ambient machine credentials —
+PUSH_AUTH_MODE; see CLAUDE.md's "Branch preparation and push").
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger, redact
 from app.jobs.models import Job, RequirementSource
-from app.jobs.runner import BranchResult, PushResult
+from app.jobs.runner import BranchResult, CommitAuthor, PushCredentials, PushResult
 
 logger = get_logger(__name__)
 
@@ -40,6 +42,12 @@ _MAX_BRANCH_NAME_LENGTH = 200
 _MAX_COMMIT_MESSAGE_LENGTH = 2000
 _GIT_TIMEOUT_SECONDS = 60
 _PUSH_TIMEOUT_SECONDS = 120
+# A git run carrying delegated credentials must never fall back to, or wait
+# on, the machine's own credential prompts (Git Credential Manager on
+# Windows, a terminal prompt anywhere): a rejected token is a typed error,
+# not a push silently made as someone else or a hung request.
+_NON_INTERACTIVE_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "Never"}
+_IDENTITY_UNSAFE_RE = re.compile(r"[<>\r\n\x00]")
 
 
 def _slugify(text: str, max_length: int = _MAX_SLUG_LENGTH) -> str:
@@ -69,14 +77,20 @@ def _run_git(
     *args: str,
     error_code: ErrorCode = ErrorCode.BRANCH_CREATION_FAILED,
     timeout: int = _GIT_TIMEOUT_SECONDS,
+    config: Sequence[str] = (),
 ) -> str:
+    # `config` entries become one-off `-c key=value` overrides for this git
+    # process only. They may carry a credential (a delegated push's auth
+    # header), so they're deliberately left out of every error message below.
+    overrides = [part for entry in config for part in ("-c", entry)]
     try:
         completed = subprocess.run(
-            ["git", "-C", str(workspace_path), *args],
+            ["git", *overrides, "-C", str(workspace_path), *args],
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
+            env=_NON_INTERACTIVE_ENV if config else None,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise AppError(
@@ -109,11 +123,27 @@ def _validate_branch_name(workspace_path: Path, name: str) -> None:
         raise AppError(ErrorCode.BRANCH_NAME_INVALID)
 
 
+def _author_config(author: CommitAuthor | None) -> list[str]:
+    """`user.name`/`user.email` overrides so the commit (author and
+    committer) is attributed to the signed-in user rather than the
+    workspace's placeholder `jira2pullreq` identity. Characters git's ident
+    format can't hold (`<`, `>`, newlines) are dropped; an unusable value
+    keeps the placeholder rather than failing the commit."""
+    if author is None:
+        return []
+    name = _IDENTITY_UNSAFE_RE.sub("", author.name).strip()
+    email = _IDENTITY_UNSAFE_RE.sub("", author.email).strip()
+    if not name or "@" not in email:
+        return []
+    return [f"user.name={name}", f"user.email={email}"]
+
+
 def _create_branch_sync(
     job: Job,
     workspace_path: Path,
     branch_name: str | None,
     commit_message: str | None,
+    author: CommitAuthor | None = None,
 ) -> BranchResult:
     name = (branch_name or default_branch_name(job)).strip()
     message = (commit_message or default_commit_message(job)).strip()
@@ -139,7 +169,7 @@ def _create_branch_sync(
             user_message="There are no changes to commit for this job.",
         )
 
-    _run_git(workspace_path, "commit", "-m", message)
+    _run_git(workspace_path, "commit", "-m", message, config=_author_config(author))
     commit_sha = _run_git(workspace_path, "rev-parse", "HEAD")
 
     logger.info("job %s: created branch %s at %s", job.id, name, commit_sha)
@@ -151,19 +181,42 @@ async def create_branch(
     workspace_path: Path,
     branch_name: str | None,
     commit_message: str | None,
+    author: CommitAuthor | None = None,
 ) -> BranchResult:
     return await asyncio.to_thread(
-        _create_branch_sync, job, workspace_path, branch_name, commit_message
+        _create_branch_sync, job, workspace_path, branch_name, commit_message, author
     )
 
 
-def _remote_branch_exists(workspace_path: Path, remote_url: str, name: str) -> bool:
+def _push_config(credentials: PushCredentials | None) -> list[str]:
+    if credentials is None:
+        return []
+    # An empty `credential.helper` resets the helper list, so a rejected
+    # token can never be retried with the machine's stored credentials.
+    return ["credential.helper=", f"http.extraHeader={credentials.auth_header}"]
+
+
+def _remote_branch_exists(
+    workspace_path: Path, remote_url: str, name: str, credentials: PushCredentials | None
+) -> bool:
+    config = _push_config(credentials)
     completed = subprocess.run(
-        ["git", "-C", str(workspace_path), "ls-remote", "--exit-code", "--heads", remote_url, name],
+        [
+            "git",
+            *[part for entry in config for part in ("-c", entry)],
+            "-C",
+            str(workspace_path),
+            "ls-remote",
+            "--exit-code",
+            "--heads",
+            remote_url,
+            name,
+        ],
         capture_output=True,
         text=True,
         timeout=_PUSH_TIMEOUT_SECONDS,
         check=False,
+        env=_NON_INTERACTIVE_ENV if config else None,
     )
     # Exit code 2 means "reachable but no matching ref" (--exit-code) — the
     # branch name is free. Any other non-zero code is a real problem
@@ -172,10 +225,21 @@ def _remote_branch_exists(workspace_path: Path, remote_url: str, name: str) -> b
     return completed.returncode == 0
 
 
+_AMBIENT_PUSH_FAILED_MESSAGE = (
+    "Pushing the branch failed. Check that this machine's git credentials "
+    "(SSH key / credential helper) can push to that remote."
+)
+_DELEGATED_PUSH_FAILED_MESSAGE = (
+    "Pushing the branch failed. The repository host rejected the push — check "
+    "that your connected account has write access to this repository."
+)
+
+
 def _push_branch_sync(
     job: Job,
     workspace_path: Path,
     branch_name: str | None,
+    credentials: PushCredentials | None = None,
 ) -> PushResult:
     if job.branch_name is None:
         raise AppError(ErrorCode.BRANCH_PUSH_NOT_AVAILABLE)
@@ -195,6 +259,10 @@ def _push_branch_sync(
             ErrorCode.BRANCH_PUSH_NOT_AVAILABLE,
             user_message="This job's repository has no remote to push to.",
         )
+    if credentials is not None:
+        # Same repository, by the https URL the user's token is valid for
+        # (a LOCAL job's origin may be an SSH remote — see git_auth).
+        remote_url = credentials.remote_url
 
     name = job.branch_name
     if branch_name and branch_name != job.branch_name:
@@ -213,17 +281,29 @@ def _push_branch_sync(
         )
         name = new_name
 
-    if _remote_branch_exists(workspace_path, remote_url, name):
+    if _remote_branch_exists(workspace_path, remote_url, name, credentials):
         raise AppError(ErrorCode.BRANCH_PUSH_REJECTED)
 
-    _run_git(
-        workspace_path,
-        "push",
-        remote_url,
-        f"{name}:refs/heads/{name}",
-        error_code=ErrorCode.BRANCH_PUSH_FAILED,
-        timeout=_PUSH_TIMEOUT_SECONDS,
-    )
+    try:
+        _run_git(
+            workspace_path,
+            "push",
+            remote_url,
+            f"{name}:refs/heads/{name}",
+            error_code=ErrorCode.BRANCH_PUSH_FAILED,
+            timeout=_PUSH_TIMEOUT_SECONDS,
+            config=_push_config(credentials),
+        )
+    except AppError as exc:
+        raise AppError(
+            ErrorCode.BRANCH_PUSH_FAILED,
+            user_message=(
+                _AMBIENT_PUSH_FAILED_MESSAGE
+                if credentials is None
+                else _DELEGATED_PUSH_FAILED_MESSAGE
+            ),
+            internal_detail=exc.internal_detail,
+        ) from exc
 
     logger.info("job %s: pushed branch %s to remote", job.id, name)
     return PushResult(branch_name=name, remote_url=remote_url)
@@ -233,13 +313,17 @@ async def push_branch(
     job: Job,
     workspace_path: Path,
     branch_name: str | None,
+    credentials: PushCredentials | None = None,
 ) -> PushResult:
     """Push `job.branch_name` (or, if `branch_name` differs, rename it first)
-    to the repo's real remote, using only ambient git auth — the same
-    SSH-key/credential-helper model `git clone` already relies on. No
-    per-user credential is ever read or injected here (see the module
-    docstring and CLAUDE.md's "Branch preparation" section); a shared
-    multi-user deployment where individual developers don't have their own
-    push access on the server machine needs a separate, later capability.
+    to the repo's real remote.
+
+    With `credentials` (PUSH_AUTH_MODE=delegated), the push runs as the user
+    who clicked Push, with their own OAuth token passed as a one-off
+    `http.extraHeader` — never written into the workspace — and the
+    machine's credential helper disabled, so a rejected token can't fall
+    back to the machine's own identity. Without them (ambient mode), it uses
+    the machine's own git auth (SSH key / credential helper), for local
+    single-user development. See CLAUDE.md's "Branch preparation and push".
     """
-    return await asyncio.to_thread(_push_branch_sync, job, workspace_path, branch_name)
+    return await asyncio.to_thread(_push_branch_sync, job, workspace_path, branch_name, credentials)

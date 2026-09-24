@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     github_oauth_callback_url: str | None = None
     github_oauth_scopes: list[str] = ["repo", "read:user"]
     github_oauth_state_ttl_minutes: int = 10
+    # How `git push` authenticates (branch_prep.push_branch):
+    # - "delegated": as the signed-in user who clicks Push, with their own
+    #   connected GitHub/GitLab/Bitbucket OAuth token (write scope) — the only
+    #   option on a Linux server, and the UAT/production setting. Never falls
+    #   back to machine credentials; the credential helper is disabled.
+    # - "ambient": the machine's own git credentials (SSH key / credential
+    #   helper such as Git Credential Manager) — local single-user dev only.
+    push_auth_mode: Literal["ambient", "delegated"] = "ambient"
     gitlab_oauth_enabled: bool = False
     gitlab_oauth_client_id: str | None = None
     gitlab_oauth_callback_url: str | None = None
@@ -49,7 +57,13 @@ class Settings(BaseSettings):
     # push" sections). A user who connected under an older, narrower scope
     # must disconnect and reconnect to pick up a broadened scope — GitLab
     # does not retroactively expand an already-issued token's grant.
-    gitlab_oauth_scopes: list[str] = ["read_api", "read_user", "read_repository"]
+    # write_repository: needed only for delegated push (PUSH_AUTH_MODE=delegated).
+    gitlab_oauth_scopes: list[str] = [
+        "read_api",
+        "read_user",
+        "read_repository",
+        "write_repository",
+    ]
     gitlab_oauth_state_ttl_minutes: int = 10
     # Supports self-hosted GitLab, not just gitlab.com — mirrors JIRA_BASE_URL
     # selecting which Jira Cloud site to target. No trailing slash; callers

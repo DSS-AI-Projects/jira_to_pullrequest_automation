@@ -44,12 +44,13 @@ typing a secret into this app's forms. Sources:
     not connected. `JIRA_BASE_URL` still selects which Jira Cloud site to target.
 - **GitHub, GitLab, and Bitbucket Cloud — delegated OAuth** (`GITHUB_OAUTH_*` /
   `GITLAB_OAUTH_*` / `BITBUCKET_OAUTH_*`):
-  per-user tokens encrypted at rest, used **for repository discovery / quick-picks**
-  and — for GitLab and Bitbucket only, `git clone` alone — **read-level git
-  authentication as the signed-in user** (see **Repository input & local execution**
-  below for the clone-auth mechanism). `git push` always still uses the machine's
-  ambient git auth (SSH key / credential helper) — delegated write/push auth is not
-  built for any provider (see **GitLab OAuth integration** below for the full picture).
+  per-user tokens encrypted at rest, used **for repository discovery / quick-picks**,
+  for **`git clone` as the job owner** (read, best-effort), and — with
+  `PUSH_AUTH_MODE=delegated` — for **`git push` as whoever clicks Push** (write,
+  strict: no fallback to machine credentials). One module owns the policy for
+  both (`app/auth/git_auth.py`); see **Repository input & local execution**'s
+  "Clone auth" and **Delegated push** below. Owner-approved design (clicker, not
+  job owner, pushes; commits are authored as the signed-in user).
   **Each provider's tokens are encrypted under that provider's own Fernet key** —
   `encrypt_secret()`/`decrypt_secret()` (`backend/app/core/crypto.py`) both take a
   **required, no-default** `provider=` keyword argument ("jira", "github", or
@@ -96,11 +97,11 @@ enabled (`backend/app/auth/`, `backend/app/api/auth.py`):
 Delegated per-user GitLab OAuth, mirroring the shape of the GitHub integration
 (`backend/app/auth/gitlab_oauth.py`, `app/api/auth.py`'s `POST
 /repo-hosting/gitlab/connect` / `GET /repo-hosting/gitlab/callback` / `GET
-/repo-hosting/gitlab/repos`) — used for repository discovery/quick-picks, and
-(GitLab only, read-only) to authenticate `git clone` as the signed-in user;
-see **Repository input & local execution**'s "Clone auth" for that mechanism
-and its safeguards. `git push` still never sees a GitLab token, ever — see
-that section's "Never widens to push."
+/repo-hosting/gitlab/repos`) — used for repository discovery/quick-picks, to
+authenticate `git clone` as the job owner (see **Repository input & local
+execution**'s "Clone auth"), and — with `PUSH_AUTH_MODE=delegated` and the
+`write_repository` scope — to push as whoever clicks Push (see **Delegated
+push**).
 
 - **Supports both gitlab.com and self-hosted instances**, not just gitlab.com:
   `settings.gitlab_instance_url` (default `https://gitlab.com`) is one
@@ -238,9 +239,9 @@ Delegated per-user Bitbucket Cloud OAuth (`backend/app/auth/bitbucket_oauth.py`,
 `app/api/auth.py`'s `POST /repo-hosting/bitbucket/connect` / `GET
 /repo-hosting/bitbucket/callback` / `GET /repo-hosting/bitbucket/repos`), built
 for a team whose repositories live on bitbucket.org. Same shape as the GitLab
-integration — repository quick-picks plus read-only clone auth as the signed-in
-user (see **Repository input & local execution**'s "Clone auth"); `git push`
-never sees a Bitbucket token.
+integration — repository quick-picks, clone auth as the job owner (see
+**Repository input & local execution**'s "Clone auth"), and delegated push as
+whoever clicks Push (see **Delegated push**).
 
 - **bitbucket.org only.** Bitbucket Cloud is one SaaS host, so the OAuth
   (`https://bitbucket.org/site/oauth2/...`) and API
@@ -257,14 +258,15 @@ never sees a Bitbucket token.
   documentation of where the callback page lives).
 - **The consumer, not the request, decides the grant.** Permissions are
   ticked on the OAuth consumer itself (Bitbucket workspace settings → OAuth
-  consumers); register it with **Account: Read** and **Repositories: Read**
-  only — never write/admin, matching "never widens to push."
+  consumers); register it with **Account: Read** and **Repositories: Read**,
+  plus **Repositories: Write** when `PUSH_AUTH_MODE=delegated` (never
+  admin). Changing a consumer's permissions requires each user to reconnect.
   `bitbucket_oauth_scopes` (default `["account", "repository"]`) is only the
-  fallback stored when a token response omits `scopes`.
-  `_has_repo_read_scope()` accepts `repository`, its `:write`/`:admin`
-  supersets, and `pullrequest`/`pullrequest:write` (which Bitbucket documents
-  as implying repository read); a connection without any of them falls back
-  to ambient credentials for clone, same as GitLab's stale-scope case.
+  fallback stored when a token response omits `scopes`. Which granted
+  permissions allow clone vs push is decided in `git_auth.py`'s `_SCOPES`
+  (read: `repository`, its `:write`/`:admin` supersets, `pullrequest`/
+  `pullrequest:write`; write: `repository:write`/`:admin`,
+  `pullrequest:write`).
 - **Token refresh, like GitLab.** Bitbucket access tokens expire after ~2h and
   come with a refresh token; the stale-token/refresh-before-use logic mirrors
   `gitlab_oauth.py` exactly.
@@ -321,11 +323,11 @@ never sees a Bitbucket token.
   listing with Bitbucket's own settings, callback persisting a
   correctly-keyed connection with Basic client auth and form body, repo
   listing with userinfo-free clone URLs, refresh before listing, not-connected,
-  disconnect, token helper incl. missing repo scope / not configured,
-  `_has_repo_read_scope`); `test_repo_clone.py` (Bitbucket host → Bitbucket
-  token only, `x-token-auth` header, ambient fallback);
+  disconnect, delegated push API); `test_git_auth.py` (host matching, the
+  read/write scope table for all three providers, `x-token-auth` header,
+  clone fallback, every push "what to fix" reason);
   `bitbucket-callback-page.test.tsx`, plus `auth-gate.test.tsx` /
-  `job-form.test.tsx` coverage.
+  `job-form.test.tsx` / `job-status-view.test.tsx` coverage.
 
 ## Security invariants — each backed by a mechanical check
 
@@ -693,76 +695,68 @@ unless `ALLOW_DIRTY_LOCAL_REPOS`, and `REQUIRE_LOCAL_BRANCH_TICKET_MATCH` option
 requires the branch name contain the ticket key. `RepoInfo` (source kind, branch,
 commit SHA, origin URL, dirty flag) is captured on the job.
 
-**Clone auth: ambient by default, the signed-in user's own GitLab/Bitbucket
-token when it applies.** `git clone` inherits the machine's ambient git auth (SSH key /
-credential helper) by default — the same trust model `git push` still always
-uses. One narrow, deliberate exception: when a `REMOTE` clone's host matches
-the configured `GITLAB_INSTANCE_URL` and the job's owning user has a valid
-GitLab connection, `clone_repo()` (`app/steps/repo_clone.py`) authenticates
-the clone as *that user* instead — the same account they already used to
-pick the repo from the connected-repos quick-picks, now also used to read
-it. This directly fixes the alternative this app previously required for
-every GitLab clone: a separately-provisioned, admin-managed ambient
-credential (an SSH deploy key or a `.netrc`-based HTTPS credential) — with
-per-user OAuth, a user who can already *see* a repo via "Connect GitLab" can
-now also *clone* it, with zero additional ops setup.
+**Clone auth: the job owner's own connected account when one applies, ambient
+otherwise.** For a `REMOTE` clone on github.com, the configured
+`GITLAB_INSTANCE_URL` host, or bitbucket.org, `clone_repo()`
+(`app/steps/repo_clone.py`) asks `git_auth.delegated_clone_auth_header()` for
+the job owner's own token for that provider — the same account they used to
+pick the repo from the connected-repos quick-picks — and otherwise inherits the
+machine's ambient git auth (SSH key / credential helper). This removes the need
+for a separately-provisioned, admin-managed clone credential (SSH deploy key,
+`.netrc`) on the server: a user who can *see* a repo via "Connect …" can also
+*clone* it.
 
-- **Never widens to push.** `git push` (`branch_prep.py`'s `push_branch()`)
-  is untouched — still ambient-only, always. This is a one-way relaxation of
-  exactly one operation (clone), not a general move toward per-user
-  delegated git auth; see **GitLab OAuth integration** below and the
-  concerns documented there for why push stays ambient-only.
+- **One policy module for clone and push** (`app/auth/git_auth.py`): exact-host
+  provider matching (`provider_for_url` — look-alike hosts get nothing, so one
+  provider's token is never offered to another host), per-provider read/write
+  scope sets (`_SCOPES`), and the Basic header form. Clone uses the *read* set
+  and is best-effort; push uses the *write* set and is strict (see **Delegated
+  push**). The provider modules only expose "a fresh, decrypted token for this
+  stored connection" (`fresh_github_access_token` / `fresh_gitlab_access_token`
+  / `fresh_bitbucket_access_token`, refreshing GitLab/Bitbucket tokens first).
 - **The token never touches the cloned workspace, only the one clone
   invocation.** The naive approach — embedding the token in the clone URL
   (`https://oauth2:<token>@gitlab.../repo.git`) — would have git persist
   that URL, credential included, into the workspace's own `.git/config`,
   which the planning/implementation agent can `Read`/`Grep` (invariant 3).
   Instead, `build_clone_command()` passes the token as a one-off `git -c
-  http.extraHeader="Authorization: Basic <base64 of oauth2:token>"` override
+  http.extraHeader="Authorization: Basic <base64 of username:token>"` override
   *before* the `clone` subcommand — a runtime override for that single git
   process only, never written to any file in the resulting workspace.
-- **Basic with username `oauth2`, not Bearer — GitLab's git endpoint is not
-  its REST API.** `/api/v4` accepts `Authorization: Bearer <token>`, but the
-  git-over-HTTP endpoint (`.../repo.git/info/refs`) rejects Bearer with a 401
-  "HTTP Basic: Access denied" *even for a correctly `read_repository`-scoped
-  token* — verified directly against a real self-hosted instance, where the
-  same token returned 200 as `Basic base64("oauth2:" + token)` and 401 as
-  Bearer. The first version of this feature sent Bearer and failed exactly
-  that way; since git then falls back to its credential helper (Git
-  Credential Manager on Windows: "missing OAuth configuration for <host>",
-  then "could not read Username... terminal prompts disabled"), the failure
-  looked identical to a missing-scope or not-deployed problem, and it took
-  testing both header forms against the live endpoint to tell them apart.
-  `gitlab_git_auth_header()` builds the Basic form and registers the encoded
-  value with the log redactor too, since it's a distinct string from the raw
-  token the redactor already knows about.
-- **Requires `read_repository` scope, which `read_api` does not include.**
-  GitLab treats REST API access and git-level repository access as separate
-  scopes — the connected-repos picker only ever needed `read_api` +
-  `read_user`. `gitlab_oauth_scopes` now defaults to `["read_api",
-  "read_user", "read_repository"]`; a user who connected under the old,
-  narrower scope must disconnect and reconnect to pick one up — GitLab does
-  not retroactively expand an already-issued token's grant. Still
-  deliberately *not* `write_repository` or the broad `api` scope — this
-  remains read-only, matching "never widens to push" above.
-- **Best-effort, never a hard requirement.** `get_valid_gitlab_access_token_for_user()`
-  (`app/auth/gitlab_oauth.py`) returns `None` — never raises — whenever GitLab
-  OAuth isn't configured, the user has no connection, or a stored token can't
-  be decrypted/refreshed; `clone_repo()` then falls straight through to
-  ambient credentials exactly as before. An unauthenticated deployment
-  (`AUTH_ENABLED=false`, no `owner_user_id`) or a repo on any other host is
-  unaffected either way.
-- **Bitbucket Cloud gets the same treatment, by exact host match.**
-  `_delegated_clone_auth_header()` (`repo_clone.py`) picks the provider from
-  the repo URL's host: the configured GitLab instance host → the user's
-  GitLab token (Basic `oauth2:`), `bitbucket.org` → the user's Bitbucket
-  token (Basic `x-token-auth:`, Bitbucket's documented username for
-  OAuth/access-token git auth — `bitbucket_git_auth_header()`), anything else
-  → ambient. Hosts are compared exactly, so one provider's token is never
-  offered to another host. Same header-override mechanism, same redactor
-  registration, same best-effort `None`-means-ambient contract
-  (`get_valid_bitbucket_access_token_for_user()`), same never-push rule. See
-  **Bitbucket Cloud OAuth integration** below.
+- **Basic with a provider-specific username, not Bearer — a git endpoint is
+  not a REST API.** GitLab's `/api/v4` accepts `Authorization: Bearer <token>`,
+  but its git-over-HTTP endpoint (`.../repo.git/info/refs`) rejects Bearer with
+  a 401 "HTTP Basic: Access denied" *even for a correctly
+  `read_repository`-scoped token* — verified directly against a real
+  self-hosted instance, where the same token returned 200 as
+  `Basic base64("oauth2:" + token)` and 401 as Bearer. The first version of
+  this feature sent Bearer and failed exactly that way; since git then falls
+  back to its credential helper (Git Credential Manager on Windows: "missing
+  OAuth configuration for <host>", then "could not read Username... terminal
+  prompts disabled"), the failure looked identical to a missing-scope or
+  not-deployed problem, and it took testing both header forms against the
+  live endpoint to tell them apart. Usernames (`git_auth._BASIC_USERNAMES`):
+  GitLab `oauth2` and Bitbucket `x-token-auth` (both verified live for read),
+  GitHub `x-access-token` (GitHub ignores the username for token auth; not
+  yet verified live — no GitHub connection existed at implementation time).
+  `git_auth_header()` registers the encoded value with the log redactor too,
+  since it's a distinct string from the raw token the redactor already knows.
+- **GitLab needs `read_repository` (clone) and `write_repository` (push),
+  neither of which `read_api` includes.** GitLab treats REST API access and
+  git-level repository access as separate scopes. `gitlab_oauth_scopes` now
+  defaults to `["read_api", "read_user", "read_repository",
+  "write_repository"]`; a user who connected under a narrower scope must
+  reconnect — GitLab does not retroactively expand an already-issued token's
+  grant. Checking the scopes on file first (rather than trying a token git
+  will 401) turns a confusing credential-helper failure into an actionable
+  "reconnect".
+- **Clone is best-effort, never a hard requirement.**
+  `delegated_clone_auth_header()` returns `None` — never raises — whenever the
+  provider isn't configured, the owner has no connection, its scopes don't
+  allow reading, or the token can't be decrypted/refreshed; `clone_repo()`
+  then falls straight through to ambient credentials. An unauthenticated
+  deployment (`AUTH_ENABLED=false`, no `owner_user_id`) or a repo on any other
+  host is unaffected either way.
 
 **Optional base branch.** The job-creation form also accepts an optional
 `base_branch` (`Job.base_branch`) — an existing branch to clone from (e.g.
@@ -980,20 +974,81 @@ in this app, both are explicitly triggered by the user, never automatic.
   `checkout -B <name> <baseline>` is a no-op move that never touches the working
   tree holding the (uncommitted) implementation changes.
 
-**Push (`push_branch()`) is a separate, later, explicitly-triggered step — and,
-deliberately, the smallest change that could satisfy "push to GitHub" rather than
-the larger delegated-credential design also considered:**
+- **The commit is authored as the signed-in user** who creates the branch
+  (owner-approved): `create_branch` runs `git -c user.name=… -c user.email=…
+  commit` with their app display name and email (`CommitAuthor`, routes.py
+  `_commit_author`), so both author and committer are that person rather than
+  the workspace's placeholder `jira2pullreq <workspace@jira2pullreq.local>`.
+  Characters git's ident format can't hold (`<`, `>`, newlines) are stripped;
+  an unusable value (or `AUTH_ENABLED=false`, no user) keeps the placeholder.
+  Recorded as `Job.branch_commit_author` and shown on the branch card.
 
-- **Ambient git auth only — no per-user credential is ever read or injected.**
-  Unlike `git clone` (which now has one narrow exception — the signed-in
-  user's own GitLab token, read-only; see **Repository input & local
-  execution**'s "Clone auth"), `git push` always uses the machine's ambient
-  auth (SSH key / credential helper), with no exception. A shared multi-user
-  deployment where individual developers don't have their own push access on
-  that machine needs a separate, later capability (delegating the user's own
-  connected GitHub/GitLab OAuth token, scoped for write) — deliberately not
-  built here; seeing this gap is the reason to build it, not a reason to
-  work around it in the meantime.
+**Push (`push_branch()`) is a separate, later, explicitly-triggered step, with
+two credential modes (`PUSH_AUTH_MODE`):**
+
+- **`delegated` — push as whoever clicks Push, with their own connected account**
+  (the UAT/production setting; the only option on a Linux server, which has no
+  Git Credential Manager). See **Delegated push** below.
+- **`ambient` (default) — the machine's own git credentials** (SSH key /
+  credential helper), for local single-user development. On Windows this is
+  Git Credential Manager, which can pop up its own sign-in window and store
+  the result — but only if the backend process wasn't started with
+  `GCM_INTERACTIVE=never` / `GIT_TERMINAL_PROMPT=0` (a Claude Code shell sets
+  both, so a backend launched from one fails with "Cannot prompt because user
+  interactivity has been disabled" instead). That machine-level credential is
+  shared by every user of that backend — the reason delegated mode exists.
+
+### Delegated push
+
+Owner-approved design: push runs as the **signed-in user who clicks Push**
+(not the job owner — an admin pushing someone else's job pushes as the admin;
+the owner's connection is never used on their behalf), with the OAuth token
+from that user's own GitHub/GitLab/Bitbucket connection, **never falling back
+to machine credentials**. The provider then enforces that person's own
+repository permissions, and its audit log names them.
+
+- **Resolution (`git_auth.resolve_push_auth`, called by the push route before
+  any git runs):** the job's `origin_url` → its https form
+  (`https_remote_url`: an SSH origin like `git@github.com:org/repo.git` from a
+  `LOCAL` job becomes `https://github.com/org/repo.git`, since a token only
+  works over HTTPS; plain `http://` is refused rather than send a token in
+  the clear) → provider by exact host → the clicker's connection → write
+  scope (GitHub `repo`/`public_repo`, GitLab `write_repository`/`api`,
+  Bitbucket `repository:write`/`:admin`/`pullrequest:write`) → a fresh token.
+  Each failure is a typed, actionable error: `BRANCH_PUSH_REAUTH_REQUIRED`
+  ("Connect your Bitbucket account…", "Your GitLab connection is read-only.
+  Reconnect … to grant write access", "…has expired") or
+  `BRANCH_PUSH_NOT_AVAILABLE` (no remote, unsupported host, provider not
+  configured, auth disabled, non-https remote).
+- **The git runs (`ls-remote` collision check and `push`)** get
+  `-c credential.helper= -c http.extraHeader=Authorization: Basic …` plus
+  `GIT_TERMINAL_PROMPT=0` / `GCM_INTERACTIVE=Never`. The empty
+  `credential.helper` resets the helper list, so a rejected token can't be
+  retried with the machine's stored credentials (a push silently made as
+  someone else) or hang on a prompt. The header is never in the URL, never
+  written to the workspace, and never included in an error message
+  (`_run_git`'s `config` entries are kept out of its error text).
+- **Push identity up front:** `GET /jobs/{id}/push-identity` returns who the
+  push would run as (`mode`, `provider`, `account_name`, `ready`, `reason`) —
+  computed from the stored connection only, no git and no token use. The
+  Push card shows "Will push as <account> on <Provider>", or the reason plus
+  a Connect/Reconnect button, with the Push button disabled until ready.
+- **Recorded on the job:** `branch_pushed_by_user_id`, `branch_push_provider`,
+  `branch_push_account` (shown as "Pushed … as <account>").
+- **Provider setup for delegated push:** GitHub OAuth App — nothing (`repo`
+  already includes write; org OAuth-app restrictions may need an approval);
+  GitLab application — tick `write_repository` (and it's in the default
+  `GITLAB_OAUTH_SCOPES`; an explicit `GITLAB_OAUTH_SCOPES` in `.env`
+  overrides the default and must include it); Bitbucket consumer — tick
+  Repositories: Write. Existing connections must reconnect to pick up the new
+  grant. `PUSH_AUTH_MODE=delegated` in the server `.env`.
+- **Known gaps (optional hardening, not built):** a GitHub OAuth App token's
+  `repo` scope covers every repo the user can access and doesn't expire (a
+  GitHub App would give expiring, installation-scoped tokens); disconnect
+  deletes the stored token but doesn't call the provider's revoke endpoint.
+  The GitHub Basic username (`x-access-token`) is not yet verified live, and
+  write access has not yet been verified live for any provider.
+
 - **Targets `Job.repo_info.origin_url`, never the workspace clone's own "origin"
   remote.** For a `LOCAL` job those are different things: `origin_url` was
   captured from the *original* local source's own git config before cloning (see
@@ -1005,6 +1060,13 @@ the larger delegated-credential design also considered:**
   their real remote — a `LOCAL_FOLDER` job (no real remote ever existed) or a
   `LOCAL` job with no configured origin correctly has `origin_url = None` and is
   rejected with `BRANCH_PUSH_NOT_AVAILABLE`.
+- **Create-branch / push errors render inline, inside their own card**
+  (`createBranchError` / `pushBranchError` in `job-status-view.tsx`), not in
+  the page-level banner. Those cards sit far below the top of a long job page;
+  with the banner, a failed push (e.g. `BRANCH_PUSH_FAILED` — "could not read
+  Username for 'https://bitbucket.org': terminal prompts disabled" when this
+  machine has no git credentials for that host) was off-screen, and the Push
+  button looked like it did nothing.
 - **Never force-pushes.** A `git ls-remote --heads` check runs before pushing; if
   a branch with that name already exists on the remote, the request is rejected
   (`BRANCH_PUSH_REJECTED`) rather than overwriting it.
@@ -1155,25 +1217,26 @@ the header only when the signed-in user's role is `ADMIN`.
 **In:** non-secret form; a Jira ticket or an uploaded PDF requirement document as
 alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
 delegated Jira/GitHub/GitLab/Bitbucket Cloud OAuth with encrypted-at-rest
-tokens (used for repository discovery, and — GitLab and Bitbucket only,
-read-only — to authenticate `git clone` as the signed-in user; see below); async jobs with SQLite store + polling
+tokens (used for repository discovery, `git clone` as the job owner, and —
+`PUSH_AUTH_MODE=delegated` — `git push` as the clicking user; see below); async
+jobs with SQLite store + polling
 status screen; the plan pipeline (fetch/clone/map/plan); an isolated-clone
 implement + validate phase, available for local *and* remote repos alike; a
 single, explicitly opt-in validation-correction pass after a failed validation;
 creating a branch and committing the reviewed diff inside the isolated
-workspace, then pushing it to the repo's real remote using ambient git auth
-(never force-pushes, never opens a pull request); plan and diff review screens;
+workspace (committed as the signed-in user), then pushing it to the repo's
+real remote — as the clicking user with their own connected account
+(`PUSH_AUTH_MODE=delegated`) or with ambient machine credentials (never
+force-pushes, never opens a pull request); plan and diff review screens;
 a paginated job-history list scoped to the owner (admins/no-auth-mode see all);
 an admin-only per-user cost-usage dashboard; typed errors; quality gates;
 security-invariant tests; a reference shared-deployment stack under `deploy/`.
 
-**Out (not built; do not scaffold):** opening a pull request; delegated *git
-push* auth (`git push` always uses ambient credentials only — no per-user
-token is ever handed to it; `git clone` is the one narrow, deliberate
-exception, GitLab/Bitbucket-only, read-only — see **Repository input & local
-execution**'s "Clone auth"); Bitbucket Data Center/Server (only Bitbucket
-Cloud, bitbucket.org, is supported); a durable workflow engine; a
-network-locked sandbox; an embeddings/vector index.
+**Out (not built; do not scaffold):** opening a pull request; a GitHub App
+(installation-scoped, expiring tokens) and provider-side token revocation on
+disconnect — optional hardening for delegated push; Bitbucket Data
+Center/Server (only Bitbucket Cloud, bitbucket.org, is supported); a durable
+workflow engine; a network-locked sandbox; an embeddings/vector index.
 
 ## Stack
 

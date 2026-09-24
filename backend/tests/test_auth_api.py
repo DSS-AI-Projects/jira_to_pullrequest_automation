@@ -10,16 +10,6 @@ import respx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from app.auth.bitbucket_oauth import (
-    _has_repo_read_scope as _bitbucket_has_repo_read_scope,  # pyright: ignore[reportPrivateUsage]
-)
-from app.auth.bitbucket_oauth import (
-    get_valid_bitbucket_access_token_for_user,
-)
-from app.auth.gitlab_oauth import (
-    _has_repo_read_scope,  # pyright: ignore[reportPrivateUsage]
-    get_valid_gitlab_access_token_for_user,
-)
 from app.auth.models import RepoHostingAuthKind, RepoHostingConnection, RepoHostingProvider
 from app.core.config import get_settings
 from app.core.crypto import decrypt_secret, encrypt_secret
@@ -800,7 +790,7 @@ def test_gitlab_repo_connect_returns_authorization_url(
     assert params["client_id"] == ["gitlab-client"]
     assert params["redirect_uri"] == ["http://localhost:3000/auth/gitlab/callback"]
     assert params["response_type"] == ["code"]
-    assert params["scope"] == ["read_api read_user read_repository"]
+    assert params["scope"] == ["read_api read_user read_repository write_repository"]
     assert params["state"]
 
 
@@ -1135,136 +1125,6 @@ def test_repo_hosting_disconnect_removes_stored_gitlab_connection(
 
     assert disconnect.status_code == 200
     assert auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.GITLAB) is None
-
-
-async def test_get_valid_gitlab_access_token_for_user_returns_the_decrypted_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Used by repo_clone.py to authenticate `git clone` as the signed-in
-    user — a thin wrapper over the same refresh-aware logic the repo-listing
-    endpoint already relies on (test_gitlab_repo_listing_refreshes_an_expired_
-    token_before_listing covers the refresh path itself)."""
-    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
-    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
-    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://testserver/auth/gitlab/callback")
-    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
-    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
-    get_settings.cache_clear()
-    store = JobStore(":memory:")
-    store.save_repo_hosting_connection(
-        RepoHostingConnection.new(
-            user_id="user-1",
-            provider=RepoHostingProvider.GITLAB,
-            auth_kind=RepoHostingAuthKind.OAUTH_USER,
-            account_name="octocat",
-            account_id="54321",
-            account_url="https://gitlab.com/octocat",
-            scopes=["read_api", "read_user", "read_repository"],
-            access_token_encrypted=encrypt_secret("gitlab-access-token", provider="gitlab"),
-            access_token_expires_at=datetime.now(UTC) + timedelta(hours=2),
-        )
-    )
-
-    token = await get_valid_gitlab_access_token_for_user("user-1", store, get_settings())
-
-    assert token == "gitlab-access-token"
-    get_settings.cache_clear()
-
-
-def test_has_repo_read_scope_accepts_read_repository_or_the_broader_api_scope() -> None:
-    def connection_with(scopes: list[str]) -> RepoHostingConnection:
-        return RepoHostingConnection.new(
-            user_id="user-1",
-            provider=RepoHostingProvider.GITLAB,
-            auth_kind=RepoHostingAuthKind.OAUTH_USER,
-            account_name="octocat",
-            account_id="54321",
-            account_url="https://gitlab.com/octocat",
-            scopes=scopes,
-        )
-
-    assert _has_repo_read_scope(connection_with(["read_api", "read_user", "read_repository"]))
-    # "api" is GitLab's broad scope, a superset that already includes
-    # repository access even though this app's own connect flow never
-    # requests it — a connection made some other way should still count.
-    assert _has_repo_read_scope(connection_with(["api"]))
-    assert not _has_repo_read_scope(connection_with(["read_api", "read_user"]))
-    assert not _has_repo_read_scope(connection_with([]))
-
-
-async def test_get_valid_gitlab_access_token_for_user_returns_none_for_stale_scope(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Regression test: a connection made before GITLAB_OAUTH_SCOPES included
-    read_repository (e.g. one that predates a deployment picking up that
-    config change) has read_api + read_user only. GitLab's git-over-HTTP
-    endpoint rejects that token with a 401 regardless of how it's presented
-    — trying it anyway sends git down its own credential-helper fallback
-    (Git Credential Manager on Windows, for instance), producing a confusing
-    "could not read Username" failure that looks unrelated to scope at all.
-    Checking the scope already on file must skip straight to None (ambient
-    fallback) instead of attempting a token guaranteed to be rejected."""
-    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
-    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
-    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://testserver/auth/gitlab/callback")
-    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
-    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
-    get_settings.cache_clear()
-    store = JobStore(":memory:")
-    store.save_repo_hosting_connection(
-        RepoHostingConnection.new(
-            user_id="user-1",
-            provider=RepoHostingProvider.GITLAB,
-            auth_kind=RepoHostingAuthKind.OAUTH_USER,
-            account_name="octocat",
-            account_id="54321",
-            account_url="https://gitlab.com/octocat",
-            scopes=["read_api", "read_user"],
-            access_token_encrypted=encrypt_secret("gitlab-access-token", provider="gitlab"),
-            access_token_expires_at=datetime.now(UTC) + timedelta(hours=2),
-        )
-    )
-
-    token = await get_valid_gitlab_access_token_for_user("user-1", store, get_settings())
-
-    assert token is None
-    get_settings.cache_clear()
-
-
-async def test_get_valid_gitlab_access_token_for_user_returns_none_when_not_connected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GITLAB_OAUTH_ENABLED", "true")
-    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_ID", "gitlab-client")
-    monkeypatch.setenv("GITLAB_OAUTH_CALLBACK_URL", "http://testserver/auth/gitlab/callback")
-    monkeypatch.setenv("GITLAB_OAUTH_CLIENT_SECRET", "gitlab-secret")
-    monkeypatch.setenv("GITLAB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
-    get_settings.cache_clear()
-    store = JobStore(":memory:")
-
-    token = await get_valid_gitlab_access_token_for_user("user-1", store, get_settings())
-
-    assert token is None
-    get_settings.cache_clear()
-
-
-async def test_get_valid_gitlab_access_token_for_user_returns_none_when_not_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("GITLAB_OAUTH_ENABLED", raising=False)
-    get_settings.cache_clear()
-    store = JobStore(":memory:")
-
-    token = await get_valid_gitlab_access_token_for_user("user-1", store, get_settings())
-
-    assert token is None
-    get_settings.cache_clear()
-
-
-# --- Bitbucket Cloud: same coverage shape as GitLab above, with Bitbucket's
-# own protocol differences — client credentials sent as HTTP Basic on a
-# form-encoded token request, a plural `scopes` field in the token response,
-# and a userinfo-bearing clone link that must be stripped. ---
 
 
 def _enable_bitbucket_oauth(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1620,63 +1480,172 @@ def test_repo_hosting_disconnect_removes_stored_bitbucket_connection(
     assert auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.BITBUCKET) is None
 
 
-async def test_get_valid_bitbucket_access_token_for_user_returns_the_decrypted_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _enable_bitbucket_oauth(monkeypatch)
-    store = JobStore(":memory:")
-    store.save_repo_hosting_connection(_bitbucket_connection("user-1"))
-
-    token = await get_valid_bitbucket_access_token_for_user("user-1", store, get_settings())
-
-    assert token == "bitbucket-access-token"
-    get_settings.cache_clear()
+# --- Delegated push: as whoever clicks Push, with their own connection ------
 
 
-async def test_get_valid_bitbucket_access_token_for_user_returns_none_without_repo_scope(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A consumer granted Account only (no Repositories permission) can't
-    clone over git — fall back to ambient credentials rather than send a
-    token Bitbucket is guaranteed to reject."""
-    _enable_bitbucket_oauth(monkeypatch)
-    store = JobStore(":memory:")
-    store.save_repo_hosting_connection(_bitbucket_connection("user-1", scopes=["account"]))
+def _pushable_job(
+    store: JobStore, owner_id: str, workspace: Any, origin_url: str, **fields: Any
+) -> Job:
+    from app.jobs.models import JobState, RepoInfo, RepoSourceKind
 
-    token = await get_valid_bitbucket_access_token_for_user("user-1", store, get_settings())
-
-    assert token is None
-    get_settings.cache_clear()
-
-
-async def test_get_valid_bitbucket_access_token_for_user_returns_none_when_not_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("BITBUCKET_OAUTH_ENABLED", raising=False)
-    get_settings.cache_clear()
-    store = JobStore(":memory:")
-
-    token = await get_valid_bitbucket_access_token_for_user("user-1", store, get_settings())
-
-    assert token is None
-    get_settings.cache_clear()
+    workspace.mkdir(parents=True, exist_ok=True)
+    job = Job.new(ticket_key="KAN-41", repo_url=origin_url)
+    job.owner_user_id = owner_id
+    job.state = JobState.IMPLEMENTATION_READY
+    job.workspace_path = str(workspace)
+    job.repo_info = RepoInfo(
+        source_kind=RepoSourceKind.REMOTE,
+        branch="main",
+        commit_sha="a" * 40,
+        origin_url=origin_url,
+        is_dirty=False,
+        local_path=None,
+    )
+    for key, value in fields.items():
+        setattr(job, key, value)
+    store.create(job)
+    return job
 
 
-def test_bitbucket_has_repo_read_scope_accepts_repository_permission_supersets() -> None:
-    def connection_with(scopes: list[str]) -> RepoHostingConnection:
-        return RepoHostingConnection.new(
-            user_id="user-1",
+def _save_bitbucket_connection(store: JobStore, user_id: str, scopes: list[str]) -> None:
+    store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id=user_id,
             provider=RepoHostingProvider.BITBUCKET,
             auth_kind=RepoHostingAuthKind.OAUTH_USER,
-            account_name="jeena1",
-            account_id="{user-uuid}",
-            account_url="https://bitbucket.org/jeena1/",
+            account_name="sam-bb",
+            account_id="{uuid}",
+            account_url="https://bitbucket.org/sam-bb/",
             scopes=scopes,
+            access_token_encrypted=encrypt_secret("bb-token", provider="bitbucket"),
+            access_token_expires_at=datetime.now(UTC) + timedelta(hours=2),
         )
+    )
 
-    assert _bitbucket_has_repo_read_scope(connection_with(["account", "repository"]))
-    assert _bitbucket_has_repo_read_scope(connection_with(["repository:write"]))
-    # Bitbucket documents pull-request permission as implying repository read.
-    assert _bitbucket_has_repo_read_scope(connection_with(["pullrequest"]))
-    assert not _bitbucket_has_repo_read_scope(connection_with(["account"]))
-    assert not _bitbucket_has_repo_read_scope(connection_with([]))
+
+@pytest.fixture
+def delegated_push(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PUSH_AUTH_MODE", "delegated")
+    monkeypatch.setenv("BITBUCKET_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CALLBACK_URL", "http://testserver/auth/bitbucket/callback")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_SECRET", "bb-secret")
+    monkeypatch.setenv("BITBUCKET_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+
+
+def test_create_branch_commits_as_the_signed_in_user(
+    auth_client: TestClient, auth_store: JobStore, tmp_path: Any
+) -> None:
+    user = cast(dict[str, Any], login(auth_client, display_name="Sam Borde")["user"])
+    job = _pushable_job(
+        auth_store, user["id"], tmp_path / "ws", "https://bitbucket.org/ws/repo.git"
+    )
+
+    response = auth_client.post(f"/api/jobs/{job.id}/create-branch")
+
+    assert response.status_code == 200
+    stored = auth_store.get(job.id)
+    assert stored is not None
+    assert stored.branch_commit_author == "Sam Borde <sam@example.com>"
+
+
+def test_delegated_push_runs_as_the_clicking_users_connected_account(
+    auth_client: TestClient, auth_store: JobStore, tmp_path: Any, delegated_push: None
+) -> None:
+    user = cast(dict[str, Any], login(auth_client)["user"])
+    _save_bitbucket_connection(auth_store, user["id"], ["account", "repository:write"])
+    job = _pushable_job(
+        auth_store,
+        user["id"],
+        tmp_path / "ws",
+        "git@bitbucket.org:ws/repo.git",
+        branch_name="jira2pullreq/KAN-41",
+    )
+
+    identity = auth_client.get(f"/api/jobs/{job.id}/push-identity")
+    assert identity.status_code == 200
+    assert identity.json() == {
+        "mode": "delegated",
+        "provider": "BITBUCKET",
+        "provider_name": "Bitbucket",
+        "account_name": "sam-bb",
+        "ready": True,
+        "reason": None,
+    }
+
+    response = auth_client.post(f"/api/jobs/{job.id}/push-branch")
+
+    assert response.status_code == 200
+    # The SSH origin is pushed by its https URL (the token only works there).
+    assert response.json()["remote_url"] == "https://bitbucket.org/ws/repo.git"
+    stored = auth_store.get(job.id)
+    assert stored is not None
+    assert stored.branch_pushed_by_user_id == user["id"]
+    assert stored.branch_push_provider == "BITBUCKET"
+    assert stored.branch_push_account == "sam-bb"
+
+
+def test_delegated_push_asks_for_reconnect_on_a_read_only_connection(
+    auth_client: TestClient, auth_store: JobStore, tmp_path: Any, delegated_push: None
+) -> None:
+    user = cast(dict[str, Any], login(auth_client)["user"])
+    _save_bitbucket_connection(auth_store, user["id"], ["account", "repository"])
+    job = _pushable_job(
+        auth_store,
+        user["id"],
+        tmp_path / "ws",
+        "https://bitbucket.org/ws/repo.git",
+        branch_name="jira2pullreq/KAN-41",
+    )
+
+    identity = auth_client.get(f"/api/jobs/{job.id}/push-identity").json()
+    assert identity["ready"] is False
+    assert "read-only" in identity["reason"]
+
+    response = auth_client.post(f"/api/jobs/{job.id}/push-branch")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BRANCH_PUSH_REAUTH_REQUIRED"
+    assert "Repositories: Write" in response.json()["error"]["message"]
+    stored = auth_store.get(job.id)
+    assert stored is not None
+    assert stored.branch_pushed_at is None
+
+
+def test_delegated_push_uses_the_clicker_not_the_job_owner(
+    auth_client: TestClient, auth_store: JobStore, tmp_path: Any, delegated_push: None
+) -> None:
+    """An admin pushing someone else's job pushes as the admin — the job
+    owner's connection is never used on their behalf."""
+    owner = cast(dict[str, Any], login(auth_client, email="owner@example.com")["user"])
+    _save_bitbucket_connection(auth_store, owner["id"], ["account", "repository:write"])
+    job = _pushable_job(
+        auth_store,
+        owner["id"],
+        tmp_path / "ws",
+        "https://bitbucket.org/ws/repo.git",
+        branch_name="jira2pullreq/KAN-41",
+    )
+    login(auth_client, email="admin@example.com", display_name="Admin")
+
+    response = auth_client.post(f"/api/jobs/{job.id}/push-branch")
+
+    # The admin has no Bitbucket connection of their own.
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BRANCH_PUSH_REAUTH_REQUIRED"
+    assert "Connect your Bitbucket account" in response.json()["error"]["message"]
+
+
+def test_push_identity_in_ambient_mode_reports_machine_credentials(
+    auth_client: TestClient, auth_store: JobStore, tmp_path: Any
+) -> None:
+    user = cast(dict[str, Any], login(auth_client)["user"])
+    job = _pushable_job(
+        auth_store, user["id"], tmp_path / "ws", "https://bitbucket.org/ws/repo.git"
+    )
+
+    response = auth_client.get(f"/api/jobs/{job.id}/push-identity")
+
+    assert response.json()["mode"] == "ambient"
+    assert response.json()["ready"] is True

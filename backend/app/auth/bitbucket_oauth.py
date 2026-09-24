@@ -237,46 +237,13 @@ async def list_bitbucket_repositories(
     return BitbucketRepositoryListResponse(repos=repos)
 
 
-# Bitbucket permissions that include reading repository contents over git:
-# `repository` itself, its write/admin supersets, and the pull-request
-# permissions, which Bitbucket documents as implying repository read access.
-_REPO_READ_SCOPES = {
-    "repository",
-    "repository:write",
-    "repository:admin",
-    "pullrequest",
-    "pullrequest:write",
-}
-
-
-def _has_repo_read_scope(connection: RepoHostingConnection) -> bool:
-    return not _REPO_READ_SCOPES.isdisjoint(connection.scopes)
-
-
-async def get_valid_bitbucket_access_token_for_user(
-    user_id: str, store: JobStore, settings: Settings
-) -> str | None:
-    """Best-effort: a valid (refreshed if needed) Bitbucket access token for
-    this user's own connection, or None if they have no connection, its
-    granted permissions don't cover repository reads, it can't be
-    decrypted/refreshed, or Bitbucket OAuth isn't configured.
-
-    Same contract as gitlab_oauth.get_valid_gitlab_access_token_for_user():
-    used only to authenticate `git clone` (never push) as the signed-in user,
-    and never raises — any failure just means falling back to ambient git
-    credentials.
-    """
-    if not bitbucket_oauth_is_configured(settings):
-        return None
-    connection = store.get_repo_hosting_connection(user_id, RepoHostingProvider.BITBUCKET)
-    if connection is None or connection.access_token_encrypted is None:
-        return None
-    if not _has_repo_read_scope(connection):
-        return None
-    try:
-        _connection, access_token = await _get_valid_access_token(connection, store, settings)
-    except AppError:
-        return None
+async def fresh_bitbucket_access_token(
+    connection: RepoHostingConnection, store: JobStore, settings: Settings
+) -> str:
+    """The decrypted access token for a stored Bitbucket connection,
+    refreshed first if it's stale. Raises AppError when it can't be
+    decrypted or refreshed. Scope policy lives in app/auth/git_auth.py."""
+    _connection, access_token = await _get_valid_access_token(connection, store, settings)
     secrets.register_secret(access_token)
     return access_token
 

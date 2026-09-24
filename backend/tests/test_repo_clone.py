@@ -13,12 +13,7 @@ from app.jobs.models import RepoSourceKind
 from app.steps.repo_clone import (
     _scrub_origin_url as scrub_origin_url,  # pyright: ignore[reportPrivateUsage]
 )
-from app.steps.repo_clone import (
-    bitbucket_git_auth_header,
-    build_clone_command,
-    clone_repo,
-    gitlab_git_auth_header,
-)
+from app.steps.repo_clone import build_clone_command, clone_repo
 
 
 def make_source_repo(tmp_path: Path) -> Path:
@@ -156,84 +151,41 @@ async def test_clone_launch_failure_is_typed(
     assert "subprocess creation failed" in err.internal_detail
 
 
-async def test_clone_uses_the_users_gitlab_token_when_host_matches_the_instance(
+async def test_clone_passes_the_owners_delegated_auth_header_as_a_one_off_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(
-        "app.steps.repo_clone.get_settings",
-        lambda: Settings(_env_file=None, gitlab_instance_url="https://gitlab.example.com"),  # type: ignore[arg-type]
-    )
-    fake_get_token = AsyncMock(return_value="user-scoped-token")
-    monkeypatch.setattr(
-        "app.steps.repo_clone.get_valid_gitlab_access_token_for_user", fake_get_token
-    )
+    """Which provider/token/scope applies is git_auth's job (test_git_auth.py);
+    the clone step's job is to ask for it and put it on the command only."""
+    header = "Authorization: Basic " + base64.b64encode(b"oauth2:user-token").decode("ascii")
+    fake_header = AsyncMock(return_value=header)
+    monkeypatch.setattr("app.steps.repo_clone.delegated_clone_auth_header", fake_header)
     fake_run = Mock(side_effect=OSError("stop before a real clone attempt"))
     monkeypatch.setattr("app.steps.repo_clone.subprocess.run", fake_run)
+    store = Mock()
 
     with pytest.raises(AppError):
         await clone_repo(
-            "job_gitlab_token",
+            "job_delegated",
             "PROJ-30",
             "https://gitlab.example.com/group/repo.git",
             tmp_path / "workdir",
             owner_user_id="user-1",
-            store=Mock(),
+            store=store,
         )
 
-    fake_get_token.assert_awaited_once_with("user-1", ANY, ANY)
+    fake_header.assert_awaited_once_with(
+        "https://gitlab.example.com/group/repo.git", "user-1", store, ANY
+    )
     command = fake_run.call_args[0][0]
-    # GitLab's git endpoint needs HTTP Basic with username "oauth2", not
-    # Bearer (Bearer returns 401 there even for a correctly-scoped token).
-    expected = base64.b64encode(b"oauth2:user-scoped-token").decode("ascii")
-    assert f"http.extraHeader=Authorization: Basic {expected}" in command
-    assert not any("Bearer" in part for part in command)
-    assert not any("user-scoped-token" in part for part in command)
+    assert command[:3] == ["git", "-c", f"http.extraHeader={header}"]
+    assert not any("user-token" in part for part in command)
 
 
-def test_gitlab_git_auth_header_is_basic_with_oauth2_username() -> None:
-    header = gitlab_git_auth_header("abc123")
-    assert header == "Authorization: Basic " + base64.b64encode(b"oauth2:abc123").decode("ascii")
-
-
-async def test_clone_skips_user_token_lookup_when_host_is_not_the_gitlab_instance(
+async def test_clone_falls_back_to_ambient_auth_without_a_delegated_header(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
-        "app.steps.repo_clone.get_settings",
-        lambda: Settings(_env_file=None, gitlab_instance_url="https://gitlab.example.com"),  # type: ignore[arg-type]
-    )
-    fake_get_token = AsyncMock(return_value="user-scoped-token")
-    monkeypatch.setattr(
-        "app.steps.repo_clone.get_valid_gitlab_access_token_for_user", fake_get_token
-    )
-    fake_run = Mock(side_effect=OSError("stop before a real clone attempt"))
-    monkeypatch.setattr("app.steps.repo_clone.subprocess.run", fake_run)
-
-    with pytest.raises(AppError):
-        await clone_repo(
-            "job_github_not_gitlab",
-            "PROJ-31",
-            "https://github.com/acme/repo.git",
-            tmp_path / "workdir",
-            owner_user_id="user-1",
-            store=Mock(),
-        )
-
-    fake_get_token.assert_not_awaited()
-    command = fake_run.call_args[0][0]
-    assert "-c" not in command
-
-
-async def test_clone_falls_back_to_ambient_auth_when_user_has_no_gitlab_connection(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(
-        "app.steps.repo_clone.get_settings",
-        lambda: Settings(_env_file=None, gitlab_instance_url="https://gitlab.example.com"),  # type: ignore[arg-type]
-    )
-    fake_get_token = AsyncMock(return_value=None)
-    monkeypatch.setattr(
-        "app.steps.repo_clone.get_valid_gitlab_access_token_for_user", fake_get_token
+        "app.steps.repo_clone.delegated_clone_auth_header", AsyncMock(return_value=None)
     )
     fake_run = Mock(side_effect=OSError("stop before a real clone attempt"))
     monkeypatch.setattr("app.steps.repo_clone.subprocess.run", fake_run)
@@ -242,7 +194,7 @@ async def test_clone_falls_back_to_ambient_auth_when_user_has_no_gitlab_connecti
         await clone_repo(
             "job_no_connection",
             "PROJ-32",
-            "https://gitlab.example.com/group/repo.git",
+            "https://bitbucket.org/jeena1/jfive.git",
             tmp_path / "workdir",
             owner_user_id="user-1",
             store=Mock(),
@@ -252,74 +204,25 @@ async def test_clone_falls_back_to_ambient_auth_when_user_has_no_gitlab_connecti
     assert "-c" not in command
 
 
-async def test_clone_uses_the_users_bitbucket_token_for_bitbucket_org(
+async def test_clone_never_looks_up_a_token_without_an_owner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(
-        "app.steps.repo_clone.get_settings",
-        lambda: Settings(_env_file=None, gitlab_instance_url="https://gitlab.example.com"),  # type: ignore[arg-type]
-    )
-    fake_gitlab_token = AsyncMock(return_value="gitlab-token")
-    monkeypatch.setattr(
-        "app.steps.repo_clone.get_valid_gitlab_access_token_for_user", fake_gitlab_token
-    )
-    fake_bitbucket_token = AsyncMock(return_value="bitbucket-user-token")
-    monkeypatch.setattr(
-        "app.steps.repo_clone.get_valid_bitbucket_access_token_for_user", fake_bitbucket_token
-    )
+    """AUTH_ENABLED=false: no owner, so ambient auth only."""
+    fake_header = AsyncMock(return_value="Authorization: Basic x")
+    monkeypatch.setattr("app.steps.repo_clone.delegated_clone_auth_header", fake_header)
     fake_run = Mock(side_effect=OSError("stop before a real clone attempt"))
     monkeypatch.setattr("app.steps.repo_clone.subprocess.run", fake_run)
 
     with pytest.raises(AppError):
         await clone_repo(
-            "job_bitbucket_token",
-            "PROJ-33",
-            "https://bitbucket.org/jeena1/jfive.git",
+            "job_no_owner",
+            "PROJ-35",
+            "https://github.com/acme/repo.git",
             tmp_path / "workdir",
-            owner_user_id="user-1",
-            store=Mock(),
         )
 
-    # Each provider's token only ever goes to its own host.
-    fake_gitlab_token.assert_not_awaited()
-    fake_bitbucket_token.assert_awaited_once_with("user-1", ANY, ANY)
-    command = fake_run.call_args[0][0]
-    expected = base64.b64encode(b"x-token-auth:bitbucket-user-token").decode("ascii")
-    assert f"http.extraHeader=Authorization: Basic {expected}" in command
-    assert not any("bitbucket-user-token" in part for part in command)
-    assert "https://bitbucket.org/jeena1/jfive.git" in command
-
-
-def test_bitbucket_git_auth_header_is_basic_with_x_token_auth_username() -> None:
-    header = bitbucket_git_auth_header("abc123")
-    assert header == "Authorization: Basic " + base64.b64encode(b"x-token-auth:abc123").decode(
-        "ascii"
-    )
-
-
-async def test_clone_falls_back_to_ambient_auth_when_user_has_no_bitbucket_connection(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    fake_bitbucket_token = AsyncMock(return_value=None)
-    monkeypatch.setattr(
-        "app.steps.repo_clone.get_valid_bitbucket_access_token_for_user", fake_bitbucket_token
-    )
-    fake_run = Mock(side_effect=OSError("stop before a real clone attempt"))
-    monkeypatch.setattr("app.steps.repo_clone.subprocess.run", fake_run)
-
-    with pytest.raises(AppError):
-        await clone_repo(
-            "job_no_bitbucket_connection",
-            "PROJ-34",
-            "https://bitbucket.org/jeena1/jfive.git",
-            tmp_path / "workdir",
-            owner_user_id="user-1",
-            store=Mock(),
-        )
-
-    fake_bitbucket_token.assert_awaited_once()
-    command = fake_run.call_args[0][0]
-    assert "-c" not in command
+    fake_header.assert_not_awaited()
+    assert "-c" not in fake_run.call_args[0][0]
 
 
 async def test_non_git_local_repo_is_rejected_with_typed_error(tmp_path: Path) -> None:

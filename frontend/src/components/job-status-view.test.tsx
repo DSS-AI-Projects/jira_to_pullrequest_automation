@@ -8,16 +8,22 @@ const {
   correctValidation,
   createBranch,
   fetchJob,
+  fetchPushIdentity,
   implementJob,
   push,
   pushBranch,
+  redirectBrowser,
+  startBitbucketConnect,
 } = vi.hoisted(() => ({
   correctValidation: vi.fn(),
   createBranch: vi.fn(),
   fetchJob: vi.fn(),
+  fetchPushIdentity: vi.fn(),
   implementJob: vi.fn(),
   push: vi.fn(),
   pushBranch: vi.fn(),
+  redirectBrowser: vi.fn(),
+  startBitbucketConnect: vi.fn(),
 }));
 
 vi.mock("next/link", () => ({
@@ -39,8 +45,11 @@ vi.mock("@/lib/api", async () => {
     correctValidation,
     createBranch,
     fetchJob,
+    fetchPushIdentity,
     implementJob,
     pushBranch,
+    redirectBrowser,
+    startBitbucketConnect,
   };
 });
 
@@ -52,6 +61,19 @@ describe("JobStatusView", () => {
     implementJob.mockReset();
     push.mockReset();
     pushBranch.mockReset();
+    redirectBrowser.mockReset();
+    startBitbucketConnect.mockReset();
+    fetchPushIdentity.mockReset();
+    // Default: the server machine's own credentials (local dev) — tests for
+    // delegated push override this.
+    fetchPushIdentity.mockResolvedValue({
+      mode: "ambient",
+      provider: null,
+      provider_name: null,
+      account_name: null,
+      ready: true,
+      reason: null,
+    });
   });
 
   it("shows approve button for local plan-ready jobs and renders implementation results", async () => {
@@ -1325,6 +1347,106 @@ describe("JobStatusView", () => {
         branch_name: "custom/renamed",
       }),
     );
+  });
+
+  it("shows a failed push's error right under the Push button", async () => {
+    // Regression test: the error used to go to the page-level banner at the
+    // top of a long job page — off-screen from the Push button, so a failed
+    // push (e.g. no git credentials for the remote) looked like no response.
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        validation_results: [],
+        branch_name: "jira2pullreq/KAN-41",
+        branch_commit_sha: "b".repeat(40),
+        branch_created_at: "2026-09-24T13:55:00Z",
+      }),
+    );
+    pushBranch.mockRejectedValue(
+      new Error(
+        "Pushing the branch failed. Check that this machine's git credentials (SSH key / credential helper) can push to that remote.",
+      ),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    const pushButton = await screen.findByRole("button", {
+      name: "Push branch",
+    });
+    fireEvent.click(pushButton);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Pushing the branch failed/);
+    // Rendered inside the Push branch card itself, next to the button.
+    expect(pushButton.closest("section")).toContainElement(alert);
+  });
+
+  it("shows which account a delegated push will run as", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        validation_results: [],
+        branch_name: "jira2pullreq/KAN-41",
+        branch_commit_sha: "b".repeat(40),
+        branch_created_at: "2026-09-24T13:55:00Z",
+        branch_commit_author: "Sam Borde <sam@example.com>",
+      }),
+    );
+    fetchPushIdentity.mockResolvedValue({
+      mode: "delegated",
+      provider: "BITBUCKET",
+      provider_name: "Bitbucket",
+      account_name: "sam-bb",
+      ready: true,
+      reason: null,
+    });
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    expect(await screen.findByText(/Will push as/)).toHaveTextContent(
+      "Will push as sam-bb on Bitbucket.",
+    );
+    expect(screen.getByText(/committed as/)).toHaveTextContent(
+      "Sam Borde <sam@example.com>",
+    );
+    expect(screen.getByRole("button", { name: "Push branch" })).toBeEnabled();
+  });
+
+  it("blocks a delegated push on a read-only connection and offers a reconnect", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        validation_results: [],
+        branch_name: "jira2pullreq/KAN-41",
+        branch_commit_sha: "b".repeat(40),
+        branch_created_at: "2026-09-24T13:55:00Z",
+      }),
+    );
+    fetchPushIdentity.mockResolvedValue({
+      mode: "delegated",
+      provider: "BITBUCKET",
+      provider_name: "Bitbucket",
+      account_name: "sam-bb",
+      ready: false,
+      reason:
+        "Your Bitbucket connection is read-only. Reconnect your Bitbucket account.",
+    });
+    startBitbucketConnect.mockResolvedValue({
+      authorization_url: "https://bitbucket.org/site/oauth2/authorize?state=s",
+    });
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByText(/connection is read-only/);
+    expect(screen.getByRole("button", { name: "Push branch" })).toBeDisabled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Reconnect Bitbucket" }),
+    );
+
+    await waitFor(() =>
+      expect(redirectBrowser).toHaveBeenCalledWith(
+        "https://bitbucket.org/site/oauth2/authorize?state=s",
+      ),
+    );
+    expect(pushBranch).not.toHaveBeenCalled();
   });
 
   it("shows the pushed branch, remote, and a compare link once pushed", async () => {

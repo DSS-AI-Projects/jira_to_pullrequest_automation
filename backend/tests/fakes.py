@@ -16,9 +16,11 @@ from app.jobs.models import (
 from app.jobs.runner import (
     BranchResult,
     CloneResult,
+    CommitAuthor,
     ImplementationStepResult,
     JobSteps,
     PlanResult,
+    PushCredentials,
     PushResult,
 )
 from app.jobs.store import JobStore
@@ -127,8 +129,9 @@ def make_fake_steps() -> JobSteps:
         workspace_path: Path,
         branch_name: str | None,
         commit_message: str | None,
+        author: CommitAuthor | None = None,
     ) -> BranchResult:
-        del workspace_path, commit_message
+        del workspace_path, commit_message, author
         return BranchResult(
             branch_name=branch_name or f"jira2pullreq/{job.ticket_key}",
             commit_sha="b" * 40,
@@ -138,11 +141,13 @@ def make_fake_steps() -> JobSteps:
         job: Job,
         workspace_path: Path,
         branch_name: str | None,
+        credentials: PushCredentials | None = None,
     ) -> PushResult:
         del workspace_path
         return PushResult(
             branch_name=branch_name or job.branch_name or f"jira2pullreq/{job.ticket_key}",
-            remote_url=(job.repo_info.origin_url if job.repo_info else None)
+            remote_url=(credentials.remote_url if credentials else None)
+            or (job.repo_info.origin_url if job.repo_info else None)
             or "https://github.com/acme/repo.git",
         )
 

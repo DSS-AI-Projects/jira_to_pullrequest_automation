@@ -158,6 +158,16 @@ async def list_github_repositories(user: User, store: JobStore) -> GitHubReposit
     return GitHubRepositoryListResponse(repos=repos)
 
 
+async def fresh_github_access_token(connection: RepoHostingConnection) -> str:
+    """The decrypted access token for a stored GitHub connection. This
+    app's GitHub OAuth App issues non-expiring tokens, so there's nothing to
+    refresh. Raises AppError when it can't be decrypted. Scope policy lives
+    in app/auth/git_auth.py."""
+    access_token = decrypt_secret(connection.access_token_encrypted or "", provider="github")
+    secrets.register_secret(access_token)
+    return access_token
+
+
 def disconnect_github_connection(user: User, store: JobStore) -> None:
     if store.get_repo_hosting_connection(user.id, RepoHostingProvider.GITHUB) is None:
         raise AppError(

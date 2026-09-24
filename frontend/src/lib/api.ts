@@ -256,6 +256,12 @@ export type Job = {
   branch_created_at: string | null;
   branch_pushed_at: string | null;
   branch_push_remote_url: string | null;
+  // Who: the signed-in user the commit is attributed to ("Name <email>"),
+  // and (delegated push) the provider account the push ran as.
+  branch_commit_author?: string | null;
+  branch_pushed_by_user_id?: string | null;
+  branch_push_provider?: RepoHostingProvider | null;
+  branch_push_account?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -625,6 +631,28 @@ export async function pushBranch(
     signal,
   });
   return parseJson<BranchPushed>(response);
+}
+
+export type PushIdentity = {
+  // "delegated": push as the signed-in user with their own connected
+  // account; "ambient": the server machine's own git credentials.
+  mode: "delegated" | "ambient";
+  provider: RepoHostingProvider | null;
+  provider_name: string | null;
+  account_name: string | null;
+  ready: boolean;
+  reason: string | null;
+};
+
+export async function fetchPushIdentity(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<PushIdentity> {
+  const response = await apiFetch(`/api/jobs/${jobId}/push-identity`, {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<PushIdentity>(response);
 }
 
 export async function fetchSession(signal?: AbortSignal): Promise<SessionInfo> {

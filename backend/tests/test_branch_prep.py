@@ -10,6 +10,7 @@ import pytest
 
 from app.core.errors import AppError, ErrorCode
 from app.jobs.models import Job, RepoInfo, RepoSourceKind, RequirementSource
+from app.jobs.runner import CommitAuthor, PushCredentials
 from app.steps import branch_prep
 from tests.fakes import sample_plan
 
@@ -279,3 +280,114 @@ async def test_push_branch_renames_and_pushes_when_a_different_name_is_given(
     assert _remote_ref_sha(remote_path, "refs/heads/custom/renamed") == job.branch_commit_sha
     # The old name was never pushed at all.
     assert _remote_ref_sha(remote_path, "refs/heads/jira2pullreq/KAN-34") is None
+
+
+def _commit_ident(workspace: Path, fmt: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(workspace), "log", "-1", f"--format={fmt}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+async def test_create_branch_commits_as_the_signed_in_user(tmp_path: Path) -> None:
+    baseline = _init_git_repo(tmp_path)
+    (tmp_path / "README.md").write_text("Changed\n", encoding="utf-8")
+    job = _job(implementation_baseline_commit_sha=baseline)
+
+    await branch_prep.create_branch(
+        job, tmp_path, None, None, CommitAuthor(name="Sam Borde", email="sam@example.com")
+    )
+
+    # Both author and committer — not the workspace's configured identity.
+    assert _commit_ident(tmp_path, "%an <%ae>") == "Sam Borde <sam@example.com>"
+    assert _commit_ident(tmp_path, "%cn <%ce>") == "Sam Borde <sam@example.com>"
+
+
+async def test_create_branch_strips_characters_git_idents_cannot_hold(tmp_path: Path) -> None:
+    baseline = _init_git_repo(tmp_path)
+    (tmp_path / "README.md").write_text("Changed\n", encoding="utf-8")
+    job = _job(implementation_baseline_commit_sha=baseline)
+
+    await branch_prep.create_branch(
+        job, tmp_path, None, None, CommitAuthor(name="Sam <x>\nBorde", email="sam@example.com")
+    )
+
+    assert _commit_ident(tmp_path, "%an") == "Sam xBorde"
+
+
+async def test_create_branch_without_an_author_keeps_the_workspace_identity(
+    tmp_path: Path,
+) -> None:
+    baseline = _init_git_repo(tmp_path)
+    (tmp_path / "README.md").write_text("Changed\n", encoding="utf-8")
+    job = _job(implementation_baseline_commit_sha=baseline)
+
+    await branch_prep.create_branch(job, tmp_path, None, None)
+
+    assert _commit_ident(tmp_path, "%an <%ae>") == "Test User <test@example.com>"
+
+
+async def test_delegated_push_targets_the_credentials_url_with_no_credential_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The token goes in a one-off `-c http.extraHeader`, the machine's
+    credential helper is reset to none (so a rejected token can't fall back
+    to the machine's own identity), and prompts are off."""
+    remote_path = _init_bare_remote(tmp_path / "remote.git")
+    job, workspace_path = await _prepared_job_and_workspace(
+        tmp_path, remote_url="git@bitbucket.org:ws/repo.git"
+    )
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+    real_run = subprocess.run
+
+    def recording_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        env = kwargs.get("env")
+        calls.append((list(args), env if isinstance(env, dict) else None))  # pyright: ignore[reportUnknownArgumentType]
+        return real_run(args, **kwargs)  # type: ignore[call-overload,no-any-return]
+
+    monkeypatch.setattr(branch_prep.subprocess, "run", recording_run)
+    header = "Authorization: Basic dXNlcjp0b2tlbg=="
+
+    result = await branch_prep.push_branch(
+        job,
+        workspace_path,
+        None,
+        PushCredentials(auth_header=header, remote_url=str(remote_path)),
+    )
+
+    # Snapshot before this test's own ls-remote check below adds to `calls`.
+    network_calls = [(a, e) for a, e in calls if "ls-remote" in a or "push" in a]
+    # Pushed to the credentials' (https) URL, not the job's SSH origin.
+    assert result.remote_url == str(remote_path)
+    assert _remote_ref_sha(remote_path, "refs/heads/jira2pullreq/KAN-34") == job.branch_commit_sha
+    assert len(network_calls) == 2
+    for args, env in network_calls:
+        assert args[:5] == ["git", "-c", "credential.helper=", "-c", f"http.extraHeader={header}"]
+        assert env is not None
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert env["GCM_INTERACTIVE"] == "Never"
+
+
+async def test_a_failed_delegated_push_never_reveals_the_header(
+    tmp_path: Path,
+) -> None:
+    job, workspace_path = await _prepared_job_and_workspace(
+        tmp_path, remote_url="https://bitbucket.org/ws/repo.git"
+    )
+    header = "Authorization: Basic c2VjcmV0LXRva2VuLXZhbHVl"
+
+    with pytest.raises(AppError) as excinfo:
+        await branch_prep.push_branch(
+            job,
+            workspace_path,
+            None,
+            PushCredentials(auth_header=header, remote_url=str(tmp_path / "missing.git")),
+        )
+
+    err = excinfo.value
+    assert err.code == ErrorCode.BRANCH_PUSH_FAILED
+    assert "connected account has write access" in err.user_message
+    assert "c2VjcmV0LXRva2VuLXZhbHVl" not in err.user_message
+    assert "c2VjcmV0LXRva2VuLXZhbHVl" not in (err.internal_detail or "")

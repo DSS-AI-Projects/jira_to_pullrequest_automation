@@ -12,13 +12,21 @@ from typing import cast
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from pydantic import BaseModel, ConfigDict
 
-from app.auth.models import UserRole
+from app.auth.git_auth import describe_push_identity, provider_display_name, resolve_push_auth
+from app.auth.models import User, UserRole
 from app.auth.service import ensure_job_access, require_admin, require_current_user
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger
 from app.jobs.models import Job, JobState, RepoSourceKind, RequirementSource
-from app.jobs.runner import JobSteps, run_implementation, run_job, run_validation_correction
+from app.jobs.runner import (
+    CommitAuthor,
+    JobSteps,
+    PushCredentials,
+    run_implementation,
+    run_job,
+    run_validation_correction,
+)
 from app.jobs.store import JobStore
 from app.schemas.inputs import (
     JOB_CREATE_FORM_FIELDS,
@@ -76,6 +84,26 @@ class BranchPushed(BaseModel):
     # anything itself) so the user can open a PR in one click if they want
     # one; opening a PR is still out of scope for this app to do directly.
     compare_url: str | None = None
+
+
+class PushIdentityResponse(BaseModel):
+    """Who a push for this job would run as — shown on the Push card before
+    the user clicks, so a missing/read-only connection is fixed up front."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str  # PUSH_AUTH_MODE: "delegated" or "ambient"
+    provider: str | None = None  # RepoHostingProvider value, e.g. "BITBUCKET"
+    provider_name: str | None = None  # display name, e.g. "Bitbucket"
+    account_name: str | None = None
+    ready: bool
+    reason: str | None = None
+
+
+def _commit_author(user: User | None) -> CommitAuthor | None:
+    if user is None:
+        return None
+    return CommitAuthor(name=user.display_name or user.email, email=user.email)
 
 
 class LocalRepoSupport(BaseModel):
@@ -404,13 +432,17 @@ async def create_branch(
         payload.commit_message if payload is not None else None
     )
 
+    # Attributed to the signed-in user who creates the branch (not the
+    # workspace's placeholder identity); unchanged when auth is disabled.
+    author = _commit_author(user)
     result = await _steps(request).create_branch(
-        job, Path(job.workspace_path), branch_name, commit_message
+        job, Path(job.workspace_path), branch_name, commit_message, author
     )
 
     job.branch_name = result.branch_name
     job.branch_commit_sha = result.commit_sha
     job.branch_created_at = datetime.now(UTC)
+    job.branch_commit_author = f"{author.name} <{author.email}>" if author else None
     store.save(job)
     logger.info("job %s: branch %s created", job.id, result.branch_name)
     return BranchCreated(branch_name=result.branch_name, commit_sha=result.commit_sha)
@@ -436,10 +468,11 @@ async def push_branch(
 ) -> BranchPushed:
     """Push the job's already-created branch to the repo's real remote.
     Synchronous, like create-branch — plain git plumbing, no LLM call.
-    Always uses ambient git auth (the same SSH-key/credential-helper model
-    `git clone` already relies on); no per-user credential is read or
-    injected. Never force-pushes; see CLAUDE.md's "Branch preparation"
-    section and push_branch()'s own docstring in app/steps/branch_prep.py.
+    With PUSH_AUTH_MODE=delegated, pushes as the signed-in user making this
+    request, with their own connected GitHub/GitLab/Bitbucket account (never
+    falling back to machine credentials); with "ambient", uses the machine's
+    own git auth. Never force-pushes; see CLAUDE.md's "Branch preparation
+    and push" and push_branch()'s own docstring in app/steps/branch_prep.py.
     """
     user = require_current_user(request)
     store = _store(request)
@@ -469,17 +502,59 @@ async def push_branch(
             compare_url=github_compare_url(job.branch_push_remote_url, job.branch_name),
         )
 
-    result = await _steps(request).push_branch(job, Path(job.workspace_path), branch_name)
+    settings = get_settings()
+    credentials: PushCredentials | None = None
+    push_provider: str | None = None
+    push_account: str | None = None
+    if settings.push_auth_mode == "delegated":
+        # Whoever clicked Push — not necessarily the job owner (an admin can
+        # push someone else's job, as themselves).
+        origin_url = job.repo_info.origin_url if job.repo_info else None
+        auth = await resolve_push_auth(origin_url or "", user, store, settings)
+        credentials = PushCredentials(auth_header=auth.header, remote_url=auth.remote_url)
+        push_provider, push_account = auth.provider.value, auth.account_name
+
+    result = await _steps(request).push_branch(
+        job, Path(job.workspace_path), branch_name, credentials
+    )
 
     job.branch_name = result.branch_name
     job.branch_pushed_at = datetime.now(UTC)
     job.branch_push_remote_url = result.remote_url
+    job.branch_pushed_by_user_id = user.id if user else None
+    job.branch_push_provider = push_provider
+    job.branch_push_account = push_account
     store.save(job)
     logger.info("job %s: branch %s pushed", job.id, result.branch_name)
     return BranchPushed(
         branch_name=result.branch_name,
         remote_url=result.remote_url,
         compare_url=github_compare_url(result.remote_url, result.branch_name),
+    )
+
+
+@router.get("/jobs/{job_id}/push-identity", response_model=PushIdentityResponse)
+async def push_identity(job_id: str, request: Request) -> PushIdentityResponse:
+    """Who a push of this job would run as, for the requesting user —
+    computed from the stored connection alone (no git, no token use)."""
+    user = require_current_user(request)
+    store = _store(request)
+    job = store.get(job_id)
+    if job is None:
+        raise AppError(ErrorCode.JOB_NOT_FOUND)
+    ensure_job_access(job, user)
+    settings = get_settings()
+    if settings.push_auth_mode != "delegated":
+        return PushIdentityResponse(mode="ambient", ready=True)
+    origin_url = job.repo_info.origin_url if job.repo_info else None
+    identity = describe_push_identity(origin_url, user, store, settings)
+    return PushIdentityResponse(
+        mode="delegated",
+        provider=identity.provider.value if identity.provider else None,
+        provider_name=provider_display_name(identity.provider) if identity.provider else None,
+        account_name=identity.account_name,
+        ready=identity.ready,
+        reason=identity.reason,
     )
 
 

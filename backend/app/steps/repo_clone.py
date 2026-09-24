@@ -5,23 +5,20 @@ credential helper) by default. GIT_TERMINAL_PROMPT=0 makes git fail fast
 instead of prompting, so a missing credential becomes a typed CLONE_FAILED
 rather than a hang.
 
-One deliberate, narrow exception: for a REMOTE clone whose host matches the
-configured GitLab instance or bitbucket.org, the signed-in user's own
-delegated OAuth token for that provider (repository-read permission) is used
-to authenticate the clone, if they have a valid connection — the same account
-they already used to pick the repo from the connected-repos quick-picks. This never widens to
-`git push`, which still uses ambient credentials only (see CLAUDE.md's
-"Branch preparation and push"). The token is passed via a one-off
-`http.extraHeader` config override at clone-invocation time, never embedded
-in the clone URL — embedding it in the URL would have git persist it into
-the cloned workspace's `.git/config`, which the planning/implementation
-agent can Read/Grep (invariant 3).
+For a REMOTE clone on github.com, the configured GitLab instance, or
+bitbucket.org, the job owner's own connected OAuth token for that provider
+(when its scopes allow reading) authenticates the clone instead — the same
+account they used to pick the repo from the connected-repos quick-picks.
+Policy and header construction live in app/auth/git_auth.py. The token is
+passed via a one-off `http.extraHeader` config override at clone-invocation
+time, never embedded in the clone URL — embedding it in the URL would have
+git persist it into the cloned workspace's `.git/config`, which the
+planning/implementation agent can Read/Grep (invariant 3).
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import fnmatch
 import os
 import re
@@ -30,10 +27,8 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from app.auth.bitbucket_oauth import BITBUCKET_HOST, get_valid_bitbucket_access_token_for_user
-from app.auth.gitlab_oauth import get_valid_gitlab_access_token_for_user
-from app.core import secrets
-from app.core.config import Settings, get_settings
+from app.auth.git_auth import delegated_clone_auth_header
+from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger, redact
 from app.jobs.models import RepoInfo, RepoSourceKind
@@ -112,7 +107,7 @@ def build_clone_command(
     (e.g. "develop", or an existing ticket branch) — see Job.base_branch.
 
     `auth_header`, when given, is a full HTTP header line (e.g.
-    "Authorization: Basic <...>", see gitlab_git_auth_header) passed as a one-off `-c
+    "Authorization: Basic <...>", see git_auth.git_auth_header) passed as a one-off `-c
     http.extraHeader=...` override *before* the `clone` subcommand — a
     runtime override for this single git invocation only, never written into
     the resulting workspace's `.git/config` the way embedding credentials in
@@ -141,61 +136,6 @@ def build_clone_command(
 
 def _is_local_repo_path(repo_url: str) -> bool:
     return bool(_WINDOWS_ABS_PATH_RE.match(repo_url))
-
-
-def gitlab_git_auth_header(access_token: str) -> str:
-    """GitLab's git-over-HTTP endpoint rejects `Authorization: Bearer` for an
-    OAuth access token (401 "HTTP Basic: Access denied", verified against a
-    real instance) — it only accepts the token as HTTP Basic with username
-    `oauth2`. The REST API (/api/v4) takes Bearer; git does not."""
-    encoded = base64.b64encode(f"oauth2:{access_token}".encode()).decode("ascii")
-    # The encoded form is a distinct string from the raw token, so the log
-    # redactor wouldn't recognize it as a secret unless registered too.
-    secrets.register_secret(encoded)
-    return f"Authorization: Basic {encoded}"
-
-
-def _is_configured_gitlab_host(repo_url: str, settings: Settings) -> bool:
-    try:
-        target_host = (urlsplit(repo_url).hostname or "").lower()
-        instance_host = (urlsplit(settings.gitlab_instance_url).hostname or "").lower()
-    except ValueError:
-        return False
-    return bool(target_host) and target_host == instance_host
-
-
-def bitbucket_git_auth_header(access_token: str) -> str:
-    """Bitbucket Cloud accepts an OAuth access token over git-HTTPS as HTTP
-    Basic with the fixed username `x-token-auth` (Bitbucket's documented
-    form for OAuth/access-token git auth) — the Bitbucket counterpart of
-    GitLab's `oauth2` username above."""
-    encoded = base64.b64encode(f"x-token-auth:{access_token}".encode()).decode("ascii")
-    secrets.register_secret(encoded)
-    return f"Authorization: Basic {encoded}"
-
-
-def _is_bitbucket_host(repo_url: str) -> bool:
-    try:
-        target_host = (urlsplit(repo_url).hostname or "").lower()
-    except ValueError:
-        return False
-    return target_host == BITBUCKET_HOST
-
-
-async def _delegated_clone_auth_header(
-    repo_url: str, owner_user_id: str, store: JobStore, settings: Settings
-) -> str | None:
-    """The clone-only auth header for the signed-in user's own delegated
-    connection to the repo's host (GitLab instance or bitbucket.org), or None
-    to fall back to ambient credentials. Hosts are matched exactly, so a
-    token for one provider is never offered to another host."""
-    if _is_configured_gitlab_host(repo_url, settings):
-        token = await get_valid_gitlab_access_token_for_user(owner_user_id, store, settings)
-        return gitlab_git_auth_header(token) if token else None
-    if _is_bitbucket_host(repo_url):
-        token = await get_valid_bitbucket_access_token_for_user(owner_user_id, store, settings)
-        return bitbucket_git_auth_header(token) if token else None
-    return None
 
 
 def _branch_matches_ticket(branch: str, ticket_key: str) -> bool:
@@ -414,13 +354,13 @@ async def clone_repo(
     is_local_source = _is_local_repo_path(repo_url)
 
     # Best-effort: authenticate the clone as the signed-in user's own
-    # delegated GitLab/Bitbucket connection, when the target host matches
+    # delegated GitHub/GitLab/Bitbucket connection, when the target host matches
     # that provider and they have a valid connection. Never applies to
     # a local source, and any lookup/refresh failure just falls through to
     # ambient credentials — see the module docstring above.
     auth_header: str | None = None
     if not is_local_source and owner_user_id is not None and store is not None:
-        auth_header = await _delegated_clone_auth_header(repo_url, owner_user_id, store, settings)
+        auth_header = await delegated_clone_auth_header(repo_url, owner_user_id, store, settings)
     if is_local_source:
         local_source = Path(repo_url)
         _validate_local_source_path(local_source)

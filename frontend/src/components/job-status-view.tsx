@@ -8,11 +8,18 @@ import {
   correctValidation,
   createBranch,
   fetchJob,
+  fetchPushIdentity,
   implementJob,
   isAbortError,
   pushBranch,
+  redirectBrowser,
+  startBitbucketConnect,
+  startGitHubConnect,
+  startGitLabConnect,
   type Job,
   type ImplementationDiffFile,
+  type PushIdentity,
+  type RepoHostingProvider,
   type ValidationResult,
 } from "@/lib/api";
 import { isTerminalState, JOB_STATES, JOB_STATE_LABELS } from "@/lib/job";
@@ -103,6 +110,18 @@ export function JobStatusView(props: { jobId: string }) {
   const [creatingBranch, setCreatingBranch] = useState(false);
   const [pushBranchNameInput, setPushBranchNameInput] = useState("");
   const [pushingBranch, setPushingBranch] = useState(false);
+  // Shown inline next to their buttons, not in the page-level banner: these
+  // cards sit far below the top of a long job page, so a banner error there
+  // was off-screen and a failed push looked like the button did nothing.
+  const [createBranchError, setCreateBranchError] = useState<string | null>(
+    null,
+  );
+  const [pushBranchError, setPushBranchError] = useState<string | null>(null);
+  // Who a push would run as (PUSH_AUTH_MODE=delegated: the signed-in user's
+  // own connected account) — fetched before the click so a missing or
+  // read-only connection is fixed up front, not discovered as a failure.
+  const [pushIdentity, setPushIdentity] = useState<PushIdentity | null>(null);
+  const [connectingProvider, setConnectingProvider] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
     "idle",
   );
@@ -177,6 +196,51 @@ export function JobStatusView(props: { jobId: string }) {
       }
     };
   }, [loadJob, refreshKey]);
+
+  const jobIdForPush = job?.id;
+  const needsPushIdentity = Boolean(job?.branch_name && !job.branch_pushed_at);
+  useEffect(() => {
+    if (!jobIdForPush || !needsPushIdentity) {
+      setPushIdentity(null);
+      return;
+    }
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        setPushIdentity(
+          await fetchPushIdentity(jobIdForPush, controller.signal),
+        );
+      } catch (identityError) {
+        // Informational only — the push itself still reports any real error.
+        if (!isAbortError(identityError)) {
+          setPushIdentity(null);
+        }
+      }
+    })();
+    return () => controller.abort();
+  }, [jobIdForPush, needsPushIdentity, refreshKey]);
+
+  async function handleConnectProvider(provider: RepoHostingProvider) {
+    setConnectingProvider(true);
+    setPushBranchError(null);
+    try {
+      const start =
+        provider === "GITHUB"
+          ? startGitHubConnect
+          : provider === "GITLAB"
+            ? startGitLabConnect
+            : startBitbucketConnect;
+      const response = await start();
+      redirectBrowser(response.authorization_url);
+    } catch (connectError) {
+      setPushBranchError(
+        connectError instanceof Error
+          ? connectError.message
+          : "Could not start the sign-in.",
+      );
+      setConnectingProvider(false);
+    }
+  }
 
   const activeIndex = useMemo(() => {
     if (!job) {
@@ -329,7 +393,7 @@ export function JobStatusView(props: { jobId: string }) {
       return;
     }
     setCreatingBranch(true);
-    setError(null);
+    setCreateBranchError(null);
     try {
       await createBranch(job.id, {
         branch_name: branchNameInput,
@@ -337,7 +401,7 @@ export function JobStatusView(props: { jobId: string }) {
       });
       setRefreshKey((value) => value + 1);
     } catch (branchError) {
-      setError(
+      setCreateBranchError(
         branchError instanceof Error
           ? branchError.message
           : "Could not create the branch.",
@@ -352,12 +416,12 @@ export function JobStatusView(props: { jobId: string }) {
       return;
     }
     setPushingBranch(true);
-    setError(null);
+    setPushBranchError(null);
     try {
       await pushBranch(job.id, { branch_name: pushBranchNameInput });
       setRefreshKey((value) => value + 1);
     } catch (pushError) {
-      setError(
+      setPushBranchError(
         pushError instanceof Error
           ? pushError.message
           : "Could not push the branch.",
@@ -1049,13 +1113,24 @@ export function JobStatusView(props: { jobId: string }) {
                   {creatingBranch ? "Creating branch..." : "Create branch"}
                 </button>
               </div>
+              {createBranchError ? (
+                <p className="banner banner-error" role="alert">
+                  {createBranchError}
+                </p>
+              ) : null}
             </div>
           ) : null}
           {job.branch_name ? (
             <div className="stack">
               <p>
                 Created branch <code>{job.branch_name}</code> at commit{" "}
-                <code>{job.branch_commit_sha?.slice(0, 12)}</code>.
+                <code>{job.branch_commit_sha?.slice(0, 12)}</code>
+                {job.branch_commit_author ? (
+                  <>
+                    , committed as <strong>{job.branch_commit_author}</strong>
+                  </>
+                ) : null}
+                .
               </p>
             </div>
           ) : null}
@@ -1095,23 +1170,63 @@ export function JobStatusView(props: { jobId: string }) {
                   value={pushBranchNameInput}
                 />
               </label>
+              {pushIdentity?.mode === "delegated" ? (
+                pushIdentity.ready ? (
+                  <p className="push-identity">
+                    Will push as <strong>{pushIdentity.account_name}</strong> on{" "}
+                    {pushIdentity.provider_name}.
+                  </p>
+                ) : (
+                  <div className="banner banner-info" role="status">
+                    <p>{pushIdentity.reason}</p>
+                    {pushIdentity.provider ? (
+                      <button
+                        className="pill-button"
+                        disabled={connectingProvider}
+                        onClick={() =>
+                          void handleConnectProvider(pushIdentity.provider!)
+                        }
+                        type="button"
+                      >
+                        {pushIdentity.account_name ? "Reconnect" : "Connect"}{" "}
+                        {pushIdentity.provider_name}
+                      </button>
+                    ) : null}
+                  </div>
+                )
+              ) : null}
               <div className="actions">
                 <button
                   className="primary-button"
-                  disabled={pushingBranch}
+                  disabled={
+                    pushingBranch ||
+                    (pushIdentity?.mode === "delegated" && !pushIdentity.ready)
+                  }
                   onClick={() => void handlePushBranch()}
                   type="button"
                 >
                   {pushingBranch ? "Pushing..." : "Push branch"}
                 </button>
               </div>
+              {pushBranchError ? (
+                <p className="banner banner-error" role="alert">
+                  {pushBranchError}
+                </p>
+              ) : null}
             </div>
           ) : null}
           {job.branch_pushed_at ? (
             <div className="stack">
               <p>
                 Pushed <code>{job.branch_name}</code> to{" "}
-                <span className="break-all">{job.branch_push_remote_url}</span>.
+                <span className="break-all">{job.branch_push_remote_url}</span>
+                {job.branch_push_account ? (
+                  <>
+                    {" "}
+                    as <strong>{job.branch_push_account}</strong>
+                  </>
+                ) : null}
+                .
               </p>
               {job.branch_push_remote_url &&
               githubCompareUrl(job.branch_push_remote_url, job.branch_name) ? (

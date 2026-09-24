@@ -67,6 +67,24 @@ class PushResult:
 
 
 @dataclass(frozen=True)
+class CommitAuthor:
+    """The signed-in user a branch commit is attributed to."""
+
+    name: str
+    email: str
+
+
+@dataclass(frozen=True)
+class PushCredentials:
+    """Delegated push auth: a one-off `http.extraHeader` value for the
+    user's own OAuth token, and the https remote URL it's valid for. `None`
+    in place of this means ambient machine credentials (PUSH_AUTH_MODE)."""
+
+    auth_header: str
+    remote_url: str
+
+
+@dataclass(frozen=True)
 class JobSteps:
     """The job steps, injectable for tests."""
 
@@ -80,8 +98,10 @@ class JobSteps:
         [Job, Path, list[ValidationResult] | None], Awaitable[ImplementationStepResult]
     ]
     validate_workspace: Callable[[Path], Awaitable[list[ValidationResult]]]
-    create_branch: Callable[[Job, Path, str | None, str | None], Awaitable[BranchResult]]
-    push_branch: Callable[[Job, Path, str | None], Awaitable[PushResult]]
+    create_branch: Callable[
+        [Job, Path, str | None, str | None, CommitAuthor | None], Awaitable[BranchResult]
+    ]
+    push_branch: Callable[[Job, Path, str | None, PushCredentials | None], Awaitable[PushResult]]
 
 
 def _advance(store: JobStore, job: Job, state: JobState) -> Job:

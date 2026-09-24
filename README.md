@@ -45,7 +45,9 @@ The web form accepts only non-secret identifiers (ticket key/URL, repo
 identifier) — or, in place of a ticket, an uploaded PDF whose extracted text
 is treated as untrusted data exactly like ticket content. In shared Jira
 mode, Jira auth comes from environment variables (`backend/.env`, gitignored
-— see `backend/.env.example` for the names); git clone uses your machine's
+— see `backend/.env.example` for the names); git clone and push use the
+signed-in user's own connected GitHub/GitLab/Bitbucket account where one
+applies (`PUSH_AUTH_MODE=delegated` for push), otherwise your machine's
 ambient git auth (SSH key / credential helper); the Anthropic key comes from
 env. No credential is ever typed into the UI, logged, sent to the LLM, or
 committed.
@@ -158,10 +160,10 @@ Per-user GitHub OAuth connections are supported for repository hosting
   `GITHUB_OAUTH_CALLBACK_URL` (frontend route), `GITHUB_OAUTH_ENCRYPTION_KEY`.
 - Like Jira delegated mode, GitHub OAuth tokens are stored encrypted per
   signed-in user and never exposed to the UI, logs, or LLM.
-- **Currently the GitHub connection is used for repo discovery only** — the
-  actual `git clone` still uses your local machine's ambient git
-  credentials. Delegated git auth (and PR/branch creation) is planned but
-  not yet built.
+- The connection (like the GitLab and Bitbucket ones) is also used to
+  `git clone` as the job owner and — with `PUSH_AUTH_MODE=delegated` — to
+  push the job's branch as whoever clicks Push. See CLAUDE.md's "Delegated
+  push" section. Opening a pull request is still not built.
 
 ## Repository input & local execution
 

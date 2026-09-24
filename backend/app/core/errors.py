@@ -60,6 +60,7 @@ class ErrorCode(StrEnum):
     BRANCH_PUSH_NOT_AVAILABLE = "BRANCH_PUSH_NOT_AVAILABLE"
     BRANCH_PUSH_REJECTED = "BRANCH_PUSH_REJECTED"
     BRANCH_PUSH_FAILED = "BRANCH_PUSH_FAILED"
+    BRANCH_PUSH_REAUTH_REQUIRED = "BRANCH_PUSH_REAUTH_REQUIRED"
     INTERNAL = "INTERNAL"
 
 
@@ -186,9 +187,9 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
         "A branch with that name already exists on the remote. Choose a different "
         "branch name and try again."
     ),
-    ErrorCode.BRANCH_PUSH_FAILED: (
-        "Pushing the branch failed. Check that this machine's git credentials "
-        "(SSH key / credential helper) can push to that remote."
+    ErrorCode.BRANCH_PUSH_FAILED: "Pushing the branch failed.",
+    ErrorCode.BRANCH_PUSH_REAUTH_REQUIRED: (
+        "Connect your repository account with write access before pushing."
     ),
     ErrorCode.INTERNAL: "An internal error occurred.",
 }
@@ -224,6 +225,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.BRANCH_NAME_INVALID: 400,
     ErrorCode.BRANCH_PUSH_NOT_AVAILABLE: 400,
     ErrorCode.BRANCH_PUSH_REJECTED: 400,
+    ErrorCode.BRANCH_PUSH_REAUTH_REQUIRED: 400,
     ErrorCode.UNAUTHENTICATED: 401,
     ErrorCode.FORBIDDEN: 403,
     ErrorCode.JOB_NOT_FOUND: 404,

@@ -213,6 +213,13 @@ class Job(BaseModel):
     # ever lost by trying again (optionally with a different branch name).
     branch_pushed_at: datetime | None = None
     branch_push_remote_url: str | None = None
+    # Who: the commit is attributed to the signed-in user who created the
+    # branch ("Name <email>"), and a delegated push runs as whoever clicked
+    # Push, with their own connected provider account — recorded for audit.
+    branch_commit_author: str | None = None
+    branch_pushed_by_user_id: str | None = None
+    branch_push_provider: str | None = None
+    branch_push_account: str | None = None
     created_at: datetime
     updated_at: datetime
 
