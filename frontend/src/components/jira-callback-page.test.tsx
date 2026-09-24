@@ -50,10 +50,10 @@ describe("JiraCallbackPage", () => {
 
     await screen.findByText(/Connected Jira site Acme Jira/i);
     await waitFor(() =>
-      expect(completeJiraConnect).toHaveBeenCalledWith(
-        { code: "jira-code", state: "state-123" },
-        expect.any(AbortSignal),
-      ),
+      expect(completeJiraConnect).toHaveBeenCalledWith({
+        code: "jira-code",
+        state: "state-123",
+      }),
     );
     await waitFor(() =>
       expect(redirectTo).toHaveBeenCalledWith(

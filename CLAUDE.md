@@ -42,13 +42,14 @@ typing a secret into this app's forms. Sources:
     access tokens are **encrypted at rest** (Fernet, `backend/app/core/crypto.py`)
     in SQLite and used preferentially, falling back to shared creds when a user has
     not connected. `JIRA_BASE_URL` still selects which Jira Cloud site to target.
-- **GitHub and GitLab — delegated OAuth** (`GITHUB_OAUTH_*` / `GITLAB_OAUTH_*`):
+- **GitHub, GitLab, and Bitbucket Cloud — delegated OAuth** (`GITHUB_OAUTH_*` /
+  `GITLAB_OAUTH_*` / `BITBUCKET_OAUTH_*`):
   per-user tokens encrypted at rest, used **for repository discovery / quick-picks**
-  and — for GitLab only, `git clone` alone — **read-level git authentication as the
-  signed-in user** (see **Repository input & local execution** below for the
-  clone-auth mechanism). `git push` always still uses the machine's ambient git
-  auth (SSH key / credential helper) — delegated write/push auth is not built for
-  either provider (see **GitLab OAuth integration** below for the full picture).
+  and — for GitLab and Bitbucket only, `git clone` alone — **read-level git
+  authentication as the signed-in user** (see **Repository input & local execution**
+  below for the clone-auth mechanism). `git push` always still uses the machine's
+  ambient git auth (SSH key / credential helper) — delegated write/push auth is not
+  built for any provider (see **GitLab OAuth integration** below for the full picture).
   **Each provider's tokens are encrypted under that provider's own Fernet key** —
   `encrypt_secret()`/`decrypt_secret()` (`backend/app/core/crypto.py`) both take a
   **required, no-default** `provider=` keyword argument ("jira", "github", or
@@ -136,7 +137,16 @@ that section's "Never widens to push."
   expired") instead of the actual SSL error, which is only visible in the
   backend log. Diagnose from the backend log, not the browser-visible message,
   the same way `error_max_structured_output_retries` failures are diagnosed
-  above.
+  above. **Since fixed for all four callback pages** (Jira, GitHub, GitLab,
+  Bitbucket): `completeOAuthCallbackOnce()` (`frontend/src/lib/oauth-callback.ts`)
+  shares one exchange request per `provider:state`, so every run of the
+  effect sees the first request's real outcome instead of sending a second,
+  doomed request (the per-effect `AbortController` was removed too — aborting
+  on cleanup only cancelled the browser's view of the request, never the
+  server-side exchange it had already triggered). A real backend error now
+  shows as that error on the page, not as "missing or expired"; the
+  StrictMode regression test lives in `bitbucket-callback-page.test.tsx`
+  and fails if the guard is removed.
 - **Token refresh, unlike GitHub.** This app's GitHub OAuth App config issues
   long-lived tokens with nothing to refresh, but GitLab access tokens expire
   in ~2 hours and rotate a refresh token on each use. `_is_token_stale()` /
@@ -208,19 +218,114 @@ that section's "Never widens to push."
   block with two tabs (`role="tab"`/`role="tabpanel"`, `.repo-tabs` in
   `globals.css`) — only one provider's list is visible at a time, inside a
   fixed-height (`max-height: 12rem`) scrollable panel instead of an
-  unbounded row. The active tab defaults to whichever provider actually has
-  repos (`activeConnectedRepoTab` in `job-form.tsx`) so a user with only
-  GitLab connected doesn't land on an empty GitHub tab; an explicit tab
+  unbounded row. The active tab defaults to the first provider that actually
+  has repos (`activeConnectedRepoGroup` in `job-form.tsx`); an explicit tab
   click (`selectedConnectedRepoTab`) overrides that default for the rest of
-  the session. The block itself is hidden entirely when neither provider has
-  any repos, same as before. The unrelated "Pre-configured repos" list
-  (`repos.config.json`) is untouched — this only affects the two delegated-
-  OAuth providers.
+  the session. The block itself is hidden entirely when no provider has
+  any repos. The unrelated "Pre-configured repos" list
+  (`repos.config.json`) is untouched — this only affects the delegated-
+  OAuth providers. (Since Bitbucket was added, tabs are data-driven and only
+  providers with repos get one — see **Bitbucket Cloud OAuth integration**.)
 - **Tests:** 9 new backend tests (`test_auth_api.py`) covering connect/callback/repos
   happy paths, token-refresh-on-stale-token, and the self-hosted-instance-URL
   case; 2 new frontend tests for the callback page
   (`gitlab-callback-page.test.tsx`) plus updated `auth-gate.test.tsx` /
   `job-form.test.tsx` coverage for the connect flow and quick-picks.
+
+## Bitbucket Cloud OAuth integration
+
+Delegated per-user Bitbucket Cloud OAuth (`backend/app/auth/bitbucket_oauth.py`,
+`app/api/auth.py`'s `POST /repo-hosting/bitbucket/connect` / `GET
+/repo-hosting/bitbucket/callback` / `GET /repo-hosting/bitbucket/repos`), built
+for a team whose repositories live on bitbucket.org. Same shape as the GitLab
+integration — repository quick-picks plus read-only clone auth as the signed-in
+user (see **Repository input & local execution**'s "Clone auth"); `git push`
+never sees a Bitbucket token.
+
+- **bitbucket.org only.** Bitbucket Cloud is one SaaS host, so the OAuth
+  (`https://bitbucket.org/site/oauth2/...`) and API
+  (`https://api.bitbucket.org/2.0`) base URLs are module constants — no
+  instance-URL setting like `GITLAB_INSTANCE_URL`. Bitbucket Data
+  Center/Server has a different API and is out of scope.
+- **Protocol differences from GitLab, not a re-skin:** the token endpoint takes
+  client credentials as an HTTP Basic header with a form-encoded body (GitLab
+  takes them in a JSON body); the token response lists granted permissions in
+  a plural `scopes` field; the authorize request sends no `redirect_uri` —
+  Bitbucket always redirects to the callback URL registered on the consumer,
+  so `BITBUCKET_OAUTH_CALLBACK_URL` must equal that registered URL (it's
+  still required config, as the "is this configured" signal and the
+  documentation of where the callback page lives).
+- **The consumer, not the request, decides the grant.** Permissions are
+  ticked on the OAuth consumer itself (Bitbucket workspace settings → OAuth
+  consumers); register it with **Account: Read** and **Repositories: Read**
+  only — never write/admin, matching "never widens to push."
+  `bitbucket_oauth_scopes` (default `["account", "repository"]`) is only the
+  fallback stored when a token response omits `scopes`.
+  `_has_repo_read_scope()` accepts `repository`, its `:write`/`:admin`
+  supersets, and `pullrequest`/`pullrequest:write` (which Bitbucket documents
+  as implying repository read); a connection without any of them falls back
+  to ambient credentials for clone, same as GitLab's stale-scope case.
+- **Token refresh, like GitLab.** Bitbucket access tokens expire after ~2h and
+  come with a refresh token; the stale-token/refresh-before-use logic mirrors
+  `gitlab_oauth.py` exactly.
+- **Clone URLs are stripped of userinfo.** Bitbucket's own https clone link
+  embeds the viewer's username (`https://someone@bitbucket.org/ws/repo.git`);
+  `_plain_clone_url()` rebuilds it as `https://bitbucket.org/<full_name>.git`
+  so the repo URL stored on a job carries no identity and passes repo-URL
+  validation (a pasted `https://user@bitbucket.org/...` URL is rejected with
+  `INPUT_INVALID` — pick from the tab or drop the `user@`).
+- **Repos are listed per workspace — Bitbucket removed the cross-workspace
+  listing.** The first version called `GET /2.0/repositories?role=member`,
+  which now 404s on the live API ("There is no API hosted at this URL"), as
+  do `/2.0/workspaces` and `/2.0/user/permissions/workspaces`. What works
+  (verified live): `GET /2.0/user/workspaces` for the user's workspace slugs
+  (capped at `_MAX_WORKSPACES`), then `GET /2.0/repositories/{workspace}`
+  (`role=member`, `pagelen=100`, newest first) for each, concurrently —
+  merged, sorted by `updated_on`, capped at 100. A workspace whose listing
+  fails is skipped rather than failing the whole picker.
+- **The consumer needs Account: Read.** Without it the token exchange still
+  succeeds, but `GET /2.0/user` returns 403 and the callback fails with
+  `REPO_PROVIDER_CALLBACK_FAILED` ("bitbucket user lookup returned 403" in
+  the backend log) — the connection is never saved.
+- **Deployment prerequisites:** `bitbucket.org` in `ALLOWED_GIT_HOSTS`; the
+  five `BITBUCKET_OAUTH_*` values (`ENABLED`, `CLIENT_ID` = consumer key,
+  `CLIENT_SECRET` = consumer secret, `CALLBACK_URL`, `ENCRYPTION_KEY` — its
+  own Fernet key, a `"bitbucket"` entry in `crypto.py`'s `_PROVIDERS`); see
+  `backend/.env.example`.
+- **`repo_hosting.py`'s per-provider dispatch is now an exhaustive `match`,
+  not if/else.** `_provider_enabled`/`_provider_configured` used to be
+  `if GITHUB ... else <GitLab>`; adding a third enum member would have
+  silently reported GitLab's settings as Bitbucket's. With `match`, pyright
+  flags a missing case instead.
+- **Frontend:** `startBitbucketConnect()` / `completeBitbucketConnect()` /
+  `fetchBitbucketRepositories()` (`frontend/src/lib/api.ts`); a callback page
+  (`bitbucket-callback-page.tsx`, routed at `src/app/auth/bitbucket/callback/`);
+  `auth-gate.tsx` gained the `BITBUCKET` connect branch and
+  `?bitbucket=connected|connect_failed` flash handling. `job-form.tsx`'s
+  connected-repo tabs are now data-driven (`connectedRepoGroups`, one
+  normalized `{key, label, url}` list per provider) rather than hand-written
+  per provider, and **a tab is shown only for a provider that returned at
+  least one repo** — previously both GitHub and GitLab tabs always rendered,
+  with a "No connected … repositories" placeholder; with three providers, a
+  permanently empty tab for a provider a deployment never enabled is just
+  clutter. The Bitbucket fetch is best-effort like the other two.
+- **Verified against a live Bitbucket consumer.** The token-endpoint
+  client-auth style (Basic `client_id:client_secret`, form body), the full
+  connect flow, and git-over-HTTP auth with a real user token (`git
+  ls-remote` succeeded with Basic `x-token-auth:<token>` — Bearer happened to
+  work too, unlike GitLab's git endpoint) are all confirmed. Note that
+  current Bitbucket consumers issue credentials in the same shape as
+  Atlassian Developer Console apps (32-char client ID, `ATOA…` secret), so
+  that shape is *not* a sign of the wrong kind of app.
+- **Tests:** `test_auth_api.py` (connect URL, missing-config error, status
+  listing with Bitbucket's own settings, callback persisting a
+  correctly-keyed connection with Basic client auth and form body, repo
+  listing with userinfo-free clone URLs, refresh before listing, not-connected,
+  disconnect, token helper incl. missing repo scope / not configured,
+  `_has_repo_read_scope`); `test_repo_clone.py` (Bitbucket host → Bitbucket
+  token only, `x-token-auth` header, ambient fallback);
+  `bitbucket-callback-page.test.tsx`, plus `auth-gate.test.tsx` /
+  `job-form.test.tsx` coverage.
 
 ## Security invariants — each backed by a mechanical check
 
@@ -535,8 +640,8 @@ unless `ALLOW_DIRTY_LOCAL_REPOS`, and `REQUIRE_LOCAL_BRANCH_TICKET_MATCH` option
 requires the branch name contain the ticket key. `RepoInfo` (source kind, branch,
 commit SHA, origin URL, dirty flag) is captured on the job.
 
-**Clone auth: ambient by default, the signed-in user's own GitLab token when
-it applies.** `git clone` inherits the machine's ambient git auth (SSH key /
+**Clone auth: ambient by default, the signed-in user's own GitLab/Bitbucket
+token when it applies.** `git clone` inherits the machine's ambient git auth (SSH key /
 credential helper) by default — the same trust model `git push` still always
 uses. One narrow, deliberate exception: when a `REMOTE` clone's host matches
 the configured `GITLAB_INSTANCE_URL` and the job's owning user has a valid
@@ -594,6 +699,17 @@ now also *clone* it, with zero additional ops setup.
   ambient credentials exactly as before. An unauthenticated deployment
   (`AUTH_ENABLED=false`, no `owner_user_id`) or a repo on any other host is
   unaffected either way.
+- **Bitbucket Cloud gets the same treatment, by exact host match.**
+  `_delegated_clone_auth_header()` (`repo_clone.py`) picks the provider from
+  the repo URL's host: the configured GitLab instance host → the user's
+  GitLab token (Basic `oauth2:`), `bitbucket.org` → the user's Bitbucket
+  token (Basic `x-token-auth:`, Bitbucket's documented username for
+  OAuth/access-token git auth — `bitbucket_git_auth_header()`), anything else
+  → ambient. Hosts are compared exactly, so one provider's token is never
+  offered to another host. Same header-override mechanism, same redactor
+  registration, same best-effort `None`-means-ambient contract
+  (`get_valid_bitbucket_access_token_for_user()`), same never-push rule. See
+  **Bitbucket Cloud OAuth integration** below.
 
 **Optional base branch.** The job-creation form also accepts an optional
 `base_branch` (`Job.base_branch`) — an existing branch to clone from (e.g.
@@ -985,9 +1101,9 @@ the header only when the signed-in user's role is `ADMIN`.
 
 **In:** non-secret form; a Jira ticket or an uploaded PDF requirement document as
 alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
-delegated Jira/GitHub/GitLab OAuth with encrypted-at-rest tokens (used for
-repository discovery, and — GitLab only, read-only — to authenticate `git
-clone` as the signed-in user; see below); async jobs with SQLite store + polling
+delegated Jira/GitHub/GitLab/Bitbucket Cloud OAuth with encrypted-at-rest
+tokens (used for repository discovery, and — GitLab and Bitbucket only,
+read-only — to authenticate `git clone` as the signed-in user; see below); async jobs with SQLite store + polling
 status screen; the plan pipeline (fetch/clone/map/plan); an isolated-clone
 implement + validate phase, available for local *and* remote repos alike; a
 single, explicitly opt-in validation-correction pass after a failed validation;
@@ -1001,9 +1117,10 @@ security-invariant tests; a reference shared-deployment stack under `deploy/`.
 **Out (not built; do not scaffold):** opening a pull request; delegated *git
 push* auth (`git push` always uses ambient credentials only — no per-user
 token is ever handed to it; `git clone` is the one narrow, deliberate
-exception, GitLab-only, read-only — see **Repository input & local
-execution**'s "Clone auth"); a durable workflow engine; a network-locked
-sandbox; an embeddings/vector index.
+exception, GitLab/Bitbucket-only, read-only — see **Repository input & local
+execution**'s "Clone auth"); Bitbucket Data Center/Server (only Bitbucket
+Cloud, bitbucket.org, is supported); a durable workflow engine; a
+network-locked sandbox; an embeddings/vector index.
 
 ## Stack
 

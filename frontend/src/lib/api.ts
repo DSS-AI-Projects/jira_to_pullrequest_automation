@@ -71,7 +71,7 @@ export type JiraConnectCallbackResponse = {
   connection: JiraConnectionInfo;
 };
 
-export type RepoHostingProvider = "GITHUB" | "GITLAB";
+export type RepoHostingProvider = "GITHUB" | "GITLAB" | "BITBUCKET";
 
 export type RepoHostingAuthKind = "OAUTH_USER" | "APP_INSTALLATION";
 
@@ -139,6 +139,21 @@ export type GitLabRepositorySummary = {
 
 export type GitLabRepositoryListResponse = {
   repos: GitLabRepositorySummary[];
+};
+
+export type BitbucketRepositorySummary = {
+  uuid: string;
+  name: string;
+  full_name: string;
+  web_url: string;
+  clone_url: string;
+  default_branch?: string | null;
+  workspace: string;
+  private: boolean;
+};
+
+export type BitbucketRepositoryListResponse = {
+  repos: BitbucketRepositorySummary[];
 };
 
 export type JobError = {
@@ -772,6 +787,41 @@ export async function fetchGitLabRepositories(
     cache: "no-store",
   });
   return parseJson<GitLabRepositoryListResponse>(response);
+}
+
+export async function startBitbucketConnect(
+  signal?: AbortSignal,
+): Promise<RepoHostingConnectStartResponse> {
+  const response = await apiFetch("/api/auth/repo-hosting/bitbucket/connect", {
+    method: "POST",
+    signal,
+  });
+  return parseJson<RepoHostingConnectStartResponse>(response);
+}
+
+export async function completeBitbucketConnect(
+  params: { code: string; state: string },
+  signal?: AbortSignal,
+): Promise<RepoHostingConnectCallbackResponse> {
+  const search = new URLSearchParams(params).toString();
+  const response = await apiFetch(
+    `/api/auth/repo-hosting/bitbucket/callback?${search}`,
+    {
+      signal,
+      cache: "no-store",
+    },
+  );
+  return parseJson<RepoHostingConnectCallbackResponse>(response);
+}
+
+export async function fetchBitbucketRepositories(
+  signal?: AbortSignal,
+): Promise<BitbucketRepositoryListResponse> {
+  const response = await apiFetch("/api/auth/repo-hosting/bitbucket/repos", {
+    signal,
+    cache: "no-store",
+  });
+  return parseJson<BitbucketRepositoryListResponse>(response);
 }
 
 export function redirectBrowser(url: string): void {

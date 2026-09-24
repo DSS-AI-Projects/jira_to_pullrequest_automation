@@ -61,6 +61,18 @@ class Settings(BaseSettings):
     def _strip_gitlab_instance_url_trailing_slash(cls, value: str) -> str:
         return value.rstrip("/")
 
+    # Delegated per-user Bitbucket Cloud OAuth (bitbucket.org only — Bitbucket
+    # Data Center/Server has a different API and is not supported). Secrets
+    # live in env only: BITBUCKET_OAUTH_CLIENT_SECRET / BITBUCKET_OAUTH_ENCRYPTION_KEY.
+    bitbucket_oauth_enabled: bool = False
+    bitbucket_oauth_client_id: str | None = None
+    bitbucket_oauth_callback_url: str | None = None
+    # Bitbucket Cloud OAuth consumers grant the permissions ticked on the
+    # consumer itself; this list is only sent as the `scope` hint and checked
+    # (via `repository`) before a token is used to authenticate a clone.
+    bitbucket_oauth_scopes: list[str] = ["account", "repository"]
+    bitbucket_oauth_state_ttl_minutes: int = 10
+
     # Repo input validation (security invariant 5)
     allowed_git_hosts: list[str] = ["github.com"]
     preconfigured_repos_file: Path = BACKEND_ROOT / "repos.config.json"

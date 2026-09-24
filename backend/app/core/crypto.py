@@ -45,6 +45,13 @@ _PROVIDERS: dict[str, _ProviderCryptoConfig] = {
         invalid_detail="GITLAB_OAUTH_ENCRYPTION_KEY is invalid",
         label="GitLab",
     ),
+    "bitbucket": _ProviderCryptoConfig(
+        get_key=secrets.get_bitbucket_oauth_encryption_key,
+        missing_error=ErrorCode.REPO_PROVIDER_NOT_AVAILABLE,
+        missing_detail="BITBUCKET_OAUTH_ENCRYPTION_KEY is not configured",
+        invalid_detail="BITBUCKET_OAUTH_ENCRYPTION_KEY is invalid",
+        label="Bitbucket",
+    ),
 }
 
 

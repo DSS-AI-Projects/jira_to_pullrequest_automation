@@ -7,12 +7,14 @@ import { JobForm } from "@/components/job-form";
 const {
   push,
   createJob,
+  fetchBitbucketRepositories,
   fetchGitHubRepositories,
   fetchGitLabRepositories,
   fetchRepos,
 } = vi.hoisted(() => ({
   push: vi.fn(),
   createJob: vi.fn(),
+  fetchBitbucketRepositories: vi.fn(),
   fetchGitHubRepositories: vi.fn(),
   fetchGitLabRepositories: vi.fn(),
   fetchRepos: vi.fn(),
@@ -29,6 +31,7 @@ vi.mock("@/lib/api", async () => {
   return {
     ...actual,
     createJob,
+    fetchBitbucketRepositories,
     fetchGitHubRepositories,
     fetchGitLabRepositories,
     fetchRepos,
@@ -47,6 +50,10 @@ describe("JobForm", () => {
     // override this with their own mockResolvedValue/mockRejectedValue.
     fetchGitLabRepositories.mockRejectedValue(
       new Error("Connect your GitLab account before loading repositories."),
+    );
+    fetchBitbucketRepositories.mockReset();
+    fetchBitbucketRepositories.mockRejectedValue(
+      new Error("Connect your Bitbucket account before loading repositories."),
     );
     fetchRepos.mockReset();
     sessionStorage.clear();
@@ -469,6 +476,76 @@ describe("JobForm", () => {
     expect(
       screen.queryByRole("button", { name: "octocat/repo-one" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows a Bitbucket tab and submits the picked Bitbucket clone URL", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com", "bitbucket.org"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockResolvedValue({
+      repos: [
+        {
+          id: 1001,
+          name: "repo-one",
+          full_name: "octocat/repo-one",
+          html_url: "https://github.com/octocat/repo-one",
+          clone_url: "https://github.com/octocat/repo-one.git",
+          default_branch: "main",
+          owner_login: "octocat",
+          private: false,
+        },
+      ],
+    });
+    fetchBitbucketRepositories.mockResolvedValue({
+      repos: [
+        {
+          uuid: "{repo-uuid}",
+          name: "jfive",
+          full_name: "jeena1/jfive",
+          web_url: "https://bitbucket.org/jeena1/jfive",
+          clone_url: "https://bitbucket.org/jeena1/jfive.git",
+          default_branch: "main",
+          workspace: "jeena1",
+          private: true,
+        },
+      ],
+    });
+    createJob.mockResolvedValue({ job_id: "job-bitbucket" });
+
+    render(<JobForm />);
+
+    await screen.findByRole("button", { name: "octocat/repo-one" });
+    // GitLab returned nothing, so it gets no (permanently empty) tab.
+    expect(
+      screen.queryByRole("tab", { name: /GitLab/i }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Bitbucket/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "jeena1/jfive" }),
+    );
+    fireEvent.change(screen.getByLabelText(/Jira ticket key or URL/i), {
+      target: { value: "PROJ-88" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Generate implementation plan/i }),
+    );
+
+    await waitFor(() =>
+      expect(createJob).toHaveBeenCalledWith({
+        ticket: "PROJ-88",
+        repo: "https://bitbucket.org/jeena1/jfive.git",
+        planning_notes: "",
+      }),
+    );
   });
 
   it("prefills from a retry draft left by the job-detail page and clears it", async () => {

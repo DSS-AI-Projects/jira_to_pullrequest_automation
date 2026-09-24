@@ -12,6 +12,7 @@ const {
   fetchSession,
   logout,
   redirectBrowser,
+  startBitbucketConnect,
   startGitHubConnect,
   startGitLabConnect,
   startJiraConnect,
@@ -24,6 +25,7 @@ const {
   fetchSession: vi.fn(),
   logout: vi.fn(),
   redirectBrowser: vi.fn(),
+  startBitbucketConnect: vi.fn(),
   startGitHubConnect: vi.fn(),
   startGitLabConnect: vi.fn(),
   startJiraConnect: vi.fn(),
@@ -41,6 +43,7 @@ vi.mock("@/lib/api", async () => {
     fetchSession,
     logout,
     redirectBrowser,
+    startBitbucketConnect,
     startGitHubConnect,
     startGitLabConnect,
     startJiraConnect,
@@ -57,6 +60,7 @@ describe("AuthGate", () => {
     fetchSession.mockReset();
     logout.mockReset();
     redirectBrowser.mockReset();
+    startBitbucketConnect.mockReset();
     startGitHubConnect.mockReset();
     startGitLabConnect.mockReset();
     startJiraConnect.mockReset();
@@ -473,6 +477,94 @@ describe("AuthGate", () => {
     expect(redirectBrowser).toHaveBeenCalledWith(
       "https://gitlab.com/oauth/authorize?state=gitlab123",
     );
+  });
+
+  it("starts the Bitbucket connect flow for configured Bitbucket access", async () => {
+    fetchSession.mockResolvedValue({
+      auth_enabled: true,
+      can_dev_login: true,
+      user: {
+        id: "user-1",
+        email: "sam@example.com",
+        display_name: "Sam",
+        role: "USER",
+      },
+    });
+    fetchJiraAuthStatus.mockResolvedValue({
+      oauth_enabled: true,
+      oauth_configured: true,
+      shared_configured: true,
+      effective_mode: "SHARED",
+      connected: false,
+      connection: null,
+    });
+    fetchRepoHostingStatus.mockResolvedValue({
+      providers: [
+        {
+          provider: "BITBUCKET",
+          display_name: "Bitbucket",
+          enabled: true,
+          configured: true,
+          connected: false,
+          connection: null,
+        },
+      ],
+    });
+    startBitbucketConnect.mockResolvedValue({
+      authorization_url:
+        "https://bitbucket.org/site/oauth2/authorize?state=bitbucket123",
+    });
+
+    render(
+      <AuthGate>
+        <div>App content</div>
+      </AuthGate>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect Bitbucket" }),
+    );
+
+    await waitFor(() => expect(startBitbucketConnect).toHaveBeenCalled());
+    expect(redirectBrowser).toHaveBeenCalledWith(
+      "https://bitbucket.org/site/oauth2/authorize?state=bitbucket123",
+    );
+  });
+
+  it("shows a success flash after returning from the Bitbucket callback", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/?bitbucket=connected&bitbucket_account=jeena1",
+    );
+    fetchSession.mockResolvedValue({
+      auth_enabled: true,
+      can_dev_login: true,
+      user: {
+        id: "user-1",
+        email: "sam@example.com",
+        display_name: "Sam",
+        role: "USER",
+      },
+    });
+    fetchJiraAuthStatus.mockResolvedValue({
+      oauth_enabled: false,
+      oauth_configured: false,
+      shared_configured: true,
+      effective_mode: "SHARED",
+      connected: false,
+      connection: null,
+    });
+    fetchRepoHostingStatus.mockResolvedValue({ providers: [] });
+
+    render(
+      <AuthGate>
+        <div>App content</div>
+      </AuthGate>,
+    );
+
+    await screen.findByText("Connected Bitbucket account jeena1.");
+    expect(window.location.search).toBe("");
   });
 
   it("disconnects a connected repository provider", async () => {

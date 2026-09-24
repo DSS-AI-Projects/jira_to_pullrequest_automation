@@ -6,10 +6,12 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   createJob,
+  fetchBitbucketRepositories,
   fetchGitHubRepositories,
   fetchGitLabRepositories,
   fetchRepos,
   isAbortError,
+  type BitbucketRepositorySummary,
   type GitHubRepositorySummary,
   type GitLabRepositorySummary,
   type RepoChoice,
@@ -21,6 +23,12 @@ import { consumeRetryDraft } from "@/lib/retry-draft";
 const SAMPLE_TICKET = "PROJ-123";
 type RepoMode = "remote" | "local";
 type RequirementMode = "jira" | "document";
+type ConnectedRepoProvider = "github" | "gitlab" | "bitbucket";
+type ConnectedRepoGroup = {
+  provider: ConnectedRepoProvider;
+  label: string;
+  repos: { key: string; label: string; url: string }[];
+};
 
 export function JobForm() {
   const router = useRouter();
@@ -42,13 +50,14 @@ export function JobForm() {
   const [repos, setRepos] = useState<RepoChoice[]>([]);
   const [githubRepos, setGitHubRepos] = useState<GitHubRepositorySummary[]>([]);
   const [gitlabRepos, setGitLabRepos] = useState<GitLabRepositorySummary[]>([]);
+  const [bitbucketRepos, setBitbucketRepos] = useState<
+    BitbucketRepositorySummary[]
+  >([]);
   // null means "no explicit choice yet" — the effective tab (see
-  // activeConnectedRepoTab below) then defaults to whichever provider
-  // actually has repos, so a user with only GitLab connected doesn't land
-  // on an empty GitHub tab.
-  const [selectedConnectedRepoTab, setSelectedConnectedRepoTab] = useState<
-    "github" | "gitlab" | null
-  >(null);
+  // activeConnectedRepoGroup below) then defaults to the first provider
+  // that actually has repos.
+  const [selectedConnectedRepoTab, setSelectedConnectedRepoTab] =
+    useState<ConnectedRepoProvider | null>(null);
   const [allowedHosts, setAllowedHosts] = useState<string[]>([]);
   const [localRepoSupport, setLocalRepoSupport] = useState<
     RepoList["local_repo_support"] | null
@@ -100,7 +109,7 @@ export function JobForm() {
           // blocker for job creation — any failure here (never connected, a
           // stale/rejected token, a network error, ...) just means "show no
           // GitHub quick-picks", not a page-level error, and must never stop
-          // the GitLab fetch below from running.
+          // the GitLab/Bitbucket fetches below from running.
           if (!active || isAbortError(githubError)) {
             return;
           }
@@ -119,6 +128,20 @@ export function JobForm() {
             return;
           }
           setGitLabRepos([]);
+        }
+        try {
+          const bitbucketResponse = await fetchBitbucketRepositories(
+            controller.signal,
+          );
+          if (active) {
+            setBitbucketRepos(bitbucketResponse.repos);
+          }
+        } catch (bitbucketError) {
+          // Same best-effort treatment as the GitHub fetch above.
+          if (!active || isAbortError(bitbucketError)) {
+            return;
+          }
+          setBitbucketRepos([]);
         }
       } catch (repoError) {
         if (!active || isAbortError(repoError)) {
@@ -142,16 +165,51 @@ export function JobForm() {
     };
   }, []);
 
+  // One normalized list per provider (each API has its own field names), so
+  // the tabs, datalist, and helper text don't branch per provider. Only
+  // providers with at least one repo get a tab — a deployment that never
+  // enabled, say, Bitbucket shouldn't show a permanently empty tab for it.
+  const connectedRepoGroups = useMemo<ConnectedRepoGroup[]>(
+    () =>
+      [
+        {
+          provider: "github" as const,
+          label: "GitHub",
+          repos: githubRepos.map((repoOption) => ({
+            key: String(repoOption.id),
+            label: repoOption.full_name,
+            url: repoOption.clone_url,
+          })),
+        },
+        {
+          provider: "gitlab" as const,
+          label: "GitLab",
+          repos: gitlabRepos.map((repoOption) => ({
+            key: String(repoOption.id),
+            label: repoOption.path_with_namespace,
+            url: repoOption.http_url_to_repo,
+          })),
+        },
+        {
+          provider: "bitbucket" as const,
+          label: "Bitbucket",
+          repos: bitbucketRepos.map((repoOption) => ({
+            key: repoOption.uuid,
+            label: repoOption.full_name,
+            url: repoOption.clone_url,
+          })),
+        },
+      ].filter((group) => group.repos.length > 0),
+    [bitbucketRepos, githubRepos, gitlabRepos],
+  );
+
   const repoHelper = useMemo(() => {
     if (repoMode === "local") {
       return localRepoSupport?.allow_non_git_folders
         ? "Enter an approved absolute local path to a Git working tree, or a plain source folder (no .git required)."
         : "Enter an approved absolute local path to a Git working tree.";
     }
-    const connectedLabels = [
-      githubRepos.length > 0 ? "GitHub" : null,
-      gitlabRepos.length > 0 ? "GitLab" : null,
-    ].filter((label): label is string => label !== null);
+    const connectedLabels = connectedRepoGroups.map((group) => group.label);
 
     if (connectedLabels.length > 0 && repos.length > 0) {
       return `Pick a connected ${connectedLabels.join("/")} repo, use a pre-configured repo, or enter an allowed repository URL.`;
@@ -163,21 +221,14 @@ export function JobForm() {
       return "Enter an allowed repository URL or pre-configured repo name.";
     }
     return "Pick a pre-configured repo below or enter an allowed repository URL.";
-  }, [
-    githubRepos.length,
-    gitlabRepos.length,
-    localRepoSupport,
-    repoMode,
-    repos.length,
-  ]);
+  }, [connectedRepoGroups, localRepoSupport, repoMode, repos.length]);
 
-  const hasConnectedGitHubRepos = githubRepos.length > 0;
-  const hasConnectedGitLabRepos = gitlabRepos.length > 0;
   const showConnectedRepoTabs =
-    repoMode === "remote" &&
-    (hasConnectedGitHubRepos || hasConnectedGitLabRepos);
-  const activeConnectedRepoTab: "github" | "gitlab" =
-    selectedConnectedRepoTab ?? (hasConnectedGitHubRepos ? "github" : "gitlab");
+    repoMode === "remote" && connectedRepoGroups.length > 0;
+  const activeConnectedRepoGroup =
+    connectedRepoGroups.find(
+      (group) => group.provider === selectedConnectedRepoTab,
+    ) ?? connectedRepoGroups[0];
 
   const repoLabel =
     repoMode === "local"
@@ -418,16 +469,16 @@ export function JobForm() {
           </label>
 
           <datalist id="repo-suggestions">
-            {githubRepos.map((repoOption) => (
-              <option key={repoOption.id} value={repoOption.clone_url}>
-                {repoOption.full_name}
-              </option>
-            ))}
-            {gitlabRepos.map((repoOption) => (
-              <option key={repoOption.id} value={repoOption.http_url_to_repo}>
-                {repoOption.path_with_namespace}
-              </option>
-            ))}
+            {connectedRepoGroups.flatMap((group) =>
+              group.repos.map((repoOption) => (
+                <option
+                  key={`${group.provider}-${repoOption.key}`}
+                  value={repoOption.url}
+                >
+                  {repoOption.label}
+                </option>
+              )),
+            )}
             {repos.map((repoOption) => (
               <option key={repoOption.name} value={repoOption.name}>
                 {repoOption.url}
@@ -440,80 +491,50 @@ export function JobForm() {
               <span className="quick-picks-label">Connected repositories</span>
               <div className="repo-tabs">
                 <div className="repo-tabs__nav" role="tablist">
-                  <button
-                    aria-selected={activeConnectedRepoTab === "github"}
-                    className={
-                      "repo-tab" +
-                      (activeConnectedRepoTab === "github" ? " is-active" : "")
-                    }
-                    id="repo-tab-github"
-                    onClick={() => setSelectedConnectedRepoTab("github")}
-                    role="tab"
-                    type="button"
-                  >
-                    GitHub{" "}
-                    {hasConnectedGitHubRepos ? `(${githubRepos.length})` : ""}
-                  </button>
-                  <button
-                    aria-selected={activeConnectedRepoTab === "gitlab"}
-                    className={
-                      "repo-tab" +
-                      (activeConnectedRepoTab === "gitlab" ? " is-active" : "")
-                    }
-                    id="repo-tab-gitlab"
-                    onClick={() => setSelectedConnectedRepoTab("gitlab")}
-                    role="tab"
-                    type="button"
-                  >
-                    GitLab{" "}
-                    {hasConnectedGitLabRepos ? `(${gitlabRepos.length})` : ""}
-                  </button>
+                  {connectedRepoGroups.map((group) => (
+                    <button
+                      aria-selected={
+                        activeConnectedRepoGroup?.provider === group.provider
+                      }
+                      className={
+                        "repo-tab" +
+                        (activeConnectedRepoGroup?.provider === group.provider
+                          ? " is-active"
+                          : "")
+                      }
+                      id={`repo-tab-${group.provider}`}
+                      key={group.provider}
+                      onClick={() =>
+                        setSelectedConnectedRepoTab(group.provider)
+                      }
+                      role="tab"
+                      type="button"
+                    >
+                      {group.label} ({group.repos.length})
+                    </button>
+                  ))}
                 </div>
-                <div
-                  aria-labelledby={`repo-tab-${activeConnectedRepoTab}`}
-                  className="repo-tab-panel"
-                  role="tabpanel"
-                >
-                  {activeConnectedRepoTab === "github" ? (
-                    hasConnectedGitHubRepos ? (
-                      <ul className="repo-tab-list">
-                        {githubRepos.map((repoOption) => (
-                          <li key={repoOption.id}>
-                            <button
-                              className="repo-tab-item"
-                              onClick={() => setRepo(repoOption.clone_url)}
-                              type="button"
-                            >
-                              {repoOption.full_name}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="repo-tab-empty">
-                        No connected GitHub repositories.
-                      </p>
-                    )
-                  ) : hasConnectedGitLabRepos ? (
+                {activeConnectedRepoGroup ? (
+                  <div
+                    aria-labelledby={`repo-tab-${activeConnectedRepoGroup.provider}`}
+                    className="repo-tab-panel"
+                    role="tabpanel"
+                  >
                     <ul className="repo-tab-list">
-                      {gitlabRepos.map((repoOption) => (
-                        <li key={repoOption.id}>
+                      {activeConnectedRepoGroup.repos.map((repoOption) => (
+                        <li key={repoOption.key}>
                           <button
                             className="repo-tab-item"
-                            onClick={() => setRepo(repoOption.http_url_to_repo)}
+                            onClick={() => setRepo(repoOption.url)}
                             type="button"
                           >
-                            {repoOption.path_with_namespace}
+                            {repoOption.label}
                           </button>
                         </li>
                       ))}
                     </ul>
-                  ) : (
-                    <p className="repo-tab-empty">
-                      No connected GitLab repositories.
-                    </p>
-                  )}
-                </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}

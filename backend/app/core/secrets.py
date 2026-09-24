@@ -102,6 +102,16 @@ def get_gitlab_oauth_encryption_key() -> str | None:
     return _read("GITLAB_OAUTH_ENCRYPTION_KEY")
 
 
+def get_bitbucket_oauth_client_secret() -> str | None:
+    """Read the Bitbucket OAuth consumer secret for per-user repository access."""
+    return _read("BITBUCKET_OAUTH_CLIENT_SECRET")
+
+
+def get_bitbucket_oauth_encryption_key() -> str | None:
+    """Read the Fernet key used to encrypt persisted Bitbucket OAuth tokens."""
+    return _read("BITBUCKET_OAUTH_ENCRYPTION_KEY")
+
+
 def get_anthropic_api_key() -> str | None:
     """Read the Anthropic API key. Call only inside the planning agent step."""
     return _read("ANTHROPIC_API_KEY")

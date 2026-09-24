@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.auth.bitbucket_oauth import bitbucket_oauth_is_configured
 from app.auth.github_oauth import github_oauth_is_configured
 from app.auth.gitlab_oauth import gitlab_oauth_is_configured
 from app.auth.models import (
@@ -18,13 +19,21 @@ from app.jobs.store import JobStore
 _PROVIDER_DISPLAY_NAMES: dict[RepoHostingProvider, str] = {
     RepoHostingProvider.GITHUB: "GitHub",
     RepoHostingProvider.GITLAB: "GitLab",
+    RepoHostingProvider.BITBUCKET: "Bitbucket",
 }
 
 
+# Exhaustive `match` rather than if/else: with a third provider, an `else`
+# fallback silently reported one provider's settings as another's — pyright
+# flags a missing case here instead.
 def _provider_enabled(provider: RepoHostingProvider, settings: Settings) -> bool:
-    if provider == RepoHostingProvider.GITHUB:
-        return settings.github_oauth_enabled
-    return settings.gitlab_oauth_enabled
+    match provider:
+        case RepoHostingProvider.GITHUB:
+            return settings.github_oauth_enabled
+        case RepoHostingProvider.GITLAB:
+            return settings.gitlab_oauth_enabled
+        case RepoHostingProvider.BITBUCKET:
+            return settings.bitbucket_oauth_enabled
 
 
 def _provider_configured(provider: RepoHostingProvider, settings: Settings) -> bool:
@@ -33,9 +42,13 @@ def _provider_configured(provider: RepoHostingProvider, settings: Settings) -> b
     # also checks the client secret and encryption key (secrets.py), not
     # just the non-secret Settings fields checked here before GitLab's flow
     # existed.
-    if provider == RepoHostingProvider.GITHUB:
-        return github_oauth_is_configured(settings)
-    return gitlab_oauth_is_configured(settings)
+    match provider:
+        case RepoHostingProvider.GITHUB:
+            return github_oauth_is_configured(settings)
+        case RepoHostingProvider.GITLAB:
+            return gitlab_oauth_is_configured(settings)
+        case RepoHostingProvider.BITBUCKET:
+            return bitbucket_oauth_is_configured(settings)
 
 
 def get_repo_hosting_status(user: User, store: JobStore, settings: Settings) -> RepoHostingStatus:

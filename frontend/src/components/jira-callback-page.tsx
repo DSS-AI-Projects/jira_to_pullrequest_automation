@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-import { completeJiraConnect, isAbortError } from "@/lib/api";
+import { completeJiraConnect } from "@/lib/api";
+import { completeOAuthCallbackOnce } from "@/lib/oauth-callback";
 
 type JiraCallbackPageProps = {
   code: string | null;
@@ -39,13 +40,11 @@ export function JiraCallbackPage({
     }
 
     let active = true;
-    const controller = new AbortController();
 
     void (async () => {
       try {
-        const response = await completeJiraConnect(
-          { code, state },
-          controller.signal,
+        const response = await completeOAuthCallbackOnce(`jira:${state}`, () =>
+          completeJiraConnect({ code, state }),
         );
         if (!active) {
           return;
@@ -62,7 +61,7 @@ export function JiraCallbackPage({
           );
         }, redirectDelayMs);
       } catch (callbackError) {
-        if (!active || isAbortError(callbackError)) {
+        if (!active) {
           return;
         }
         setFailed(true);
@@ -76,7 +75,6 @@ export function JiraCallbackPage({
 
     return () => {
       active = false;
-      controller.abort();
     };
   }, [code, error, redirectDelayMs, redirectTo, state]);
 

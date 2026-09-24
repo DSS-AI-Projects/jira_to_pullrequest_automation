@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-import { completeGitLabConnect, isAbortError } from "@/lib/api";
+import { completeGitLabConnect } from "@/lib/api";
+import { completeOAuthCallbackOnce } from "@/lib/oauth-callback";
 
 type GitLabCallbackPageProps = {
   code: string | null;
@@ -39,13 +40,12 @@ export function GitLabCallbackPage({
     }
 
     let active = true;
-    const controller = new AbortController();
 
     void (async () => {
       try {
-        const response = await completeGitLabConnect(
-          { code, state },
-          controller.signal,
+        const response = await completeOAuthCallbackOnce(
+          `gitlab:${state}`,
+          () => completeGitLabConnect({ code, state }),
         );
         if (!active) {
           return;
@@ -62,7 +62,7 @@ export function GitLabCallbackPage({
           );
         }, redirectDelayMs);
       } catch (callbackError) {
-        if (!active || isAbortError(callbackError)) {
+        if (!active) {
           return;
         }
         setFailed(true);
@@ -76,7 +76,6 @@ export function GitLabCallbackPage({
 
     return () => {
       active = false;
-      controller.abort();
     };
   }, [code, error, redirectDelayMs, redirectTo, state]);
 

@@ -24,6 +24,7 @@ class JiraAuthMode(StrEnum):
 class RepoHostingProvider(StrEnum):
     GITHUB = "GITHUB"
     GITLAB = "GITLAB"
+    BITBUCKET = "BITBUCKET"
 
 
 class RepoHostingAuthKind(StrEnum):
@@ -393,6 +394,27 @@ class GitLabRepositoryListResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     repos: list[GitLabRepositorySummary]
+
+
+class BitbucketRepositorySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Bitbucket Cloud's own identifiers: a `{uuid}` string rather than an
+    # integer id, and `full_name` is "workspace/repo_slug".
+    uuid: str
+    name: str
+    full_name: str
+    web_url: str
+    clone_url: str
+    default_branch: str | None = None
+    workspace: str
+    private: bool
+
+
+class BitbucketRepositoryListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repos: list[BitbucketRepositorySummary]
 
 
 class ProviderOAuthState(BaseModel):

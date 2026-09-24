@@ -51,10 +51,10 @@ describe("GitHubCallbackPage", () => {
 
     await screen.findByText(/Connected GitHub account octocat/i);
     await waitFor(() =>
-      expect(completeGitHubConnect).toHaveBeenCalledWith(
-        { code: "github-code", state: "state-123" },
-        expect.any(AbortSignal),
-      ),
+      expect(completeGitHubConnect).toHaveBeenCalledWith({
+        code: "github-code",
+        state: "state-123",
+      }),
     );
     await waitFor(() =>
       expect(redirectTo).toHaveBeenCalledWith(

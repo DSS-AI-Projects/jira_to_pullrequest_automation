@@ -51,10 +51,10 @@ describe("GitLabCallbackPage", () => {
 
     await screen.findByText(/Connected GitLab account octocat/i);
     await waitFor(() =>
-      expect(completeGitLabConnect).toHaveBeenCalledWith(
-        { code: "gitlab-code", state: "state-123" },
-        expect.any(AbortSignal),
-      ),
+      expect(completeGitLabConnect).toHaveBeenCalledWith({
+        code: "gitlab-code",
+        state: "state-123",
+      }),
     );
     await waitFor(() =>
       expect(redirectTo).toHaveBeenCalledWith(

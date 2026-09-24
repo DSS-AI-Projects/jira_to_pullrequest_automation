@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 
-import { completeGitHubConnect } from "@/lib/api";
+import { completeBitbucketConnect } from "@/lib/api";
 import { completeOAuthCallbackOnce } from "@/lib/oauth-callback";
 
-type GitHubCallbackPageProps = {
+type BitbucketCallbackPageProps = {
   code: string | null;
   state: string | null;
   error: string | null;
@@ -13,29 +13,31 @@ type GitHubCallbackPageProps = {
   redirectDelayMs?: number;
 };
 
-function buildGitHubResultUrl(params: Record<string, string>): string {
+function buildBitbucketResultUrl(params: Record<string, string>): string {
   return `/?${new URLSearchParams(params).toString()}`;
 }
 
-export function GitHubCallbackPage({
+export function BitbucketCallbackPage({
   code,
   state,
   error,
   redirectTo = (href) => window.location.replace(href),
   redirectDelayMs = 900,
-}: GitHubCallbackPageProps) {
-  const [message, setMessage] = useState("Completing GitHub sign-in...");
+}: BitbucketCallbackPageProps) {
+  const [message, setMessage] = useState("Completing Bitbucket sign-in...");
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (error) {
       setFailed(true);
-      setMessage("GitHub sign-in was cancelled or could not be completed.");
+      setMessage("Bitbucket sign-in was cancelled or could not be completed.");
       return;
     }
     if (!code || !state) {
       setFailed(true);
-      setMessage("The GitHub sign-in callback is missing required parameters.");
+      setMessage(
+        "The Bitbucket sign-in callback is missing required parameters.",
+      );
       return;
     }
 
@@ -44,20 +46,20 @@ export function GitHubCallbackPage({
     void (async () => {
       try {
         const response = await completeOAuthCallbackOnce(
-          `github:${state}`,
-          () => completeGitHubConnect({ code, state }),
+          `bitbucket:${state}`,
+          () => completeBitbucketConnect({ code, state }),
         );
         if (!active) {
           return;
         }
         setMessage(
-          `Connected GitHub account ${response.connection.account_name}. Returning to the app...`,
+          `Connected Bitbucket account ${response.connection.account_name}. Returning to the app...`,
         );
         window.setTimeout(() => {
           redirectTo(
-            buildGitHubResultUrl({
-              github: "connected",
-              github_account: response.connection.account_name,
+            buildBitbucketResultUrl({
+              bitbucket: "connected",
+              bitbucket_account: response.connection.account_name,
             }),
           );
         }, redirectDelayMs);
@@ -69,7 +71,7 @@ export function GitHubCallbackPage({
         setMessage(
           callbackError instanceof Error
             ? callbackError.message
-            : "Could not complete GitHub sign-in.",
+            : "Could not complete Bitbucket sign-in.",
         );
       }
     })();
@@ -85,8 +87,8 @@ export function GitHubCallbackPage({
         <div className="panel-heading">
           <h1>
             {failed
-              ? "GitHub connection failed"
-              : "Finishing GitHub connection"}
+              ? "Bitbucket connection failed"
+              : "Finishing Bitbucket connection"}
           </h1>
           <p>{message}</p>
         </div>
@@ -94,7 +96,7 @@ export function GitHubCallbackPage({
           <div className="actions">
             <a
               className="secondary-link"
-              href={buildGitHubResultUrl({ github: "connect_failed" })}
+              href={buildBitbucketResultUrl({ bitbucket: "connect_failed" })}
             >
               Return to app
             </a>

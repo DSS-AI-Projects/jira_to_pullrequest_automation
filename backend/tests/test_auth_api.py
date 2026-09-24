@@ -10,6 +10,12 @@ import respx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+from app.auth.bitbucket_oauth import (
+    _has_repo_read_scope as _bitbucket_has_repo_read_scope,  # pyright: ignore[reportPrivateUsage]
+)
+from app.auth.bitbucket_oauth import (
+    get_valid_bitbucket_access_token_for_user,
+)
 from app.auth.gitlab_oauth import (
     _has_repo_read_scope,  # pyright: ignore[reportPrivateUsage]
     get_valid_gitlab_access_token_for_user,
@@ -462,6 +468,14 @@ def test_repo_hosting_status_reports_provider_configuration(
                 "provider": "GITLAB",
                 "display_name": "GitLab",
                 "enabled": True,
+                "configured": False,
+                "connected": False,
+                "connection": None,
+            },
+            {
+                "provider": "BITBUCKET",
+                "display_name": "Bitbucket",
+                "enabled": False,
                 "configured": False,
                 "connected": False,
                 "connection": None,
@@ -1245,3 +1259,424 @@ async def test_get_valid_gitlab_access_token_for_user_returns_none_when_not_conf
 
     assert token is None
     get_settings.cache_clear()
+
+
+# --- Bitbucket Cloud: same coverage shape as GitLab above, with Bitbucket's
+# own protocol differences — client credentials sent as HTTP Basic on a
+# form-encoded token request, a plural `scopes` field in the token response,
+# and a userinfo-bearing clone link that must be stripped. ---
+
+
+def _enable_bitbucket_oauth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BITBUCKET_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bitbucket-client")
+    monkeypatch.setenv(
+        "BITBUCKET_OAUTH_CALLBACK_URL", "http://localhost:3000/auth/bitbucket/callback"
+    )
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_SECRET", "bitbucket-secret")
+    monkeypatch.setenv("BITBUCKET_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+
+
+def _bitbucket_connection(
+    user_id: str,
+    *,
+    scopes: list[str] | None = None,
+    access_token: str = "bitbucket-access-token",
+    refresh_token: str | None = None,
+    expires_at: datetime | None = None,
+) -> RepoHostingConnection:
+    return RepoHostingConnection.new(
+        user_id=user_id,
+        provider=RepoHostingProvider.BITBUCKET,
+        auth_kind=RepoHostingAuthKind.OAUTH_USER,
+        account_name="jeena1",
+        account_id="{user-uuid}",
+        account_url="https://bitbucket.org/jeena1/",
+        scopes=scopes if scopes is not None else ["account", "repository"],
+        access_token_encrypted=encrypt_secret(access_token, provider="bitbucket"),
+        refresh_token_encrypted=(
+            encrypt_secret(refresh_token, provider="bitbucket")
+            if refresh_token is not None
+            else None
+        ),
+        access_token_expires_at=expires_at or datetime.now(UTC) + timedelta(hours=2),
+    )
+
+
+_BITBUCKET_REPO_PAYLOAD: dict[str, Any] = {
+    "uuid": "{repo-uuid}",
+    "name": "jfive",
+    "full_name": "jeena1/jfive",
+    "is_private": True,
+    "mainbranch": {"name": "main"},
+    "workspace": {"slug": "jeena1"},
+    "links": {
+        "html": {"href": "https://bitbucket.org/jeena1/jfive"},
+        "clone": [
+            {"name": "https", "href": "https://jeena1@bitbucket.org/jeena1/jfive.git"},
+            {"name": "ssh", "href": "git@bitbucket.org:jeena1/jfive.git"},
+        ],
+    },
+}
+
+
+def _mock_bitbucket_workspaces(slugs: list[str]) -> respx.Route:
+    return respx.get("https://api.bitbucket.org/2.0/user/workspaces").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "values": [
+                    {"type": "workspace_access", "workspace": {"slug": slug}} for slug in slugs
+                ]
+            },
+        )
+    )
+
+
+def test_bitbucket_repo_connect_returns_authorization_url(
+    auth_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_bitbucket_oauth(monkeypatch)
+    login(auth_client)
+
+    response = auth_client.post("/api/auth/repo-hosting/bitbucket/connect")
+
+    assert response.status_code == 200
+    parsed = urlparse(response.json()["authorization_url"])
+    params = parse_qs(parsed.query)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "bitbucket.org"
+    assert parsed.path == "/site/oauth2/authorize"
+    assert params["client_id"] == ["bitbucket-client"]
+    assert params["response_type"] == ["code"]
+    assert params["state"]
+    # Bitbucket always redirects to the consumer's registered callback URL.
+    assert "redirect_uri" not in params
+
+
+def test_bitbucket_repo_connect_reports_missing_configuration(
+    auth_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BITBUCKET_OAUTH_ENABLED", raising=False)
+    monkeypatch.delenv("BITBUCKET_OAUTH_CLIENT_ID", raising=False)
+    get_settings.cache_clear()
+    login(auth_client)
+
+    response = auth_client.post("/api/auth/repo-hosting/bitbucket/connect")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "REPO_PROVIDER_NOT_AVAILABLE"
+
+
+def test_repo_hosting_status_lists_bitbucket_with_its_own_settings(
+    auth_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard: _provider_enabled/_provider_configured used to be an
+    if/else whose else-branch was GitLab — a third provider would silently
+    have reported GitLab's settings as its own."""
+    _enable_bitbucket_oauth(monkeypatch)
+    monkeypatch.delenv("GITLAB_OAUTH_ENABLED", raising=False)
+    get_settings.cache_clear()
+    login(auth_client)
+
+    response = auth_client.get("/api/auth/repo-hosting")
+
+    assert response.status_code == 200
+    providers = {item["provider"]: item for item in response.json()["providers"]}
+    assert providers["BITBUCKET"]["display_name"] == "Bitbucket"
+    assert providers["BITBUCKET"]["enabled"] is True
+    assert providers["BITBUCKET"]["configured"] is True
+    assert providers["GITLAB"]["enabled"] is False
+
+
+@respx.mock
+def test_bitbucket_repo_callback_persists_connection(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A differing Jira key proves the connection is encrypted under the
+    # Bitbucket key specifically — the class of bug GitHub once shipped.
+    monkeypatch.setenv("JIRA_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    _enable_bitbucket_oauth(monkeypatch)
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+
+    connect = auth_client.post("/api/auth/repo-hosting/bitbucket/connect")
+    state = parse_qs(urlparse(connect.json()["authorization_url"]).query)["state"][0]
+
+    token_route = respx.post("https://bitbucket.org/site/oauth2/access_token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "bitbucket-access-token",
+                "refresh_token": "bitbucket-refresh-token",
+                "scopes": "account repository",
+                "token_type": "bearer",
+                "expires_in": 7200,
+            },
+        )
+    )
+    respx.get("https://api.bitbucket.org/2.0/user").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "username": "jeena1",
+                "uuid": "{user-uuid}",
+                "links": {"html": {"href": "https://bitbucket.org/jeena1/"}},
+            },
+        )
+    )
+
+    callback = auth_client.get(
+        f"/api/auth/repo-hosting/bitbucket/callback?code=test-code&state={state}"
+    )
+
+    assert callback.status_code == 200
+    assert callback.json()["connection"]["provider"] == "BITBUCKET"
+    assert callback.json()["connection"]["account_name"] == "jeena1"
+    token_request = token_route.calls[0].request
+    # Client credentials go in an HTTP Basic header, not the body.
+    assert token_request.headers["Authorization"].startswith("Basic ")
+    body = parse_qs(token_request.content.decode("utf-8"))
+    assert body == {"grant_type": ["authorization_code"], "code": ["test-code"]}
+
+    stored = auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.BITBUCKET)
+    assert stored is not None
+    assert stored.scopes == ["account", "repository"]
+    assert stored.access_token_encrypted is not None
+    assert stored.refresh_token_encrypted is not None
+    assert (
+        decrypt_secret(stored.access_token_encrypted, provider="bitbucket")
+        == "bitbucket-access-token"
+    )
+    assert (
+        decrypt_secret(stored.refresh_token_encrypted, provider="bitbucket")
+        == "bitbucket-refresh-token"
+    )
+
+
+@respx.mock
+def test_bitbucket_repo_listing_returns_repos_without_userinfo_in_clone_url(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_bitbucket_oauth(monkeypatch)
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+    auth_store.save_repo_hosting_connection(_bitbucket_connection(user["id"]))
+    workspaces_route = _mock_bitbucket_workspaces(["jeena1"])
+    repos_route = respx.get("https://api.bitbucket.org/2.0/repositories/jeena1").mock(
+        return_value=httpx.Response(200, json={"values": [_BITBUCKET_REPO_PAYLOAD]})
+    )
+
+    response = auth_client.get("/api/auth/repo-hosting/bitbucket/repos")
+
+    assert response.status_code == 200
+    assert (
+        workspaces_route.calls[0].request.headers["Authorization"]
+        == "Bearer bitbucket-access-token"
+    )
+    assert repos_route.calls[0].request.headers["Authorization"] == "Bearer bitbucket-access-token"
+    assert repos_route.calls[0].request.url.params["role"] == "member"
+    assert response.json() == {
+        "repos": [
+            {
+                "uuid": "{repo-uuid}",
+                "name": "jfive",
+                "full_name": "jeena1/jfive",
+                "web_url": "https://bitbucket.org/jeena1/jfive",
+                "clone_url": "https://bitbucket.org/jeena1/jfive.git",
+                "default_branch": "main",
+                "workspace": "jeena1",
+                "private": True,
+            }
+        ]
+    }
+
+
+@respx.mock
+def test_bitbucket_repo_listing_merges_workspaces_and_skips_one_that_fails(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bitbucket removed the cross-workspace `GET /2.0/repositories` listing
+    (it 404s on the live API), so repos are gathered per workspace — merged
+    newest-first, and one workspace failing must not hide the others."""
+    _enable_bitbucket_oauth(monkeypatch)
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+    auth_store.save_repo_hosting_connection(_bitbucket_connection(user["id"]))
+    _mock_bitbucket_workspaces(["jeena1", "sambai-projects", "locked-ws"])
+    respx.get("https://api.bitbucket.org/2.0/repositories/jeena1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"values": [{**_BITBUCKET_REPO_PAYLOAD, "updated_on": "2026-01-01T00:00:00Z"}]},
+        )
+    )
+    respx.get("https://api.bitbucket.org/2.0/repositories/sambai-projects").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "values": [
+                    {
+                        **_BITBUCKET_REPO_PAYLOAD,
+                        "uuid": "{other-uuid}",
+                        "name": "test-jira-2-pullrequest",
+                        "full_name": "sambai-projects/test-jira-2-pullrequest",
+                        "workspace": {"slug": "sambai-projects"},
+                        "updated_on": "2026-09-01T00:00:00Z",
+                    }
+                ]
+            },
+        )
+    )
+    respx.get("https://api.bitbucket.org/2.0/repositories/locked-ws").mock(
+        return_value=httpx.Response(403, json={"error": {"message": "forbidden"}})
+    )
+    # The retired cross-workspace endpoint must never be called.
+    legacy_route = respx.get("https://api.bitbucket.org/2.0/repositories").mock(
+        return_value=httpx.Response(404)
+    )
+
+    response = auth_client.get("/api/auth/repo-hosting/bitbucket/repos")
+
+    assert response.status_code == 200
+    assert [repo["full_name"] for repo in response.json()["repos"]] == [
+        "sambai-projects/test-jira-2-pullrequest",
+        "jeena1/jfive",
+    ]
+    assert response.json()["repos"][0]["clone_url"] == (
+        "https://bitbucket.org/sambai-projects/test-jira-2-pullrequest.git"
+    )
+    assert not legacy_route.called
+
+
+@respx.mock
+def test_bitbucket_repo_listing_refreshes_an_expired_token_before_listing(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_bitbucket_oauth(monkeypatch)
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+    auth_store.save_repo_hosting_connection(
+        _bitbucket_connection(
+            user["id"],
+            access_token="stale-access-token",
+            refresh_token="stale-refresh-token",
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+    )
+    token_route = respx.post("https://bitbucket.org/site/oauth2/access_token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "refreshed-access-token",
+                "refresh_token": "stale-refresh-token",
+                "scopes": "account repository",
+                "expires_in": 7200,
+            },
+        )
+    )
+    workspaces_route = _mock_bitbucket_workspaces([])
+
+    response = auth_client.get("/api/auth/repo-hosting/bitbucket/repos")
+
+    assert response.status_code == 200
+    body = parse_qs(token_route.calls[0].request.content.decode("utf-8"))
+    assert body == {"grant_type": ["refresh_token"], "refresh_token": ["stale-refresh-token"]}
+    assert (
+        workspaces_route.calls[0].request.headers["Authorization"]
+        == "Bearer refreshed-access-token"
+    )
+    persisted = auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.BITBUCKET)
+    assert persisted is not None
+    assert persisted.access_token_encrypted is not None
+    assert (
+        decrypt_secret(persisted.access_token_encrypted, provider="bitbucket")
+        == "refreshed-access-token"
+    )
+
+
+def test_bitbucket_repo_listing_requires_connected_account(auth_client: TestClient) -> None:
+    login(auth_client)
+
+    response = auth_client.get("/api/auth/repo-hosting/bitbucket/repos")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "REPO_PROVIDER_NOT_AVAILABLE"
+    assert body["error"]["message"] == "Connect your Bitbucket account before loading repositories."
+
+
+def test_repo_hosting_disconnect_removes_stored_bitbucket_connection(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_bitbucket_oauth(monkeypatch)
+    session = login(auth_client)
+    user = cast(dict[str, Any], session["user"])
+    auth_store.save_repo_hosting_connection(_bitbucket_connection(user["id"]))
+
+    disconnect = auth_client.delete("/api/auth/repo-hosting/BITBUCKET")
+
+    assert disconnect.status_code == 200
+    assert auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.BITBUCKET) is None
+
+
+async def test_get_valid_bitbucket_access_token_for_user_returns_the_decrypted_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_bitbucket_oauth(monkeypatch)
+    store = JobStore(":memory:")
+    store.save_repo_hosting_connection(_bitbucket_connection("user-1"))
+
+    token = await get_valid_bitbucket_access_token_for_user("user-1", store, get_settings())
+
+    assert token == "bitbucket-access-token"
+    get_settings.cache_clear()
+
+
+async def test_get_valid_bitbucket_access_token_for_user_returns_none_without_repo_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A consumer granted Account only (no Repositories permission) can't
+    clone over git — fall back to ambient credentials rather than send a
+    token Bitbucket is guaranteed to reject."""
+    _enable_bitbucket_oauth(monkeypatch)
+    store = JobStore(":memory:")
+    store.save_repo_hosting_connection(_bitbucket_connection("user-1", scopes=["account"]))
+
+    token = await get_valid_bitbucket_access_token_for_user("user-1", store, get_settings())
+
+    assert token is None
+    get_settings.cache_clear()
+
+
+async def test_get_valid_bitbucket_access_token_for_user_returns_none_when_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BITBUCKET_OAUTH_ENABLED", raising=False)
+    get_settings.cache_clear()
+    store = JobStore(":memory:")
+
+    token = await get_valid_bitbucket_access_token_for_user("user-1", store, get_settings())
+
+    assert token is None
+    get_settings.cache_clear()
+
+
+def test_bitbucket_has_repo_read_scope_accepts_repository_permission_supersets() -> None:
+    def connection_with(scopes: list[str]) -> RepoHostingConnection:
+        return RepoHostingConnection.new(
+            user_id="user-1",
+            provider=RepoHostingProvider.BITBUCKET,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="jeena1",
+            account_id="{user-uuid}",
+            account_url="https://bitbucket.org/jeena1/",
+            scopes=scopes,
+        )
+
+    assert _bitbucket_has_repo_read_scope(connection_with(["account", "repository"]))
+    assert _bitbucket_has_repo_read_scope(connection_with(["repository:write"]))
+    # Bitbucket documents pull-request permission as implying repository read.
+    assert _bitbucket_has_repo_read_scope(connection_with(["pullrequest"]))
+    assert not _bitbucket_has_repo_read_scope(connection_with(["account"]))
+    assert not _bitbucket_has_repo_read_scope(connection_with([]))

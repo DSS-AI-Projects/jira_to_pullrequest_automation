@@ -14,6 +14,7 @@ import {
   isAbortError,
   logout,
   redirectBrowser,
+  startBitbucketConnect,
   startGitHubConnect,
   startGitLabConnect,
   startJiraConnect,
@@ -85,6 +86,23 @@ function readConnectionFlash(): JiraFlash | null {
         "GitLab sign-in did not complete. Try connecting your GitLab account again.",
     };
   }
+  const bitbucket = params.get("bitbucket");
+  if (bitbucket === "connected") {
+    const accountName = params.get("bitbucket_account");
+    return {
+      kind: "success",
+      message: accountName
+        ? `Connected Bitbucket account ${accountName}.`
+        : "Connected your Bitbucket account.",
+    };
+  }
+  if (bitbucket === "connect_failed") {
+    return {
+      kind: "error",
+      message:
+        "Bitbucket sign-in did not complete. Try connecting your Bitbucket account again.",
+    };
+  }
   return null;
 }
 
@@ -118,7 +136,12 @@ export function AuthGate(props: { children: ReactNode }) {
       return;
     }
     const params = new URLSearchParams(window.location.search);
-    if (!params.get("jira") && !params.get("github") && !params.get("gitlab")) {
+    if (
+      !params.get("jira") &&
+      !params.get("github") &&
+      !params.get("gitlab") &&
+      !params.get("bitbucket")
+    ) {
       return;
     }
     params.delete("jira");
@@ -127,6 +150,8 @@ export function AuthGate(props: { children: ReactNode }) {
     params.delete("github_account");
     params.delete("gitlab");
     params.delete("gitlab_account");
+    params.delete("bitbucket");
+    params.delete("bitbucket_account");
     const nextSearch = params.toString();
     const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
     window.history.replaceState({}, "", nextUrl);
@@ -298,6 +323,11 @@ export function AuthGate(props: { children: ReactNode }) {
       }
       if (provider === "GITLAB") {
         const response = await startGitLabConnect();
+        redirectBrowser(response.authorization_url);
+        return;
+      }
+      if (provider === "BITBUCKET") {
+        const response = await startBitbucketConnect();
         redirectBrowser(response.authorization_url);
         return;
       }
