@@ -1,4 +1,4 @@
-# jira2pullreq
+## jira2pullreq
 
 Reads a Jira ticket, analyzes a Git repo, and produces a structured implementation
 plan (Milestone 1). Later milestones will apply the change and open a PR.
