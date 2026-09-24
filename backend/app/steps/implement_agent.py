@@ -28,6 +28,7 @@ from app.core.logging import get_logger, redact
 from app.jobs.models import AgentUsage, ImplementationResult, Job, ValidationResult
 from app.jobs.runner import ImplementationStepResult
 from app.steps.agent_progress import report, summarize_tool_use
+from app.steps.workspace_guard import workspace_guard_hooks
 
 logger = get_logger(__name__)
 
@@ -210,6 +211,8 @@ def scrubbed_env(api_key: str) -> dict[str, str]:
         if key not in _SECRET_ENV_VARS and key != "ANTHROPIC_API_KEY" and value not in registered
     }
     env["ANTHROPIC_API_KEY"] = api_key
+    # Host user's Claude Code auto-memory — see plan_agent.scrubbed_env.
+    env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     return env
 
 
@@ -240,6 +243,11 @@ def build_options(
         max_budget_usd=max_budget_usd,
         output_format={"type": "json_schema", "schema": ImplementationResult.model_json_schema()},
         env=scrubbed_env(api_key),
+        # Enforced, not just prompted: deny any tool path outside the
+        # workspace (see workspace_guard.py for the incident that prompted it).
+        hooks=workspace_guard_hooks(workspace_path),
+        # No inherited user/project/local settings — see plan_agent.build_options.
+        setting_sources=[],
     )
 
 

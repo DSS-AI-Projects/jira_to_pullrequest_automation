@@ -337,6 +337,59 @@ never sees a Bitbucket token.
    path (never a remote URL or credential), a repo map, and read/grep tools confined
    to the clone dir; the SDK subprocess gets a scrubbed environment. A test asserts
    no secret reaches the agent boundary (prompt, options, env, tool results).
+   "Confined" is **enforced, not prompted** — see **Agent workspace confinement**
+   below; `test_workspace_guard.py` is the mechanical check.
+
+## Agent workspace confinement (enforced)
+
+Both agents (planning and implementation, including the correction pass) are
+mechanically confined to their job workspace. Before this, confinement was
+prompt wording plus `cwd` — and `cwd` only sets where *relative* paths start;
+`allowed_tools` pre-approves Read/Grep/Glob/Edit/Write for **any** path.
+
+**The incident that forced it (two Bitbucket KAN-41 jobs):** the
+implementation agent read and wrote this app's own checkout by absolute path
+(`D:\work\2026\AI\jira2pullreq\README.md`, `.gitignore`, `pom.xml`, `src\...`)
+instead of `backend\var\workdir\<job>\repo`, overwriting the project README.
+The job then failed `IMPLEMENTATION_INVALID` ("no actual code differences")
+because the workspace was never touched — that consistency check is what
+surfaced it. Root cause, confirmed with a live A/B run: `setting_sources` was
+unset, so the CLI loaded **every** setting source, including any `CLAUDE.md`
+found walking up from the workspace — and workspaces live *inside this app's
+checkout*, so the agent was handed this app's own `CLAUDE.md` as "the
+project" and aimed its absolute paths at the app root. The same gap meant the
+read-only planning agent could have read `backend/.env`.
+
+Three layers now, all in `build_options()` of `plan_agent.py` /
+`implement_agent.py`:
+
+- **A PreToolUse hook denies any tool path outside the workspace**
+  (`app/steps/workspace_guard.py`, `workspace_guard_hooks()`). Hooks run before
+  the permission system, so they apply to pre-approved tools too (verified
+  live: the denial reached the agent as an `is_error` tool result). It checks
+  every tool's `file_path`/`notebook_path`/`path` argument, plus Glob's
+  `pattern` and Grep's `glob` when absolute or climbing via `..`, after
+  resolving `~`, `..`, and symlinks; comparison is `commonpath`-based and
+  case-normalized (so `.../repo-other` doesn't pass for `.../repo`, and a
+  different drive is always outside). The matcher is `None` (all tools), so a
+  tool added later is covered by default; tools with no path argument — like
+  the harness's own structured-output tool — are untouched. A denial is logged
+  (redacted), shown in the job's activity log ("Blocked Write outside the
+  workspace: …"), and returned to the agent with a reason it can act on, so a
+  stray absolute path costs one retried tool call, not the job.
+- **`setting_sources=[]`** — no user/project/local settings, so no inherited
+  `CLAUDE.md`, hooks, or permissions from the host or from this app's own
+  checkout. (The target repo's own `CLAUDE.md`/`README.md` still reaches the
+  planner, deliberately, via the front-loading in `plan_agent.py` — as quoted
+  data, not as instructions.)
+- **`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`** in `scrubbed_env()` — the CLI
+  otherwise injects the host user's Claude Code auto-memory (`MEMORY.md`)
+  into the agent's context; `setting_sources=[]` does not cover it (found in
+  the same live run).
+
+Not done, optional defense in depth: moving `WORKDIR` out of the app's own
+checkout. With the three layers above it's no longer load-bearing, and moving
+it changes deployment volume layout.
 4. **Secrets never in URLs, client error responses, or committed files.** Error
    responses are scrubbed to typed codes + safe messages; delegated OAuth tokens are
    encrypted at rest; gitleaks runs in CI and as a pre-commit hook.

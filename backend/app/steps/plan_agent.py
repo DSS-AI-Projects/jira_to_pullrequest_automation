@@ -45,6 +45,7 @@ from app.steps.agent_progress import report, summarize_tool_use
 from app.steps.plan_cache import PlanCache, plan_cache_key
 from app.steps.plan_stub import build_stub_plan
 from app.steps.repo_digest import RepoDigestCache, build_repo_digest, repo_digest_key
+from app.steps.workspace_guard import workspace_guard_hooks
 
 logger = get_logger(__name__)
 
@@ -212,6 +213,10 @@ def scrubbed_env(api_key: str) -> dict[str, str]:
         if key not in _SECRET_ENV_VARS and key != "ANTHROPIC_API_KEY" and value not in registered
     }
     env["ANTHROPIC_API_KEY"] = api_key
+    # The CLI otherwise injects the host user's Claude Code auto-memory
+    # (~/.claude/projects/<dir>/memory/MEMORY.md) into the agent's context —
+    # `setting_sources=[]` does not cover it (verified against the live CLI).
+    env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     return env
 
 
@@ -230,6 +235,13 @@ def build_options(clone_path: Path, api_key: str, settings: Settings) -> ClaudeA
         max_budget_usd=settings.agent_plan_max_budget_usd,
         output_format={"type": "json_schema", "schema": Plan.model_json_schema()},
         env=scrubbed_env(api_key),
+        # Enforced, not just prompted: deny any tool path outside the clone.
+        hooks=workspace_guard_hooks(clone_path),
+        # Load no user/project/local settings. Unset, the CLI loads all of
+        # them — including any CLAUDE.md found walking up from the clone,
+        # which (workspaces live under this app's own checkout) meant this
+        # app's own CLAUDE.md, plus the host user's ~/.claude config.
+        setting_sources=[],
     )
 
 
