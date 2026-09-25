@@ -1,3 +1,4 @@
+import json
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -1572,6 +1573,7 @@ def test_delegated_push_runs_as_the_clicking_users_connected_account(
         "account_name": "sam-bb",
         "ready": True,
         "reason": None,
+        "note": None,
     }
 
     response = auth_client.post(f"/api/jobs/{job.id}/push-branch")
@@ -1649,3 +1651,140 @@ def test_push_identity_in_ambient_mode_reports_machine_credentials(
 
     assert response.json()["mode"] == "ambient"
     assert response.json()["ready"] is True
+
+
+# --- GitHub App client: no scopes, expiring tokens with rotating refresh ----
+
+
+def _enable_github_oauth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GITHUB_OAUTH_CLIENT_ID", "Iv23-github-app-client")
+    monkeypatch.setenv("GITHUB_OAUTH_CALLBACK_URL", "http://testserver/auth/github/callback")
+    monkeypatch.setenv("GITHUB_OAUTH_CLIENT_SECRET", "github-secret")
+    monkeypatch.setenv("GITHUB_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    get_settings.cache_clear()
+
+
+@respx.mock
+def test_github_app_callback_stores_its_empty_scopes_and_expiry(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A GitHub App token is granted no OAuth scopes. Storing the configured
+    `github_oauth_scopes` in its place (the old fallback) falsely claimed
+    `repo`, so the Push card said "ready" for a token that couldn't push."""
+    _enable_github_oauth(monkeypatch)
+    user = cast(dict[str, Any], login(auth_client)["user"])
+    state = parse_qs(
+        urlparse(
+            auth_client.post("/api/auth/repo-hosting/github/connect").json()["authorization_url"]
+        ).query
+    )["state"][0]
+    respx.post("https://github.com/login/oauth/access_token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "ghu_app-access",
+                "expires_in": 28800,
+                "refresh_token": "ghr_app-refresh",
+                "refresh_token_expires_in": 15724800,
+                "scope": "",
+                "token_type": "bearer",
+            },
+        )
+    )
+    respx.get("https://api.github.com/user").mock(
+        return_value=httpx.Response(
+            200, json={"login": "octocat", "id": 1, "html_url": "https://github.com/octocat"}
+        )
+    )
+
+    callback = auth_client.get(f"/api/auth/repo-hosting/github/callback?code=c&state={state}")
+
+    assert callback.status_code == 200
+    stored = auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.GITHUB)
+    assert stored is not None
+    assert stored.scopes == []
+    assert stored.access_token_expires_at is not None
+    assert stored.refresh_token_encrypted is not None
+
+
+@respx.mock
+def test_github_app_token_is_refreshed_before_listing_repos(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_github_oauth(monkeypatch)
+    user = cast(dict[str, Any], login(auth_client)["user"])
+    auth_store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id=user["id"],
+            provider=RepoHostingProvider.GITHUB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="1",
+            account_url="https://github.com/octocat",
+            scopes=[],
+            access_token_encrypted=encrypt_secret("ghu_stale", provider="github"),
+            refresh_token_encrypted=encrypt_secret("ghr_old", provider="github"),
+            access_token_expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+    )
+    token_route = respx.post("https://github.com/login/oauth/access_token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "ghu_fresh",
+                "expires_in": 28800,
+                "refresh_token": "ghr_rotated",
+                "scope": "",
+            },
+        )
+    )
+    repos_route = respx.get("https://api.github.com/user/repos").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    response = auth_client.get("/api/auth/repo-hosting/github/repos")
+
+    assert response.status_code == 200
+    body = cast(dict[str, Any], json.loads(token_route.calls[0].request.content))
+    assert body["grant_type"] == "refresh_token"
+    assert body["refresh_token"] == "ghr_old"
+    assert repos_route.calls[0].request.headers["Authorization"] == "Bearer ghu_fresh"
+    stored = auth_store.get_repo_hosting_connection(user["id"], RepoHostingProvider.GITHUB)
+    assert stored is not None
+    assert stored.refresh_token_encrypted is not None
+    # GitHub rotates the refresh token on every use — the new one is kept.
+    assert decrypt_secret(stored.refresh_token_encrypted, provider="github") == "ghr_rotated"
+
+
+@respx.mock
+def test_github_app_dead_refresh_token_reads_as_not_connected(
+    auth_client: TestClient, auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_github_oauth(monkeypatch)
+    user = cast(dict[str, Any], login(auth_client)["user"])
+    auth_store.save_repo_hosting_connection(
+        RepoHostingConnection.new(
+            user_id=user["id"],
+            provider=RepoHostingProvider.GITHUB,
+            auth_kind=RepoHostingAuthKind.OAUTH_USER,
+            account_name="octocat",
+            account_id="1",
+            account_url="https://github.com/octocat",
+            scopes=[],
+            access_token_encrypted=encrypt_secret("ghu_stale", provider="github"),
+            refresh_token_encrypted=encrypt_secret("ghr_dead", provider="github"),
+            access_token_expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+    )
+    # GitHub reports token errors inside a 200 response.
+    respx.post("https://github.com/login/oauth/access_token").mock(
+        return_value=httpx.Response(200, json={"error": "bad_refresh_token"})
+    )
+
+    response = auth_client.get("/api/auth/repo-hosting/github/repos")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == (
+        "Connect your GitHub account before loading repositories."
+    )

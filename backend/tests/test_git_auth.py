@@ -129,6 +129,9 @@ def test_ssh_remotes_are_pushed_by_their_https_url(remote: str, expected: str) -
     [
         (GITHUB, ["repo", "read:user"], True, True),
         (GITHUB, ["read:user"], False, False),
+        # A GitHub App token has no scopes — its access is decided by the
+        # app's installation, so GitHub (not the scope list) says no.
+        (GITHUB, [], True, True),
         (GITLAB, ["read_api", "read_user", "read_repository", "write_repository"], True, True),
         # A connection made before write_repository was requested: clone-only.
         (GITLAB, ["read_api", "read_user", "read_repository"], True, False),
@@ -314,3 +317,18 @@ def test_push_identity_reports_the_account_before_any_push(
     assert identity.provider == BITBUCKET
     assert identity.account_name == "sam-on-bitbucket"
     assert identity.reason is None
+
+
+def test_a_github_app_push_is_ready_with_an_installation_note(
+    providers_configured: Settings,
+) -> None:
+    store, user = JobStore(":memory:"), _user()
+    _connect(store, user, GITHUB, [])
+
+    identity = describe_push_identity(
+        "https://github.com/acme/repo.git", user, store, providers_configured
+    )
+
+    assert identity.ready is True
+    assert identity.note is not None
+    assert "Contents: Read and write" in identity.note

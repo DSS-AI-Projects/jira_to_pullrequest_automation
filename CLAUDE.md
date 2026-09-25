@@ -1042,6 +1042,39 @@ repository permissions, and its audit log names them.
   overrides the default and must include it); Bitbucket consumer — tick
   Repositories: Write. Existing connections must reconnect to pick up the new
   grant. `PUSH_AUTH_MODE=delegated` in the server `.env`.
+- **GitHub App vs OAuth App — the GitHub client can be either, and they
+  behave differently** (`github_oauth.py` module docstring). Diagnosed live:
+  this deployment's GitHub client (`Iv2…` client ID) is a **GitHub App**. Its
+  user tokens (`ghu_…`) are granted **no OAuth scopes** (`scope: ""`,
+  empty `x-oauth-scopes`), **expire after ~8h**, and come with a **rotating
+  refresh token**; what they can do is the app's permissions (needs
+  **Contents: Read and write** to push) × the accounts/orgs it's **installed**
+  on × the user's own access. The first delegated GitHub push failed with
+  "Permission to DSS-AI-Projects/profile-scrapper.git denied to <user>" even
+  though the user is a repo admin — the app had no installations at all
+  (`GET /user/installations` → none). Three fixes followed:
+  - `complete_github_authorization` stores exactly the scopes GitHub granted.
+    It used to fall back to the configured `github_oauth_scopes` when the
+    grant was empty, which falsely claimed `repo` and made the Push card say
+    "ready".
+  - `git_auth.is_github_app_connection()` (GitHub + empty scopes) treats
+    read/write as allowed — it can't be known from the connection — and
+    `describe_push_identity` adds a `note` ("…the app installed … with
+    Contents: Read and write"), shown under "Will push as…".
+  - `fresh_github_access_token` now refreshes a stale expiring token (same
+    pattern as GitLab/Bitbucket; GitHub rotates the refresh token on each use
+    and reports errors like `bad_refresh_token` inside a 200 response).
+    Before this, every GitHub App connection silently broke 8 hours after
+    connecting — clone, repo listing, and push alike.
+- **Pushing under a new name never renames the local branch.** It used to
+  `git branch -m` first; when the push then failed, the workspace's branch
+  had the new name while `Job.branch_name` kept the old one, and every later
+  push failed with "fatal: no branch named …" — surfaced as a misleading
+  `BRANCH_NAME_INVALID` ("not a valid Git branch name"), leaving the job
+  stuck. Now only the *remote* ref name changes, and the push sends the job's
+  recorded commit (`branch_commit_sha:refs/heads/<name>`), so it doesn't
+  depend on the local branch's name at all — which also self-heals jobs left
+  in that state.
 - **Known gaps (optional hardening, not built):** a GitHub OAuth App token's
   `repo` scope covers every repo the user can access and doesn't expire (a
   GitHub App would give expiring, installation-scoped tokens); disconnect
@@ -1075,10 +1108,10 @@ repository permissions, and its audit log names them.
   trying again. A repeat push with no rename requested, on a job already pushed,
   is idempotent (re-reports the existing result) rather than re-attempting and
   incorrectly tripping the collision check against its own prior push. Pushing
-  under a *different* name first does a local `git branch -m` (a safe rename —
-  the branch is already committed, so nothing uncommitted is at risk) before
-  pushing the new name — handles the case of retrying after a
-  `BRANCH_PUSH_REJECTED` collision without starting a new job.
+  under a *different* name only changes the remote ref name (see "Pushing
+  under a new name never renames the local branch" above) — handles the case
+  of retrying after a `BRANCH_PUSH_REJECTED` collision without starting a new
+  job.
 - **Never opens a pull request** — still out of scope. A successful push does
   return a plain `compare_url` web link (`https://github.com/<owner>/<repo>/compare/<branch>?expand=1`)
   when the remote is recognizably github.com, computed by `github_compare_url()`

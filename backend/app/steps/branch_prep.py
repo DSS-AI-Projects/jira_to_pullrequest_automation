@@ -231,7 +231,9 @@ _AMBIENT_PUSH_FAILED_MESSAGE = (
 )
 _DELEGATED_PUSH_FAILED_MESSAGE = (
     "Pushing the branch failed. The repository host rejected the push — check "
-    "that your connected account has write access to this repository."
+    "that your connected account has write access to this repository (for a "
+    "GitHub App, that the app is installed there with Contents: Read and "
+    "write), and that the repository isn't read-only on the host's side."
 )
 
 
@@ -266,30 +268,29 @@ def _push_branch_sync(
 
     name = job.branch_name
     if branch_name and branch_name != job.branch_name:
-        # A rename-and-retry: safe to do locally since the branch is already
-        # committed (nothing uncommitted to lose) — this is just relabeling
-        # the same commit, not a fresh checkout from baseline.
-        new_name = branch_name.strip()
-        _validate_branch_name(workspace_path, new_name)
-        _run_git(
-            workspace_path,
-            "branch",
-            "-m",
-            job.branch_name,
-            new_name,
-            error_code=ErrorCode.BRANCH_NAME_INVALID,
-        )
-        name = new_name
+        # Pushing under a different name (e.g. after a BRANCH_PUSH_REJECTED
+        # collision) only changes the *remote* ref name below — the local
+        # branch is never renamed. It used to be renamed first (`git branch
+        # -m`), which, when the push then failed, left the workspace's branch
+        # under the new name while the job still recorded the old one, so
+        # every later attempt failed with "no branch named …" (surfaced as a
+        # misleading BRANCH_NAME_INVALID) and the job was stuck.
+        name = branch_name.strip()
+        _validate_branch_name(workspace_path, name)
 
     if _remote_branch_exists(workspace_path, remote_url, name, credentials):
         raise AppError(ErrorCode.BRANCH_PUSH_REJECTED)
 
+    # Push the job's recorded commit, not a local branch name, so the push
+    # doesn't depend on what the workspace's branch happens to be called
+    # (including a workspace left renamed by the old behavior above).
+    source = job.branch_commit_sha or job.branch_name
     try:
         _run_git(
             workspace_path,
             "push",
             remote_url,
-            f"{name}:refs/heads/{name}",
+            f"{source}:refs/heads/{name}",
             error_code=ErrorCode.BRANCH_PUSH_FAILED,
             timeout=_PUSH_TIMEOUT_SECONDS,
             config=_push_config(credentials),

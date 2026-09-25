@@ -1,4 +1,20 @@
-"""GitHub OAuth helpers for per-user repository provider connections."""
+"""GitHub OAuth helpers for per-user repository provider connections.
+
+Works with either kind of GitHub client registration, which behave
+differently and are easy to mix up (the client ID tells them apart: an OAuth
+App's is `Ov…`/hex, a GitHub App's is `Iv…`):
+
+- **OAuth App** — scope-based (`repo`, `read:user`), non-expiring `gho_`
+  tokens, nothing to refresh.
+- **GitHub App** (user-to-server tokens, `ghu_`) — the token response grants
+  *no* scopes (`scope: ""`); what the token can do is the app's configured
+  permissions (e.g. Contents: Read and write) intersected with the repos the
+  app is installed on and the user's own access. Tokens expire after ~8h and
+  come with a rotating refresh token, so they are refreshed before use like
+  GitLab/Bitbucket tokens. The empty scope list is stored as-is — never
+  replaced by the configured `github_oauth_scopes`, which would falsely claim
+  scopes the token doesn't have (see git_auth's handling of that case).
+"""
 
 from __future__ import annotations
 
@@ -119,7 +135,8 @@ async def complete_github_authorization(
         account_name=str(user_profile["login"]),
         account_id=str(user_profile["id"]),
         account_url=str(user_profile["html_url"]),
-        scopes=token_bundle.scopes or settings.github_oauth_scopes,
+        # Exactly what GitHub granted: an empty list for a GitHub App token.
+        scopes=token_bundle.scopes,
         access_token_encrypted=encrypt_secret(token_bundle.access_token, provider="github"),
         refresh_token_encrypted=(
             encrypt_secret(token_bundle.refresh_token, provider="github")
@@ -134,7 +151,9 @@ async def complete_github_authorization(
     )
 
 
-async def list_github_repositories(user: User, store: JobStore) -> GitHubRepositoryListResponse:
+async def list_github_repositories(
+    user: User, store: JobStore, settings: Settings
+) -> GitHubRepositoryListResponse:
     connection = store.get_repo_hosting_connection(user.id, RepoHostingProvider.GITHUB)
     if connection is None or connection.access_token_encrypted is None:
         raise AppError(
@@ -143,12 +162,12 @@ async def list_github_repositories(user: User, store: JobStore) -> GitHubReposit
         )
 
     try:
-        access_token = decrypt_secret(connection.access_token_encrypted, provider="github")
+        access_token = await fresh_github_access_token(connection, store, settings)
     except AppError as exc:
-        # A stored token that can no longer be decrypted (e.g. the encryption
-        # key rotated since it was saved) is functionally the same as never
-        # having connected — surface the same actionable, user-safe message
-        # instead of a bare INTERNAL error.
+        # A stored token that can no longer be decrypted or refreshed (e.g.
+        # the encryption key rotated, or the refresh token expired) is
+        # functionally the same as never having connected — surface the same
+        # actionable, user-safe message instead of a bare INTERNAL error.
         raise AppError(
             ErrorCode.REPO_PROVIDER_NOT_AVAILABLE,
             user_message="Connect your GitHub account before loading repositories.",
@@ -158,11 +177,51 @@ async def list_github_repositories(user: User, store: JobStore) -> GitHubReposit
     return GitHubRepositoryListResponse(repos=repos)
 
 
-async def fresh_github_access_token(connection: RepoHostingConnection) -> str:
-    """The decrypted access token for a stored GitHub connection. This
-    app's GitHub OAuth App issues non-expiring tokens, so there's nothing to
-    refresh. Raises AppError when it can't be decrypted. Scope policy lives
-    in app/auth/git_auth.py."""
+def _is_token_stale(expires_at: datetime | None) -> bool:
+    # None = a non-expiring OAuth App token: never stale.
+    if expires_at is None:
+        return False
+    return expires_at <= datetime.now(UTC) + timedelta(seconds=_TOKEN_REFRESH_SKEW_SECONDS)
+
+
+async def _refresh_connection(
+    connection: RepoHostingConnection, store: JobStore, settings: Settings
+) -> RepoHostingConnection:
+    client_id, _callback_url = _require_github_oauth_configured(settings)
+    if connection.refresh_token_encrypted is None:
+        raise AppError(
+            ErrorCode.REPO_PROVIDER_NOT_AVAILABLE,
+            user_message="Your GitHub connection has expired. Reconnect your GitHub account.",
+            internal_detail=f"missing refresh token for user {connection.user_id}",
+        )
+    token_bundle = await _request_token(
+        {
+            "client_id": client_id,
+            "client_secret": secrets.get_github_oauth_client_secret() or "",
+            "grant_type": "refresh_token",
+            "refresh_token": decrypt_secret(connection.refresh_token_encrypted, provider="github"),
+        }
+    )
+    connection.access_token_encrypted = encrypt_secret(token_bundle.access_token, provider="github")
+    if token_bundle.refresh_token is not None:
+        # GitHub rotates the refresh token on every use; the old one is dead.
+        connection.refresh_token_encrypted = encrypt_secret(
+            token_bundle.refresh_token, provider="github"
+        )
+    connection.access_token_expires_at = token_bundle.expires_at
+    store.save_repo_hosting_connection(connection)
+    return connection
+
+
+async def fresh_github_access_token(
+    connection: RepoHostingConnection, store: JobStore, settings: Settings
+) -> str:
+    """The decrypted access token for a stored GitHub connection, refreshed
+    first if it's an expiring (GitHub App) token that's stale. Raises
+    AppError when it can't be decrypted or refreshed. Scope policy lives in
+    app/auth/git_auth.py."""
+    if _is_token_stale(connection.access_token_expires_at):
+        connection = await _refresh_connection(connection, store, settings)
     access_token = decrypt_secret(connection.access_token_encrypted or "", provider="github")
     secrets.register_secret(access_token)
     return access_token
@@ -184,17 +243,25 @@ async def _exchange_authorization_code(
     callback_url: str,
     code: str,
 ) -> GitHubTokenBundle:
+    return await _request_token(
+        {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+            "redirect_uri": callback_url,
+        }
+    )
+
+
+async def _request_token(payload: dict[str, str]) -> GitHubTokenBundle:
+    """POST to GitHub's token endpoint — the authorization-code exchange and
+    the (GitHub App) refresh-token grant share it."""
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 _TOKEN_URL,
                 headers={"Accept": "application/json"},
-                json={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "code": code,
-                    "redirect_uri": callback_url,
-                },
+                json=payload,
             )
     except httpx.HTTPError as exc:
         raise AppError(
@@ -204,25 +271,24 @@ async def _exchange_authorization_code(
     if response.status_code != 200:
         raise AppError(
             ErrorCode.REPO_PROVIDER_CALLBACK_FAILED,
-            internal_detail=f"github token exchange returned {response.status_code}",
+            internal_detail=f"github token request returned {response.status_code}",
         )
     body = response.json()
     access_token = str(body.get("access_token") or "").strip()
     if not access_token:
+        # GitHub reports token errors (bad_verification_code,
+        # bad_refresh_token, ...) inside a 200 response.
+        reason = body.get("error") or "no access_token"
         raise AppError(
             ErrorCode.REPO_PROVIDER_CALLBACK_FAILED,
-            internal_detail="github token exchange missing access_token",
+            internal_detail=f"github token request failed: {reason}",
         )
     refresh_token = str(body.get("refresh_token") or "").strip() or None
     expires_in = body.get("expires_in")
     secrets.register_secret(access_token)
     if refresh_token is not None:
         secrets.register_secret(refresh_token)
-    expires_at = None
-    if expires_in:
-        expires_at = datetime.now(UTC) + timedelta(seconds=int(expires_in))
-        if expires_at <= datetime.now(UTC) + timedelta(seconds=_TOKEN_REFRESH_SKEW_SECONDS):
-            expires_at = datetime.now(UTC) + timedelta(seconds=int(expires_in))
+    expires_at = datetime.now(UTC) + timedelta(seconds=int(expires_in)) if expires_in else None
     scope_text = body.get("scope")
     scopes = [scope for scope in str(scope_text or "").split(",") if scope]
     return GitHubTokenBundle(

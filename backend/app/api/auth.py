@@ -231,7 +231,7 @@ async def github_repo_hosting_repos(request: Request) -> GitHubRepositoryListRes
                 "Per-user repository provider connections require app authentication to be enabled."
             ),
         )
-    return await list_github_repositories(user, _store(request))
+    return await list_github_repositories(user, _store(request), get_settings())
 
 
 @router.post("/repo-hosting/gitlab/connect", response_model=RepoHostingConnectStartResponse)

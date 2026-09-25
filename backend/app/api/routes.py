@@ -98,6 +98,7 @@ class PushIdentityResponse(BaseModel):
     account_name: str | None = None
     ready: bool
     reason: str | None = None
+    note: str | None = None  # caveat for a ready push, e.g. a GitHub App's
 
 
 def _commit_author(user: User | None) -> CommitAuthor | None:
@@ -555,6 +556,7 @@ async def push_identity(job_id: str, request: Request) -> PushIdentityResponse:
         account_name=identity.account_name,
         ready=identity.ready,
         reason=identity.reason,
+        note=identity.note,
     )
 
 

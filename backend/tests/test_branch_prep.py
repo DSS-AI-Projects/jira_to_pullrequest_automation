@@ -391,3 +391,53 @@ async def test_a_failed_delegated_push_never_reveals_the_header(
     assert "connected account has write access" in err.user_message
     assert "c2VjcmV0LXRva2VuLXZhbHVl" not in err.user_message
     assert "c2VjcmV0LXRva2VuLXZhbHVl" not in (err.internal_detail or "")
+
+
+async def test_a_renamed_push_that_fails_leaves_the_job_pushable(tmp_path: Path) -> None:
+    """Regression: pushing under a new name used to `git branch -m` locally
+    first; when the push then failed, the job still recorded the old name
+    but the workspace's branch had the new one, so every later push failed
+    with "no branch named …" (shown as BRANCH_NAME_INVALID)."""
+    remote_path = _init_bare_remote(tmp_path / "remote.git")
+    job, workspace_path = await _prepared_job_and_workspace(tmp_path, remote_url=str(remote_path))
+
+    missing = PushCredentials(
+        auth_header="Authorization: Basic eA==", remote_url=str(tmp_path / "nope.git")
+    )
+    with pytest.raises(AppError) as excinfo:
+        await branch_prep.push_branch(job, workspace_path, "KAN-34_retry", missing)
+    assert excinfo.value.code == ErrorCode.BRANCH_PUSH_FAILED
+
+    # The local branch was never renamed...
+    branches = subprocess.run(
+        ["git", "-C", str(workspace_path), "branch", "--list", "--format=%(refname:short)"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert "jira2pullreq/KAN-34" in branches
+    assert "KAN-34_retry" not in branches
+
+    # ...so a retry under either name succeeds.
+    result = await branch_prep.push_branch(job, workspace_path, "KAN-34_retry")
+    assert result.branch_name == "KAN-34_retry"
+    assert _remote_ref_sha(remote_path, "refs/heads/KAN-34_retry") == job.branch_commit_sha
+
+
+async def test_push_still_works_when_the_workspace_branch_was_renamed_out_from_under_the_job(
+    tmp_path: Path,
+) -> None:
+    """Self-heals jobs left in that stuck state: the push sends the recorded
+    commit, not the (no longer existing) local branch name."""
+    remote_path = _init_bare_remote(tmp_path / "remote.git")
+    job, workspace_path = await _prepared_job_and_workspace(tmp_path, remote_url=str(remote_path))
+    subprocess.run(
+        ["git", "-C", str(workspace_path), "branch", "-m", "jira2pullreq/KAN-34", "stale-name"],
+        check=True,
+        capture_output=True,
+    )
+
+    result = await branch_prep.push_branch(job, workspace_path, None)
+
+    assert result.branch_name == "jira2pullreq/KAN-34"
+    assert _remote_ref_sha(remote_path, "refs/heads/jira2pullreq/KAN-34") == job.branch_commit_sha

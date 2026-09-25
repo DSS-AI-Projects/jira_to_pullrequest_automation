@@ -144,7 +144,29 @@ def provider_for_url(url: str, settings: Settings) -> RepoHostingProvider | None
     return None
 
 
+def is_github_app_connection(connection: RepoHostingConnection) -> bool:
+    """A GitHub App user-to-server token is granted no OAuth scopes at all
+    (the token response has `scope: ""`); an OAuth App token always reports
+    the scopes it was granted. See github_oauth.py's module docstring."""
+    return connection.provider == RepoHostingProvider.GITHUB and not connection.scopes
+
+
+# Shown before a GitHub App push, since the app's own permission and
+# installation — not anything on the connection — decide whether it works.
+GITHUB_APP_PUSH_NOTE = (
+    "This GitHub connection is a GitHub App, so pushing also needs the app to be "
+    "installed on this repository's account or organization with the Contents: "
+    "Read and write permission."
+)
+
+
 def has_scope_for(connection: RepoHostingConnection, access: GitAccess) -> bool:
+    if is_github_app_connection(connection):
+        # Access is the app's permissions × its installations × the user's own
+        # access — unknowable from the connection, so let GitHub decide and
+        # say so up front (GITHUB_APP_PUSH_NOTE) rather than block a push
+        # that may well be allowed.
+        return True
     return not _SCOPES[connection.provider][access].isdisjoint(connection.scopes)
 
 
@@ -163,7 +185,7 @@ async def _fresh_token(
 ) -> str:
     match connection.provider:
         case RepoHostingProvider.GITHUB:
-            return await fresh_github_access_token(connection)
+            return await fresh_github_access_token(connection, store, settings)
         case RepoHostingProvider.GITLAB:
             return await fresh_gitlab_access_token(connection, store, settings)
         case RepoHostingProvider.BITBUCKET:
@@ -209,6 +231,8 @@ class PushIdentity:
     account_name: str | None
     ready: bool
     reason: str | None
+    # A caveat for a ready push the provider may still refuse (GitHub App).
+    note: str | None = None
 
 
 def _not_ready(provider: RepoHostingProvider | None, reason: str) -> PushIdentity:
@@ -250,7 +274,11 @@ def describe_push_identity(
             reason=f"Your {name} connection is read-only. {_WRITE_REMEDY[provider]}",
         )
     return PushIdentity(
-        provider=provider, account_name=connection.account_name, ready=True, reason=None
+        provider=provider,
+        account_name=connection.account_name,
+        ready=True,
+        reason=None,
+        note=GITHUB_APP_PUSH_NOTE if is_github_app_connection(connection) else None,
     )
 
 

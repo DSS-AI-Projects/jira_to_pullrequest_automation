@@ -1172,10 +1172,17 @@ export function JobStatusView(props: { jobId: string }) {
               </label>
               {pushIdentity?.mode === "delegated" ? (
                 pushIdentity.ready ? (
-                  <p className="push-identity">
-                    Will push as <strong>{pushIdentity.account_name}</strong> on{" "}
-                    {pushIdentity.provider_name}.
-                  </p>
+                  <>
+                    <p className="push-identity">
+                      Will push as <strong>{pushIdentity.account_name}</strong>{" "}
+                      on {pushIdentity.provider_name}.
+                    </p>
+                    {pushIdentity.note ? (
+                      <p className="banner banner-info" role="note">
+                        {pushIdentity.note}
+                      </p>
+                    ) : null}
+                  </>
                 ) : (
                   <div className="banner banner-info" role="status">
                     <p>{pushIdentity.reason}</p>

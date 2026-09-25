@@ -642,6 +642,8 @@ export type PushIdentity = {
   account_name: string | null;
   ready: boolean;
   reason: string | null;
+  // A caveat for a ready push the host may still refuse (GitHub App).
+  note?: string | null;
 };
 
 export async function fetchPushIdentity(
