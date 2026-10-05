@@ -1,0 +1,113 @@
+# VM / UAT / production stack: nginx (TLS, the only public entry point)
+# + oauth2-proxy (Microsoft Entra ID sign-in) + backend + frontend.
+#
+#   docker compose --env-file deploy/vm/vm.env.local -f deploy/vm/docker-compose.yml up -d --build
+#
+# Differences from the repo-root docker-compose.yml (the local convenience
+# stack, which uses the dev-login form):
+# - Dev login is OFF. Identity comes only from oauth2-proxy, via headers the
+#   backend trusts only from nginx's fixed internal address.
+# - The backend publishes no port: only nginx can reach it.
+# - Paths are relative to this file (deploy/vm/), and the project and data
+#   volume names are fixed by vm.env.local, so the SQLite database survives
+#   rebuilds and can reuse the volume an earlier stack created.
+#
+# Setup steps, including the Entra ID app registration: deploy/vm/README.md.
+
+name: ${COMPOSE_PROJECT_NAME:-jira2pullreq}
+
+services:
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    image: jira2pullreq-backend:local
+    restart: unless-stopped
+    env_file:
+      - ${BACKEND_ENV_FILE:-../../backend/.env}
+    environment:
+      # Forced here, so a stray value in backend/.env can't re-enable dev login.
+      AUTH_ENABLED: "true"
+      AUTH_ALLOW_DEV_LOGIN: "false"
+      AUTH_SESSION_COOKIE_SECURE: "true"
+      AUTH_TRUSTED_PROXY_ENABLED: "true"
+      # Only nginx's fixed address may assert who the user is.
+      AUTH_TRUSTED_PROXY_SOURCES: '["${APP_SUBNET_PREFIX:-172.30.0}.10/32"]'
+      CORS_ORIGINS: '["https://${APP_HOSTNAME:?set APP_HOSTNAME in vm.env.local}"]'
+    # No "ports:" on purpose — the backend is reachable only through nginx.
+    volumes:
+      - backend_var:/app/var
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      app_net:
+        ipv4_address: ${APP_SUBNET_PREFIX:-172.30.0}.20
+
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+    image: jira2pullreq-frontend:local
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # NEXT_PUBLIC_API_BASE_URL stays unset: the browser calls /api/ on the
+      # same origin, through nginx.
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      app_net:
+        ipv4_address: ${APP_SUBNET_PREFIX:-172.30.0}.30
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.12.0
+    restart: unless-stopped
+    env_file:
+      - ${OAUTH2_PROXY_ENV_FILE:-../oauth2-proxy/azure-entra.env.local}
+    environment:
+      OAUTH2_PROXY_REDIRECT_URL: https://${APP_HOSTNAME}/oauth2/callback
+    networks:
+      app_net:
+        ipv4_address: ${APP_SUBNET_PREFIX:-172.30.0}.40
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+      - oauth2-proxy
+    ports:
+      - "${PUBLIC_HTTPS_PORT:-443}:443"
+    environment:
+      # Substituted into nginx.conf.template by the official image at startup.
+      APP_HOSTNAME: ${APP_HOSTNAME}
+      TLS_CERT_FILE: ${TLS_CERT_FILE:?set TLS_CERT_FILE in vm.env.local}
+      TLS_KEY_FILE: ${TLS_KEY_FILE:?set TLS_KEY_FILE in vm.env.local}
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${TLS_DIR:-../../certs}:/etc/nginx/certs:ro
+    networks:
+      app_net:
+        ipv4_address: ${APP_SUBNET_PREFIX:-172.30.0}.10
+
+networks:
+  app_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${APP_SUBNET_PREFIX:-172.30.0}.0/24
+
+volumes:
+  backend_var:
+    # Set to an existing volume's name (docker volume ls) to keep its data.
+    name: ${BACKEND_VAR_VOLUME:-jira2pullreq_backend_var}

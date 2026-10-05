@@ -3,9 +3,9 @@
 #   docker compose up --build
 #   # then open http://localhost:3000 and use the dev-login form
 #
-# This is the LOCAL convenience stack. For the hardened shared deployment
-# (nginx + oauth2-proxy + TLS, SSO, secure cookies) use
-# deploy/docker-compose.shared-auth.example.yml instead.
+# This is the LOCAL convenience stack (dev login: anyone can sign in as any
+# email — never use it on a shared VM). For a VM/UAT/production deployment
+# with Entra ID sign-in, use deploy/vm/docker-compose.yml (deploy/vm/README.md).
 #
 # Notes:
 # - Secrets (ANTHROPIC_API_KEY, Jira/GitHub config, encryption keys) are read

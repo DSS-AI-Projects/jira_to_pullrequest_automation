@@ -1291,7 +1291,18 @@ workflow engine; a network-locked sandbox; an embeddings/vector index.
   bundle — required for any self-hosted/internal provider instance whose
   certificate chains to an internal CA (see **GitLab OAuth integration**).
 - Deploy: `deploy/` holds an nginx + oauth2-proxy reference stack, Dockerfiles, and
-  provider setup docs (e.g. Azure Entra ID).
+  provider setup docs (e.g. Azure Entra ID). `deploy/vm/` is the ready-to-run
+  VM version (compose file, `nginx.conf.template`, `vm.env.example`, README):
+  Entra ID sign-in only (dev login forced off in compose, since `environment:`
+  overrides `backend/.env`), the backend unpublished and trusting identity
+  headers only from nginx's fixed address, nginx `client_max_body_size 12m`
+  (PDF uploads; the 1 MB default rejects most) and `proxy_read_timeout 180s`
+  (clone/push run up to 120 s), and a named data volume so an existing
+  database carries over. The repo-root `docker-compose.yml` is the local
+  dev-login stack and must never serve a shared VM: dev login lets anyone sign
+  in as any email, including an admin's. Users are matched by email, so
+  switching a VM to Entra ID keeps each user's jobs and connections when their
+  Entra email matches the one they used before.
 
 ## Quality gates — all must pass before merge
 

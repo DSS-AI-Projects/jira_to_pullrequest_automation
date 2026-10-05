@@ -1,0 +1,80 @@
+# nginx for the VM stack (deploy/vm/docker-compose.yml).
+#
+# The official nginx image renders this template at startup, replacing only
+# ${APP_HOSTNAME}, ${TLS_CERT_FILE} and ${TLS_KEY_FILE} (variables set in the
+# container's environment); nginx's own variables such as $host are left as is.
+#
+# Every page and API call requires an oauth2-proxy (Entra ID) session. The
+# identity headers sent to the backend come only from oauth2-proxy's answer,
+# overwriting anything the client sent.
+
+server {
+    listen 443 ssl;
+    server_name ${APP_HOSTNAME};
+
+    ssl_certificate     /etc/nginx/certs/${TLS_CERT_FILE};
+    ssl_certificate_key /etc/nginx/certs/${TLS_KEY_FILE};
+
+    # oauth2-proxy's own pages: /oauth2/sign_in, /oauth2/callback, /oauth2/sign_out
+    location /oauth2/ {
+        proxy_pass http://oauth2-proxy:4180;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Auth-Request-Redirect $scheme://$host$request_uri;
+    }
+
+    # Sub-request nginx makes before every protected request.
+    location = /oauth2/auth {
+        internal;
+        proxy_pass http://oauth2-proxy:4180;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Original-URL $scheme://$host$request_uri;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+    }
+
+    location /api/ {
+        auth_request /oauth2/auth;
+        error_page 401 = /oauth2/sign_in;
+
+        auth_request_set $auth_user  $upstream_http_x_auth_request_user;
+        auth_request_set $auth_email $upstream_http_x_auth_request_email;
+        auth_request_set $auth_name  $upstream_http_x_auth_request_preferred_username;
+
+        # PDF requirement uploads (the app's own limit is 10 MB; nginx's
+        # default 1 MB would reject most of them with 413).
+        client_max_body_size 12m;
+        # Clone and push can each take up to 120 s; nginx's default is 60 s.
+        proxy_read_timeout 180s;
+
+        proxy_pass http://backend:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Auth-Request-User  $auth_user;
+        proxy_set_header X-Auth-Request-Email $auth_email;
+        proxy_set_header X-Auth-Request-Name  $auth_name;
+    }
+
+    # Unauthenticated liveness check (returns only {"status": "ok"}).
+    location = /health {
+        proxy_pass http://backend:8000/health;
+    }
+
+    location / {
+        auth_request /oauth2/auth;
+        error_page 401 = /oauth2/sign_in;
+
+        proxy_pass http://frontend:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

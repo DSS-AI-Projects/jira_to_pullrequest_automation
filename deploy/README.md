@@ -4,6 +4,11 @@ This directory contains deployment examples for shared/team environments where
 authentication is handled by an upstream auth gateway instead of the built-in
 dev login flow.
 
+**Deploying to a Linux VM with Microsoft Entra ID? Start with
+`deploy/vm/README.md`** — a ready-to-run version of this topology (compose
+file, nginx template, settings example and step-by-step guide). The files
+below are the generic reference it was built from.
+
 ### Bundle contents
 
 - `deploy/.env.shared-auth.example`: one place to set hostname, TLS path, and env file paths
