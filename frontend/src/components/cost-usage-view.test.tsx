@@ -31,10 +31,11 @@ describe("CostUsageView", () => {
           job_count: 2,
           planning_cost_usd: 0.3,
           implementation_cost_usd: 0.5,
-          total_cost_usd: 0.8,
+          correction_cost_usd: 0.07,
+          total_cost_usd: 0.87,
         },
       ],
-      grand_total_usd: 0.8,
+      grand_total_usd: 0.87,
     });
 
     render(<CostUsageView />);
@@ -42,7 +43,9 @@ describe("CostUsageView", () => {
     await screen.findByText("Worker");
     expect(screen.getByText("worker@example.com")).toBeInTheDocument();
     expect(screen.getByText("2 jobs")).toBeInTheDocument();
-    expect(screen.getAllByText("$0.80")).toHaveLength(2); // total row + grand total
+    expect(screen.getByText("Correction cost")).toBeInTheDocument();
+    expect(screen.getByText("$0.07")).toBeInTheDocument();
+    expect(screen.getAllByText("$0.87")).toHaveLength(2); // total row + grand total
   });
 
   it("shows an admins-only message when the API returns FORBIDDEN", async () => {

@@ -309,6 +309,8 @@ export type OwnerCostSummary = {
   job_count: number;
   planning_cost_usd: number;
   implementation_cost_usd: number;
+  // The optional "Attempt automatic fix" pass; included in total_cost_usd.
+  correction_cost_usd: number;
   total_cost_usd: number;
 };
 

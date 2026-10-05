@@ -272,6 +272,7 @@ def test_cost_summary_aggregates_and_resolves_user_identity(
     )
     job.usage = AgentUsage(duration_seconds=1.0, total_cost_usd=0.15)
     job.implementation_usage = AgentUsage(duration_seconds=2.0, total_cost_usd=0.35)
+    job.implementation_correction_usage = AgentUsage(duration_seconds=1.0, total_cost_usd=0.05)
     auth_store.create(job)
 
     auth_client.post("/api/auth/logout")
@@ -287,8 +288,11 @@ def test_cost_summary_aggregates_and_resolves_user_identity(
     assert worker_row["job_count"] == 1
     assert worker_row["planning_cost_usd"] == pytest.approx(0.15)
     assert worker_row["implementation_cost_usd"] == pytest.approx(0.35)
-    assert worker_row["total_cost_usd"] == pytest.approx(0.50)
-    assert body["grand_total_usd"] == pytest.approx(0.50)
+    # Regression: the automatic-fix pass's cost used to be left out of the
+    # per-user and grand totals, under-reporting anyone who ran it.
+    assert worker_row["correction_cost_usd"] == pytest.approx(0.05)
+    assert worker_row["total_cost_usd"] == pytest.approx(0.55)
+    assert body["grand_total_usd"] == pytest.approx(0.55)
 
 
 def test_logout_revokes_session(auth_client: TestClient) -> None:

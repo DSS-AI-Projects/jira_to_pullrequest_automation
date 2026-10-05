@@ -278,6 +278,10 @@ def test_cost_summary_by_owner_aggregates_and_handles_missing_costs(tmp_path: Pa
     planned_and_implemented.implementation_usage = AgentUsage(
         duration_seconds=2.0, total_cost_usd=0.50
     )
+    # The optional automatic-fix pass records its own, separate cost.
+    planned_and_implemented.implementation_correction_usage = AgentUsage(
+        duration_seconds=1.5, total_cost_usd=0.07
+    )
     store.create(planned_and_implemented)
 
     other_user = make_job("PROJ-3", "user-2")
@@ -296,10 +300,12 @@ def test_cost_summary_by_owner_aggregates_and_handles_missing_costs(tmp_path: Pa
     assert rows["user-1"].job_count == 2
     assert rows["user-1"].planning_cost_usd == pytest.approx(0.30)
     assert rows["user-1"].implementation_cost_usd == pytest.approx(0.50)
+    assert rows["user-1"].correction_cost_usd == pytest.approx(0.07)
 
     assert rows["user-2"].job_count == 2
     assert rows["user-2"].planning_cost_usd == pytest.approx(0.05)
     assert rows["user-2"].implementation_cost_usd == pytest.approx(0.0)
+    assert rows["user-2"].correction_cost_usd == pytest.approx(0.0)
 
     assert rows[None].job_count == 1
     assert rows[None].planning_cost_usd == pytest.approx(0.01)

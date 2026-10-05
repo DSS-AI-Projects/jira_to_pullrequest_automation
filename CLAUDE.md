@@ -1239,8 +1239,11 @@ JSON blob) makes this an indexed query rather than a full-table JSON scan.
 The frontend surfaces this as a `/jobs` "My jobs" page.
 
 `GET /admin/cost-summary` (admin-only; `FORBIDDEN` otherwise, including when
-auth is disabled) aggregates `usage.total_cost_usd` and
-`implementation_usage.total_cost_usd` per owner directly in SQLite via
+auth is disabled) aggregates `usage.total_cost_usd`,
+`implementation_usage.total_cost_usd`, and
+`implementation_correction_usage.total_cost_usd` (the automatic-fix pass —
+left out of the totals until a later fix, under-reporting anyone who ran it)
+per owner directly in SQLite via
 `json_extract`/`SUM`, then resolves each `owner_user_id` to an email/display
 name for display. Surfaced as an admin-only `/admin/costs` page, linked from
 the header only when the signed-in user's role is `ADMIN`.

@@ -98,6 +98,9 @@ class OwnerCostRow:
     job_count: int
     planning_cost_usd: float
     implementation_cost_usd: float
+    # The optional "Attempt automatic fix" pass — a separate agent run with
+    # its own recorded cost (Job.implementation_correction_usage).
+    correction_cost_usd: float = 0.0
 
 
 class JobStore:
@@ -202,7 +205,13 @@ class JobStore:
                     owner_user_id,
                     COUNT(*),
                     SUM(COALESCE(json_extract(data, '$.usage.total_cost_usd'), 0)),
-                    SUM(COALESCE(json_extract(data, '$.implementation_usage.total_cost_usd'), 0))
+                    SUM(COALESCE(json_extract(data, '$.implementation_usage.total_cost_usd'), 0)),
+                    SUM(
+                        COALESCE(
+                            json_extract(data, '$.implementation_correction_usage.total_cost_usd'),
+                            0
+                        )
+                    )
                 FROM jobs
                 GROUP BY owner_user_id
                 """
@@ -213,6 +222,7 @@ class JobStore:
                 job_count=row[1],
                 planning_cost_usd=row[2] or 0.0,
                 implementation_cost_usd=row[3] or 0.0,
+                correction_cost_usd=row[4] or 0.0,
             )
             for row in rows
         ]

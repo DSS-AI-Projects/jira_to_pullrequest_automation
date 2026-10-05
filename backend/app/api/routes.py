@@ -153,6 +153,7 @@ class OwnerCostSummary(BaseModel):
     job_count: int
     planning_cost_usd: float
     implementation_cost_usd: float
+    correction_cost_usd: float
     total_cost_usd: float
 
 
@@ -594,7 +595,10 @@ async def get_cost_summary(request: Request) -> CostSummaryResponse:
                 job_count=row.job_count,
                 planning_cost_usd=row.planning_cost_usd,
                 implementation_cost_usd=row.implementation_cost_usd,
-                total_cost_usd=row.planning_cost_usd + row.implementation_cost_usd,
+                correction_cost_usd=row.correction_cost_usd,
+                total_cost_usd=(
+                    row.planning_cost_usd + row.implementation_cost_usd + row.correction_cost_usd
+                ),
             )
         )
     owners.sort(key=lambda owner: owner.total_cost_usd, reverse=True)
