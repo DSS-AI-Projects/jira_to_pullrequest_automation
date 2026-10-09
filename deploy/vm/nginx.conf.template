@@ -15,13 +15,24 @@ server {
     ssl_certificate     /etc/nginx/certs/${TLS_CERT_FILE};
     ssl_certificate_key /etc/nginx/certs/${TLS_KEY_FILE};
 
+    # Entra ID tokens make oauth2-proxy's session cookie larger than 4 KB, so
+    # it is split across several cookies. nginx's default 4-8 KB header
+    # buffers then reject oauth2-proxy's callback response ("upstream sent too
+    # big header" -> 502) and can reject the browser's Cookie header.
+    proxy_buffer_size          32k;
+    proxy_buffers              8 32k;
+    proxy_busy_buffers_size    64k;
+    large_client_header_buffers 4 32k;
+
     # oauth2-proxy's own pages: /oauth2/sign_in, /oauth2/callback, /oauth2/sign_out
     location /oauth2/ {
         proxy_pass http://oauth2-proxy:4180;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Auth-Request-Redirect $scheme://$host$request_uri;
+        # A relative path: oauth2-proxy rejects an absolute return URL whose
+        # domain isn't whitelisted, and then lands on / after sign-in.
+        proxy_set_header X-Auth-Request-Redirect $request_uri;
     }
 
     # Sub-request nginx makes before every protected request.

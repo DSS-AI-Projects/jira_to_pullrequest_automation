@@ -1297,7 +1297,12 @@ workflow engine; a network-locked sandbox; an embeddings/vector index.
   overrides `backend/.env`), the backend unpublished and trusting identity
   headers only from nginx's fixed address, nginx `client_max_body_size 12m`
   (PDF uploads; the 1 MB default rejects most) and `proxy_read_timeout 180s`
-  (clone/push run up to 120 s), and a named data volume so an existing
+  (clone/push run up to 120 s), 32k proxy/client header buffers (Entra
+  tokens push oauth2-proxy's session cookie past 4 KB, split over several
+  cookies, and the default buffers turned the sign-in callback into a 502
+  "upstream sent too big header" — found in a local run of the stack), a
+  relative `X-Auth-Request-Redirect` (an absolute one is rejected as a
+  non-whitelisted domain, losing the return page), and a named data volume so an existing
   database carries over. The repo-root `docker-compose.yml` is the local
   dev-login stack and must never serve a shared VM: dev login lets anyone sign
   in as any email, including an admin's. Users are matched by email, so
