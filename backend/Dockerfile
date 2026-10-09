@@ -7,7 +7,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
+# Use HTTPS for Debian repositories.
+RUN sed -i \
+        's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -15,6 +19,7 @@ RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
+
 
 FROM python:3.12-slim AS runner
 
@@ -24,12 +29,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
+# Use HTTPS for Debian repositories.
+RUN sed -i \
+        's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Corporate CA certificate.
 COPY certs/dsslp-ca.crt /usr/local/share/ca-certificates/dsslp-ca.crt
 RUN update-ca-certificates
+
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 RUN useradd --create-home --shell /bin/bash appuser
