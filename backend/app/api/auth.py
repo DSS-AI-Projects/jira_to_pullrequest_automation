@@ -48,6 +48,7 @@ from app.auth.repo_hosting import (
 )
 from app.auth.service import (
     build_session_info,
+    build_sso_info,
     clear_session_cookie,
     require_current_user,
     set_session_cookie,
@@ -92,6 +93,7 @@ async def dev_login(payload: DevLoginRequest, request: Request, response: Respon
         auth_enabled=True,
         can_dev_login=settings.auth_allow_dev_login,
         user=CurrentUser.from_user(user),
+        sso=build_sso_info(settings),
     )
 
 

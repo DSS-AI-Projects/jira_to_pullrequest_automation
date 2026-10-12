@@ -85,6 +85,7 @@ def test_session_reports_auth_enabled_when_configured(auth_client: TestClient) -
         "auth_enabled": True,
         "can_dev_login": True,
         "user": None,
+        "sso": None,
     }
 
 
@@ -120,10 +121,71 @@ def test_trusted_proxy_bootstraps_session_from_allowed_source(
             "display_name": "Proxy User",
             "role": "USER",
         },
+        "sso": None,
     }
 
     repos = trusted_proxy_client.get("/api/repos")
     assert repos.status_code == 200
+
+
+def test_trusted_proxy_identity_change_replaces_stale_app_session(
+    trusted_proxy_client: TestClient, auth_store: JobStore
+) -> None:
+    # User A signs in; the app sets its own session cookie.
+    first = trusted_proxy_client.get(
+        "/api/auth/session", headers={"X-Auth-Request-Email": "alice@example.com"}
+    )
+    assert first.json()["user"]["email"] == "alice@example.com"
+    alice_session_id = trusted_proxy_client.cookies.get("jira2pullreq_session")
+    assert alice_session_id
+
+    # A signs out of SSO only (the app cookie survives), then B signs in on the
+    # same browser. B must not keep working as A.
+    second = trusted_proxy_client.get(
+        "/api/auth/session", headers={"X-Auth-Request-Email": "bob@example.com"}
+    )
+    assert second.json()["user"]["email"] == "bob@example.com"
+    # A's session row is deleted, not merely shadowed, and B got a new one.
+    assert auth_store.get_session(alice_session_id) is None
+    assert trusted_proxy_client.cookies.get("jira2pullreq_session") != alice_session_id
+
+
+def test_session_reports_sso_sign_out_url_when_configured(
+    auth_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_LOGIN", "false")
+    monkeypatch.setenv("AUTH_TRUSTED_PROXY_ENABLED", "true")
+    monkeypatch.setenv("AUTH_TRUSTED_PROXY_SOURCES", '["testclient"]')
+    monkeypatch.setenv("AUTH_SSO_PROVIDER_LABEL", "Microsoft")
+    monkeypatch.setenv(
+        "AUTH_SSO_IDP_LOGOUT_URL",
+        "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/logout",
+    )
+    monkeypatch.setenv(
+        "AUTH_SSO_POST_LOGOUT_REDIRECT_URL", "https://app.example.com/signin/signed-out"
+    )
+    get_settings.cache_clear()
+    app = create_app(store=auth_store, steps=make_fake_steps())
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Reported even before sign-in, so the page can offer it.
+            sso = client.get("/api/auth/session").json()["sso"]
+    finally:
+        get_settings.cache_clear()
+
+    assert sso["provider_label"] == "Microsoft"
+    sign_out = urlparse(sso["sign_out_url"])
+    assert sign_out.path == "/oauth2/sign_out"
+    # oauth2-proxy clears its cookie, then sends the browser to the identity
+    # provider's logout, which returns to the app's signed-out page.
+    rd = urlparse(parse_qs(sign_out.query)["rd"][0])
+    assert f"{rd.scheme}://{rd.netloc}{rd.path}" == (
+        "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/logout"
+    )
+    assert parse_qs(rd.query)["post_logout_redirect_uri"] == [
+        "https://app.example.com/signin/signed-out"
+    ]
 
 
 def test_trusted_proxy_headers_are_rejected_from_untrusted_source(
@@ -138,6 +200,7 @@ def test_trusted_proxy_headers_are_rejected_from_untrusted_source(
         "auth_enabled": True,
         "can_dev_login": False,
         "user": None,
+        "sso": None,
     }
 
     repos = untrusted_proxy_client.get(

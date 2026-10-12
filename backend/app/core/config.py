@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     auth_trusted_subject_header: str = "X-Auth-Request-User"
     auth_trusted_provider_name: str = "trusted-proxy"
     auth_admin_emails: list[str] = []
+    # Single sign-on in front of the app (deploy/vm: oauth2-proxy + Entra ID).
+    # Set the label to turn on the SSO sign-out flow: clear the app session,
+    # then oauth2-proxy's cookie, then the identity provider's own session,
+    # landing back on the post-logout URL (which the provider must have
+    # registered).
+    auth_sso_provider_label: str | None = None
+    auth_sso_sign_out_path: str = "/oauth2/sign_out"
+    auth_sso_idp_logout_url: str | None = None
+    auth_sso_post_logout_redirect_url: str | None = None
 
     # Frontend origin for CORS
     cors_origins: list[str] = [

@@ -1,4 +1,9 @@
 import type { Plan } from "@/lib/plan.gen";
+import {
+  expiredSignInUrl,
+  isPublicSignInPath,
+  SIGN_IN_REQUIRED_HEADER,
+} from "@/lib/sign-in";
 
 export type JobState =
   | "QUEUED"
@@ -30,10 +35,16 @@ export type CurrentUser = {
   role: "USER" | "ADMIN";
 };
 
+export type SsoInfo = {
+  provider_label: string;
+  sign_out_url: string;
+};
+
 export type SessionInfo = {
   auth_enabled: boolean;
   can_dev_login: boolean;
   user: CurrentUser | null;
+  sso?: SsoInfo | null;
 };
 
 export type JiraAuthMode = "UNCONFIGURED" | "SHARED" | "DELEGATED";
@@ -388,7 +399,7 @@ async function parseJson<T>(response: Response): Promise<T> {
 }
 
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`${defaultApiBaseUrl()}${path}`, {
+  const response = await fetch(`${defaultApiBaseUrl()}${path}`, {
     credentials: "include",
     ...init,
     headers: {
@@ -396,6 +407,21 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
       ...(init?.headers ?? {}),
     },
   });
+  if (
+    response.status === 401 &&
+    response.headers.get(SIGN_IN_REQUIRED_HEADER) &&
+    typeof window !== "undefined" &&
+    !isPublicSignInPath(window.location.pathname)
+  ) {
+    // The SSO sign-in expired while the page was open: go to the sign-in
+    // page (and back here afterwards) instead of surfacing a raw error. The
+    // promise never settles, so callers don't flash an error mid-navigation.
+    redirectBrowser(
+      expiredSignInUrl(`${window.location.pathname}${window.location.search}`),
+    );
+    return new Promise<Response>(() => undefined);
+  }
+  return response;
 }
 
 function normalizeJob(job: Job): Job {

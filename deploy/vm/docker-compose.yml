@@ -34,6 +34,12 @@ services:
       # Only nginx's fixed address may assert who the user is.
       AUTH_TRUSTED_PROXY_SOURCES: '["${APP_SUBNET_PREFIX:-172.30.0}.10/32"]'
       CORS_ORIGINS: '["https://${APP_HOSTNAME:?set APP_HOSTNAME in vm.env.local}"]'
+      # Sign out = clear the app session, then oauth2-proxy's cookie, then
+      # Microsoft's own session, landing on the app's signed-out page (which
+      # must be registered in the Entra app as a Web redirect URI).
+      AUTH_SSO_PROVIDER_LABEL: Microsoft
+      AUTH_SSO_IDP_LOGOUT_URL: https://login.microsoftonline.com/${ENTRA_TENANT_ID:?set ENTRA_TENANT_ID in vm.env.local}/oauth2/v2.0/logout
+      AUTH_SSO_POST_LOGOUT_REDIRECT_URL: https://${APP_HOSTNAME}/signin/signed-out
     # No "ports:" on purpose — the backend is reachable only through nginx.
     volumes:
       - backend_var:/app/var
@@ -61,6 +67,8 @@ services:
       NODE_ENV: production
       # NEXT_PUBLIC_API_BASE_URL stays unset: the browser calls /api/ on the
       # same origin, through nginx.
+      # Shown on the public sign-in pages ("Sign in with Microsoft").
+      SSO_PROVIDER_LABEL: Microsoft
     depends_on:
       backend:
         condition: service_healthy
@@ -75,6 +83,12 @@ services:
       - ${OAUTH2_PROXY_ENV_FILE:-../oauth2-proxy/azure-entra.env.local}
     environment:
       OAUTH2_PROXY_REDIRECT_URL: https://${APP_HOSTNAME}/oauth2/callback
+      # Microsoft shows its account picker on every sign-in, so a shared
+      # browser never silently signs in as whoever used it last.
+      OAUTH2_PROXY_PROMPT: select_account
+      # Lets sign-out continue to Microsoft's logout page (oauth2-proxy only
+      # redirects to whitelisted domains).
+      OAUTH2_PROXY_WHITELIST_DOMAINS: login.microsoftonline.com
     networks:
       app_net:
         ipv4_address: ${APP_SUBNET_PREFIX:-172.30.0}.40

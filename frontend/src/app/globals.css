@@ -451,6 +451,12 @@ ol {
   font-weight: 700;
 }
 
+a.primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .primary-button:disabled {
   opacity: 0.65;
   cursor: progress;

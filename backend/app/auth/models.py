@@ -108,12 +108,23 @@ class CurrentUser(BaseModel):
         )
 
 
+class SsoInfo(BaseModel):
+    """Single sign-on in front of the app: which provider, and where Sign out
+    sends the browser after the app session is cleared."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider_label: str
+    sign_out_url: str
+
+
 class SessionInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     auth_enabled: bool
     can_dev_login: bool
     user: CurrentUser | None = None
+    sso: SsoInfo | None = None
 
 
 class DevLoginRequest(BaseModel):

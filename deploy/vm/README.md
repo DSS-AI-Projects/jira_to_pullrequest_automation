@@ -34,7 +34,10 @@ Needs Entra admin rights. In the Microsoft Entra admin center:
 
 1. **App registrations** → **New registration**: single tenant
    ("Accounts in this organizational directory only").
-2. **Redirect URI**: type **Web**, `https://<APP_HOSTNAME>/oauth2/callback`.
+2. **Redirect URIs**, both of type **Web**:
+   `https://<APP_HOSTNAME>/oauth2/callback` (sign-in) and
+   `https://<APP_HOSTNAME>/signin/signed-out` (where Sign out returns;
+   Microsoft refuses an unregistered post-logout address).
 3. Copy the **Application (client) ID** and **Directory (tenant) ID**.
 4. **Certificates & secrets** → **New client secret**; copy the value (shown
    once).
@@ -42,6 +45,9 @@ Needs Entra admin rights. In the Microsoft Entra admin center:
    grant admin consent if your organization requires it.
 6. Recommended: **Enterprise applications** → the app → **Properties** →
    **Assignment required = Yes**, then add the allowed users or groups.
+7. Optional: **Company branding** (Entra ID → Custom branding) puts your logo,
+   background and sign-in text on Microsoft's password page. It applies to
+   the whole tenant, not just this app.
 
 ### 2. Create the secret and settings files on the VM
 
@@ -64,6 +70,7 @@ In `vm.env.local` set:
 
 - `APP_HOSTNAME` and the certificate files (`TLS_DIR`, `TLS_CERT_FILE`,
   `TLS_KEY_FILE`).
+- `ENTRA_TENANT_ID`: the Directory (tenant) ID, for the Microsoft sign-out.
 - `APP_SUBNET_PREFIX`: keep `172.30.0` unless `ip route` or
   `docker network ls` shows it in use.
 - `BACKEND_VAR_VOLUME`: **when moving from the repo-root stack**, set it to that
@@ -103,28 +110,38 @@ docker compose --env-file deploy/vm/vm.env.local -f deploy/vm/docker-compose.yml
 
 ### 4. Verify
 
-1. In a private browser window, open `https://<APP_HOSTNAME>`: Microsoft
-   sign-in, then the app, with no development-login form.
-2. Spoofed identity headers are ignored; the output must not contain a user:
+1. In a private browser window, open `https://<APP_HOSTNAME>/jobs`: the app's
+   own sign-in page → **Sign in with Microsoft** → Microsoft's account picker
+   and password → back on `/jobs`. No development-login form anywhere.
+2. **Sign out** (top right) ends on "You have signed out"; signing in again
+   asks for the account again.
+3. Spoofed identity headers are ignored; this must answer 401 "Your sign-in
+   has expired", not a user:
 
    ```bash
    curl -sk https://localhost/api/auth/session -H 'X-Auth-Request-Email: admin@example.com' | head -c 300
    ```
 
-3. The backend isn't reachable directly; this must fail to connect:
+4. The backend isn't reachable directly; this must fail to connect:
 
    ```bash
    curl -s --max-time 5 http://localhost:8000/health
    ```
 
-4. On a job page, the Push card still shows your connected accounts (if your
+5. On a job page, the Push card still shows your connected accounts (if your
    Entra email matches your previous login email).
 
 ### Notes
 
-- **Logging out**: the app's Log out clears only the app session; the Entra
-  session signs you straight back in. Full sign-out:
-  `https://<APP_HOSTNAME>/oauth2/sign_out`.
+- **Signing in and out**: signed-out visitors land on `/signin` (public, like
+  `/signin/signed-out`, the page's build files and `/health`; everything else
+  needs a session). Microsoft shows its account picker on every sign-in
+  (`OAUTH2_PROXY_PROMPT=select_account`), so a shared browser never silently
+  continues as the previous user. **Sign out** clears the app session, then
+  oauth2-proxy's cookie, then the Microsoft session in that browser — which
+  also signs the user out of other Microsoft web apps there (Outlook, Teams).
+  If a session expires while a page is open, the next action goes to
+  `/signin` and back.
 - **Rollback**: `down` this stack and start the previous one; the data volume
   is untouched either way.
 - **Multiple team instances on one VM**: give each its own

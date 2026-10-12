@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
 from typing import cast
+from urllib.parse import quote
 
 from fastapi import Request, Response
 
-from app.auth.models import CurrentUser, SessionInfo, User, UserRole
+from app.auth.models import CurrentUser, SessionInfo, SsoInfo, User, UserRole
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.jobs.models import Job
@@ -88,14 +89,24 @@ def _upsert_identity_user(request: Request, identity: Identity, settings: Settin
     )
 
 
-def _resolve_session_user(request: Request, settings: Settings) -> User | None:
+def _resolve_session_user(
+    request: Request, settings: Settings, identity: Identity | None
+) -> User | None:
     session_id = request.cookies.get(_cookie_name(settings))
     if not session_id:
         return None
-    session = _store(request).get_session(session_id)
+    store = _store(request)
+    session = store.get_session(session_id)
     if session is None:
         return None
-    return _store(request).get_user(session.user_id)
+    user = store.get_user(session.user_id)
+    if user is not None and identity is not None and user.email.lower() != identity.email:
+        # The proxy now vouches for someone else — e.g. user A signed out of
+        # SSO only, then user B signed in on the same browser. A's app session
+        # must not outlive that, or B would keep working as A.
+        store.delete_session(session_id)
+        return None
+    return user
 
 
 def resolve_current_user(request: Request) -> User | None:
@@ -103,11 +114,11 @@ def resolve_current_user(request: Request) -> User | None:
     if not settings.auth_enabled:
         return None
 
-    user = _resolve_session_user(request, settings)
+    identity = _trusted_identity(request, settings)
+    user = _resolve_session_user(request, settings, identity)
     if user is not None:
         return user
 
-    identity = _trusted_identity(request, settings)
     if identity is None:
         return None
     return _upsert_identity_user(request, identity, settings)
@@ -175,17 +186,42 @@ def build_session_info(
     if not settings.auth_enabled:
         return SessionInfo(auth_enabled=False, can_dev_login=False)
 
-    user = _resolve_session_user(request, settings)
-    if user is None and allow_bootstrap:
-        identity = _trusted_identity(request, settings)
-        if identity is not None:
-            user = _upsert_identity_user(request, identity, settings)
-            if response is not None:
-                session = _store(request).create_session(user.id, settings.auth_session_ttl_hours)
-                set_session_cookie(response, session.id, settings)
+    identity = _trusted_identity(request, settings)
+    user = _resolve_session_user(request, settings, identity)
+    if user is None and allow_bootstrap and identity is not None:
+        user = _upsert_identity_user(request, identity, settings)
+        if response is not None:
+            session = _store(request).create_session(user.id, settings.auth_session_ttl_hours)
+            set_session_cookie(response, session.id, settings)
 
     return SessionInfo(
         auth_enabled=True,
         can_dev_login=settings.auth_allow_dev_login,
         user=CurrentUser.from_user(user) if user is not None else None,
+        sso=build_sso_info(settings),
+    )
+
+
+def build_sso_info(settings: Settings) -> SsoInfo | None:
+    """Where Sign out sends the browser once the app session is cleared:
+    oauth2-proxy's sign-out (clears its cookie), then — when configured — the
+    identity provider's logout endpoint (ends its own session, so the next
+    sign-in asks again), which returns to the post-logout URL."""
+    label = (settings.auth_sso_provider_label or "").strip()
+    if not label:
+        return None
+
+    post_logout = settings.auth_sso_post_logout_redirect_url
+    idp_logout = settings.auth_sso_idp_logout_url
+    if idp_logout:
+        target = idp_logout
+        if post_logout:
+            separator = "&" if "?" in idp_logout else "?"
+            target += f"{separator}post_logout_redirect_uri={quote(post_logout, safe='')}"
+    else:
+        target = post_logout or "/signin/signed-out"
+
+    return SsoInfo(
+        provider_label=label,
+        sign_out_url=f"{settings.auth_sso_sign_out_path}?rd={quote(target, safe='')}",
     )

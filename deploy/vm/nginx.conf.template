@@ -4,9 +4,10 @@
 # ${APP_HOSTNAME}, ${TLS_CERT_FILE} and ${TLS_KEY_FILE} (variables set in the
 # container's environment); nginx's own variables such as $host are left as is.
 #
-# Every page and API call requires an oauth2-proxy (Entra ID) session. The
-# identity headers sent to the backend come only from oauth2-proxy's answer,
-# overwriting anything the client sent.
+# Every page and API call requires an oauth2-proxy (Entra ID) session, except
+# the app's own sign-in pages (/signin, /signin/signed-out), the build assets
+# they load, and /health. The identity headers sent to the backend come only
+# from oauth2-proxy's answer, overwriting anything the client sent.
 
 server {
     listen 443 ssl;
@@ -14,6 +15,10 @@ server {
 
     ssl_certificate     /etc/nginx/certs/${TLS_CERT_FILE};
     ssl_certificate_key /etc/nginx/certs/${TLS_KEY_FILE};
+
+    # Relative Location headers, so redirects keep the browser's own host and
+    # port (PUBLIC_HTTPS_PORT may differ from the container's 443).
+    absolute_redirect off;
 
     # Entra ID tokens make oauth2-proxy's session cookie larger than 4 KB, so
     # it is split across several cookies. nginx's default 4-8 KB header
@@ -47,9 +52,36 @@ server {
         proxy_set_header Content-Length "";
     }
 
+    # The app's sign-in pages: "Sign in with Microsoft" (-> /oauth2/start),
+    # and where Microsoft returns after sign-out. Public, and they render
+    # without calling the API, so no identity reaches the backend from here.
+    location = /signin {
+        proxy_pass http://frontend:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location /signin/ {
+        proxy_pass http://frontend:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    # Scripts, styles and fonts those pages load — the same build files every
+    # visitor's browser downloads, holding no user data.
+    location /_next/static/ {
+        proxy_pass http://frontend:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+    location = /favicon.ico {
+        proxy_pass http://frontend:3000;
+        proxy_set_header Host $host;
+    }
+
     location /api/ {
         auth_request /oauth2/auth;
-        error_page 401 = /oauth2/sign_in;
+        error_page 401 = @api_sign_in_required;
 
         auth_request_set $auth_user  $upstream_http_x_auth_request_user;
         auth_request_set $auth_email $upstream_http_x_auth_request_email;
@@ -72,6 +104,15 @@ server {
         proxy_set_header X-Auth-Request-Name  $auth_name;
     }
 
+    # An API call whose sign-in expired: a JSON 401 the frontend recognises by
+    # its header and turns into a trip to /signin (and back). Redirecting the
+    # call to Microsoft would only fail inside the browser's fetch().
+    location @api_sign_in_required {
+        default_type application/json;
+        add_header X-Sign-In-Required 1 always;
+        return 401 '{"error":{"code":"UNAUTHENTICATED","message":"Your sign-in has expired. Sign in again."}}';
+    }
+
     # Unauthenticated liveness check (returns only {"status": "ok"}).
     location = /health {
         proxy_pass http://backend:8000/health;
@@ -79,7 +120,7 @@ server {
 
     location / {
         auth_request /oauth2/auth;
-        error_page 401 = /oauth2/sign_in;
+        error_page 401 = @sign_in;
 
         proxy_pass http://frontend:3000;
         proxy_http_version 1.1;
@@ -87,5 +128,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # A signed-out page visit goes to the app's sign-in page, which returns to
+    # this path afterwards (the page checks it is an in-app path).
+    location @sign_in {
+        return 302 /signin?rd=$uri;
     }
 }

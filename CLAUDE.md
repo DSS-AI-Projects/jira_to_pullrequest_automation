@@ -92,6 +92,58 @@ enabled (`backend/app/auth/`, `backend/app/api/auth.py`):
   headers** (`AUTH_TRUSTED_PROXY_*`), the latter validated against an allowlisted
   source CIDR set before any identity header is trusted.
 
+### SSO sign-in and sign-out pages (owner-approved)
+
+Behind the `deploy/vm` proxy (nginx + oauth2-proxy + Entra ID), signed-out
+visitors get the app's own sign-in page rather than being bounced straight to
+Microsoft, and **Sign out** ends every session involved. The app still never
+shows a password field: the page's **Sign in with Microsoft** goes to
+`/oauth2/start`, and Microsoft's own page takes the password and MFA (Entra
+"Company branding" can style it).
+
+- **Public paths, nothing else:** `/signin`, `/signin/signed-out`,
+  `/_next/static/`, `/favicon.ico`, `/health`. The two pages are server
+  components that read only `SSO_PROVIDER_LABEL` from the frontend's
+  environment — no API call, so no identity reaches the backend from them —
+  and `AuthGate` renders them as-is (`isPublicSignInPath`), without loading a
+  session. A signed-out page visit is redirected to `/signin?rd=<path>`; `rd`
+  is accepted only as an in-app path (`safeReturnPath` in `lib/sign-in.ts`:
+  no other site, no `//host`, no `/signin` or `/oauth2/` loop), and
+  oauth2-proxy validates it again.
+- **Account picker on every sign-in** (`OAUTH2_PROXY_PROMPT=select_account`),
+  so a shared browser never silently continues as the previous user.
+- **Sign out = three sessions, in order:** `POST /api/auth/logout` (app
+  session; best-effort), then the browser goes to `SessionInfo.sso.sign_out_url`
+  — oauth2-proxy's `/oauth2/sign_out` (its cookie), whose `rd` is Entra's
+  tenant logout endpoint (Microsoft's session in that browser), which returns
+  to `/signin/signed-out`. `build_sso_info()` (`auth/service.py`) builds the
+  URL from `AUTH_SSO_PROVIDER_LABEL` / `AUTH_SSO_SIGN_OUT_PATH` /
+  `AUTH_SSO_IDP_LOGOUT_URL` / `AUTH_SSO_POST_LOGOUT_REDIRECT_URL` (set in
+  `deploy/vm/docker-compose.yml` from `APP_HOSTNAME` and `ENTRA_TENANT_ID`);
+  no label means no SSO and the old dev-login sign-out. Before this, Sign out
+  behind the proxy did nothing: it cleared the app session and re-read it,
+  and the proxy's still-valid identity signed the same user straight back
+  in. oauth2-proxy needs `OAUTH2_PROXY_WHITELIST_DOMAINS=login.microsoftonline.com`
+  to redirect there, and Entra needs `/signin/signed-out` registered as a Web
+  redirect URI.
+- **A stale app session can't outlive a different SSO identity.**
+  `_resolve_session_user` used to return the session cookie's user before
+  even looking at the proxy's identity, so user A signing out of SSO only and
+  user B signing in on the same browser left B working as A until the 12h
+  app session expired. Now a session whose user's email differs from the
+  proxy-asserted one is deleted and the proxy identity wins
+  (`test_trusted_proxy_identity_change_replaces_stale_app_session` — verified
+  to fail with exactly that symptom with the check disabled).
+- **Expiry mid-page:** nginx answers an unauthenticated `/api/` call with a
+  JSON 401 plus `X-Sign-In-Required: 1` (it used to redirect the `fetch()` to
+  Microsoft, which can only fail); `apiFetch` sees the header and sends the
+  browser to `/signin?expired=1&rd=<current page>`. A plain backend 401 (dev
+  stack, no header) stays an ordinary error.
+- Verified against the local Entra stack with curl: redirects, the public
+  pages and assets, JSON 401s (spoofed headers included), the authorize URL's
+  `prompt=select_account`, and the full sign-out redirect chain. nginx also
+  sets `absolute_redirect off` so redirects keep the browser's host and port.
+
 ## GitLab OAuth integration
 
 Delegated per-user GitLab OAuth, mirroring the shape of the GitHub integration

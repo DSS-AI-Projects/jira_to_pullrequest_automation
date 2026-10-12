@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 
@@ -23,6 +24,7 @@ import {
   type RepoHostingStatus,
   type SessionInfo,
 } from "@/lib/api";
+import { isPublicSignInPath, ssoStartUrl } from "@/lib/sign-in";
 
 type JiraFlash = {
   kind: "success" | "error";
@@ -107,6 +109,9 @@ function readConnectionFlash(): JiraFlash | null {
 }
 
 export function AuthGate(props: { children: ReactNode }) {
+  // The SSO sign-in pages are public (no session to load yet); rendering the
+  // gate there would only turn the proxy's 401 into a redirect loop.
+  const publicPage = isPublicSignInPath(usePathname());
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [jiraStatus, setJiraStatus] = useState<JiraAuthStatus | null>(null);
   const [repoHostingStatus, setRepoHostingStatus] =
@@ -158,6 +163,9 @@ export function AuthGate(props: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (publicPage) {
+      return;
+    }
     let active = true;
     const controller = new AbortController();
 
@@ -208,7 +216,7 @@ export function AuthGate(props: { children: ReactNode }) {
       active = false;
       controller.abort();
     };
-  }, []);
+  }, [publicPage]);
 
   async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -243,6 +251,22 @@ export function AuthGate(props: { children: ReactNode }) {
   async function handleLogout() {
     setSubmitting(true);
     setError(null);
+    const sso = session?.sso;
+    if (sso) {
+      // Behind SSO, clearing the app session alone signs nobody out: the
+      // proxy would vouch for the same user on the next request. Clear it,
+      // then leave through the proxy's sign-out, which also ends the
+      // provider's session and lands on the signed-out page.
+      try {
+        await logout();
+      } catch {
+        // Best-effort: the sign-out below still ends the proxy and provider
+        // sessions, and a stale app session can't outlive a different
+        // signed-in identity (the backend drops it).
+      }
+      redirectBrowser(sso.sign_out_url);
+      return;
+    }
     try {
       await logout();
       const currentSession = await fetchSession();
@@ -525,6 +549,10 @@ export function AuthGate(props: { children: ReactNode }) {
     );
   }
 
+  if (publicPage) {
+    return <>{props.children}</>;
+  }
+
   if (loading) {
     return (
       <main className="page-shell">
@@ -553,8 +581,10 @@ export function AuthGate(props: { children: ReactNode }) {
               <h2>Session</h2>
               <p>
                 {session.can_dev_login
-                  ? "Use development login locally, or replace it with your upstream SSO flow."
-                  : "Use the configured upstream identity provider or trusted proxy."}
+                  ? "Development login: enter any email to sign in. Shared deployments use single sign-on instead."
+                  : session.sso
+                    ? `Sign in with your ${session.sso.provider_label} work account.`
+                    : "Use the configured upstream identity provider or trusted proxy."}
               </p>
             </div>
 
@@ -604,6 +634,22 @@ export function AuthGate(props: { children: ReactNode }) {
                   </button>
                 </div>
               </form>
+            ) : session.sso ? (
+              <>
+                {error ? <p className="banner banner-error">{error}</p> : null}
+                <div className="actions">
+                  <a
+                    className="primary-button"
+                    href={ssoStartUrl(
+                      typeof window === "undefined"
+                        ? "/"
+                        : `${window.location.pathname}${window.location.search}`,
+                    )}
+                  >
+                    Sign in with {session.sso.provider_label}
+                  </a>
+                </div>
+              </>
             ) : (
               <>
                 {error ? <p className="banner banner-error">{error}</p> : null}

@@ -16,7 +16,9 @@ const {
   startGitHubConnect,
   startGitLabConnect,
   startJiraConnect,
+  usePathname,
 } = vi.hoisted(() => ({
+  usePathname: vi.fn<() => string | null>(),
   devLogin: vi.fn(),
   disconnectJira: vi.fn(),
   disconnectRepoHostingProvider: vi.fn(),
@@ -50,8 +52,12 @@ vi.mock("@/lib/api", async () => {
   };
 });
 
+vi.mock("next/navigation", () => ({ usePathname }));
+
 describe("AuthGate", () => {
   beforeEach(() => {
+    usePathname.mockReset();
+    usePathname.mockReturnValue("/");
     devLogin.mockReset();
     disconnectJira.mockReset();
     disconnectRepoHostingProvider.mockReset();
@@ -81,6 +87,86 @@ describe("AuthGate", () => {
     );
 
     await screen.findByText("App content");
+  });
+
+  it("renders the public sign-in pages without loading a session", () => {
+    usePathname.mockReturnValue("/signin/signed-out");
+
+    render(
+      <AuthGate>
+        <div>Signed-out page</div>
+      </AuthGate>,
+    );
+
+    expect(screen.getByText("Signed-out page")).toBeInTheDocument();
+    // Behind the proxy this request would be a 401, and the expired-session
+    // redirect would bounce the sign-in page to itself.
+    expect(fetchSession).not.toHaveBeenCalled();
+  });
+
+  it("signs out through the SSO chain instead of reloading the session", async () => {
+    const signOutUrl =
+      "/oauth2/sign_out?rd=https%3A%2F%2Flogin.microsoftonline.com%2Ft%2Foauth2%2Fv2.0%2Flogout";
+    fetchSession.mockResolvedValue({
+      auth_enabled: true,
+      can_dev_login: false,
+      user: {
+        id: "user-1",
+        email: "sam@example.com",
+        display_name: "Sam",
+        role: "USER",
+      },
+      sso: { provider_label: "Microsoft", sign_out_url: signOutUrl },
+    });
+    fetchJiraAuthStatus.mockResolvedValue({
+      oauth_enabled: false,
+      oauth_configured: false,
+      shared_configured: true,
+      effective_mode: "SHARED",
+      connected: false,
+      connection: null,
+    });
+    fetchRepoHostingStatus.mockResolvedValue({ providers: [] });
+    logout.mockRejectedValue(new Error("network down"));
+
+    render(
+      <AuthGate>
+        <div>App content</div>
+      </AuthGate>,
+    );
+
+    await screen.findByText("sam@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    // Even if clearing the app session fails, the browser still leaves
+    // through the proxy and provider sign-out.
+    await waitFor(() =>
+      expect(redirectBrowser).toHaveBeenCalledWith(signOutUrl),
+    );
+    expect(logout).toHaveBeenCalledTimes(1);
+    // Re-reading the session would just sign the same user straight back in.
+    expect(fetchSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers the SSO sign-in when the proxy sent no identity", async () => {
+    fetchSession.mockResolvedValue({
+      auth_enabled: true,
+      can_dev_login: false,
+      user: null,
+      sso: { provider_label: "Microsoft", sign_out_url: "/oauth2/sign_out" },
+    });
+    window.history.replaceState({}, "", "/jobs/abc");
+
+    render(
+      <AuthGate>
+        <div>App content</div>
+      </AuthGate>,
+    );
+
+    expect(
+      await screen.findByRole("link", { name: "Sign in with Microsoft" }),
+    ).toHaveAttribute("href", "/oauth2/start?rd=%2Fjobs%2Fabc");
+    expect(screen.queryByText("App content")).not.toBeInTheDocument();
   });
 
   it("shows sign-in form and completes dev login", async () => {
