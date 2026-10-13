@@ -587,3 +587,64 @@ async def run_validation_correction(
                 DEFAULT_MESSAGES[ErrorCode.INTERNAL],
                 failure_state=JobState.IMPLEMENTATION_FAILED,
             )
+
+
+# Which terminal state an interrupted job lands on, by the state it was in
+# when the process stopped. Mirrors what run_job / run_implementation /
+# run_validation_correction would have done had the step raised; any other
+# non-terminal state is a plan-pipeline state and lands on FAILED.
+_IMPLEMENTATION_STATES = frozenset(
+    {JobState.IMPLEMENTATION_QUEUED, JobState.IMPLEMENTING, JobState.VALIDATING}
+)
+_CORRECTION_STATES = frozenset({JobState.CORRECTING, JobState.REVALIDATING})
+
+
+async def recover_interrupted_jobs(store: JobStore) -> int:
+    """Move every job a previous process left mid-flight to a terminal state.
+
+    Jobs run as in-process asyncio tasks, so a restart, deploy, or crash
+    kills them without any of the runner's own failure handling running —
+    the job would otherwise sit in its non-terminal state forever. Called
+    once at startup (app.main's lifespan), before any request can start a
+    new job, so every non-terminal job found here is one nothing is running.
+
+    Each one gets the same treatment the runner gives a failed step:
+    plan-pipeline states -> FAILED; implement/validate -> IMPLEMENTATION_FAILED
+    (with whatever partial diff is in the workspace attached, as on any
+    implementation failure); correction -> back to IMPLEMENTATION_READY with
+    implementation_correction_error set, never regressing the working
+    implementation. Returns how many jobs were recovered. Best-effort per
+    job: one job that can't be recovered is logged and skipped, never
+    blocking startup.
+    """
+    recovered = 0
+    message = DEFAULT_MESSAGES[ErrorCode.JOB_INTERRUPTED]
+    for job in store.list_unfinished_jobs():
+        try:
+            interrupted_at = job.state
+            if interrupted_at in _CORRECTION_STATES:
+                await _refresh_diff_best_effort(job)
+                _record_correction_failure(store, job, ErrorCode.JOB_INTERRUPTED, message)
+            elif interrupted_at in _IMPLEMENTATION_STATES:
+                await _refresh_diff_best_effort(job)
+                _fail(
+                    store,
+                    job,
+                    ErrorCode.JOB_INTERRUPTED,
+                    message,
+                    failure_state=JobState.IMPLEMENTATION_FAILED,
+                )
+            else:
+                # The plan-pipeline states, plus any state added later and
+                # not yet classified here — FAILED is the safe default.
+                _fail(store, job, ErrorCode.JOB_INTERRUPTED, message)
+            recovered += 1
+            logger.warning(
+                "job %s was interrupted at %s by a server restart; marked %s",
+                job.id,
+                interrupted_at,
+                job.state,
+            )
+        except Exception:
+            logger.exception("could not recover interrupted job %s", job.id)
+    return recovered

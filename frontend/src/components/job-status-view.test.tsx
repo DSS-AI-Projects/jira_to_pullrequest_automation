@@ -584,6 +584,44 @@ describe("JobStatusView", () => {
     expect(push).toHaveBeenCalledWith("/");
   });
 
+  it("shows a server-restart interruption like any other failure, with Retry", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-interrupted",
+      ticket_key: "KAN-32",
+      repo_url: "https://github.com/acme/repo",
+      planning_notes: null,
+      state: "IMPLEMENTATION_FAILED",
+      error: {
+        code: "JOB_INTERRUPTED",
+        message: "The server restarted while this job was running. Retry it.",
+        stage: "IMPLEMENTING",
+      },
+      repo_info: null,
+      workspace_path: null,
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-10-13T09:00:00Z",
+      updated_at: "2026-10-13T09:05:00Z",
+    });
+
+    render(<JobStatusView jobId="job-interrupted" />);
+
+    expect(
+      await screen.findByText(
+        "JOB_INTERRUPTED: The server restarted while this job was running. Retry it.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
   it("shows recorded planning cost on a failed job that never reached a plan", async () => {
     fetchJob.mockResolvedValue({
       id: "job-failed-planning",
