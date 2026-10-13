@@ -172,6 +172,26 @@ def _steps(request: Request) -> JobSteps:
     return cast(JobSteps, request.app.state.job_steps)
 
 
+_WORKSPACE_REMOVED_MESSAGE = (
+    "This job's workspace was deleted by the retention policy after the job sat "
+    "unused. Its plan, diff and cost history are kept, but implementing, fixing, "
+    "creating a branch or pushing needs the workspace — start a new job for the "
+    "same ticket instead."
+)
+
+
+def _require_workspace(job: Job) -> Path:
+    """The job's isolated workspace, or IMPLEMENTATION_WORKSPACE_MISSING —
+    with its own message when the retention sweep removed it on purpose."""
+    if job.workspace_removed_at is not None:
+        raise AppError(
+            ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING, user_message=_WORKSPACE_REMOVED_MESSAGE
+        )
+    if not job.workspace_path or not Path(job.workspace_path).exists():
+        raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+    return Path(job.workspace_path)
+
+
 # Kept small deliberately: this is a best-effort convenience read of the
 # PDF's own title/header, not the authoritative extraction (that's
 # document_fetch.fetch_requirement_document, run later in the job pipeline
@@ -354,8 +374,7 @@ async def implement_job(
         RepoSourceKind.REMOTE,
     ):
         raise AppError(ErrorCode.IMPLEMENTATION_NOT_SUPPORTED)
-    if not job.workspace_path or not Path(job.workspace_path).exists():
-        raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+    _require_workspace(job)
 
     now = datetime.now(UTC)
     job.error = None
@@ -393,8 +412,7 @@ async def correct_validation(job_id: str, request: Request) -> JobCreated:
         or not correctable_failures(job.validation_results)
     ):
         raise AppError(ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE)
-    if not job.workspace_path or not Path(job.workspace_path).exists():
-        raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+    _require_workspace(job)
 
     job.state = JobState.CORRECTING
     store.save(job)
@@ -426,8 +444,7 @@ async def create_branch(
     ensure_job_access(job, user)
     if job.state != JobState.IMPLEMENTATION_READY or job.branch_name is not None:
         raise AppError(ErrorCode.BRANCH_CREATION_NOT_AVAILABLE)
-    if not job.workspace_path or not Path(job.workspace_path).exists():
-        raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+    workspace = _require_workspace(job)
 
     branch_name = normalize_branch_name(payload.branch_name if payload is not None else None)
     commit_message = normalize_commit_message(
@@ -438,7 +455,7 @@ async def create_branch(
     # workspace's placeholder identity); unchanged when auth is disabled.
     author = _commit_author(user)
     result = await _steps(request).create_branch(
-        job, Path(job.workspace_path), branch_name, commit_message, author
+        job, workspace, branch_name, commit_message, author
     )
 
     job.branch_name = result.branch_name
@@ -484,8 +501,7 @@ async def push_branch(
     ensure_job_access(job, user)
     if job.branch_name is None:
         raise AppError(ErrorCode.BRANCH_PUSH_NOT_AVAILABLE)
-    if not job.workspace_path or not Path(job.workspace_path).exists():
-        raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+    workspace = _require_workspace(job)
 
     branch_name = normalize_branch_name(payload.branch_name if payload is not None else None)
 
@@ -516,9 +532,7 @@ async def push_branch(
         credentials = PushCredentials(auth_header=auth.header, remote_url=auth.remote_url)
         push_provider, push_account = auth.provider.value, auth.account_name
 
-    result = await _steps(request).push_branch(
-        job, Path(job.workspace_path), branch_name, credentials
-    )
+    result = await _steps(request).push_branch(job, workspace, branch_name, credentials)
 
     job.branch_name = result.branch_name
     job.branch_pushed_at = datetime.now(UTC)

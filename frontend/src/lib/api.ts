@@ -273,6 +273,9 @@ export type Job = {
   branch_pushed_by_user_id?: string | null;
   branch_push_provider?: RepoHostingProvider | null;
   branch_push_account?: string | null;
+  // Set when the retention sweep deleted this finished job's workspace and
+  // upload; the record is kept, but implement/fix/branch/push now fail.
+  workspace_removed_at?: string | null;
   created_at: string;
   updated_at: string;
 };

@@ -1172,6 +1172,57 @@ repository permissions, and its audit log names them.
   it's a normal link the user clicks themselves, never an API call this app
   makes on their behalf.
 
+## Workspace retention
+
+Every job leaves a full clone under `var/workdir/<job_id>/` and, for a
+PDF-sourced job, the upload under `var/uploads/<job_id>/`. Nothing else ever
+deletes them, so on a shared server they fill the disk and keep client source
+code around indefinitely. `app/jobs/retention.py` deletes both once a job is
+**finished** (`TERMINAL_STATES`: `PLAN_READY`, `IMPLEMENTATION_READY`,
+`IMPLEMENTATION_FAILED`, `FAILED`) and has been **untouched** (`updated_at`)
+for `WORKSPACE_RETENTION_DAYS` (default 14). A job in any other state is never
+touched, however old.
+
+- **Runs from the app lifespan**, once at startup and then every
+  `WORKSPACE_RETENTION_INTERVAL_MINUTES` (default 360), via one async context
+  manager, `workspace_retention()`. The sweep itself is plain sync code run in
+  a thread; a failed pass is logged and the loop carries on.
+  `WORKSPACE_RETENTION_ENABLED=false` turns it off (the test suite does, in
+  `conftest.py`, so a `TestClient` lifespan never sweeps the real `var/`).
+- **The record is kept.** Plan, diff, validation results and cost stay; the
+  job gets `workspace_removed_at`. Implement, correct-validation, create-branch
+  and push then fail with `IMPLEMENTATION_WORKSPACE_MISSING` and a message
+  that says the retention policy removed it and to start a new job
+  (`_require_workspace` in `routes.py`); the job page shows "Deleted by the
+  retention policy on …" in place of the workspace path.
+- **"Untouched" means `updated_at`,** so creating a branch or pushing restarts
+  the clock. `updated_at` is also the concurrency token: the mark is one
+  conditional `UPDATE` (`JobStore.mark_workspace_removed`) that only applies if
+  the job is still finished and its `updated_at` is unchanged since the
+  listing — a get()+save() could overwrite a request that just moved the job
+  on (e.g. implement setting `IMPLEMENTATION_QUEUED`). The mark goes first, so
+  routes refuse the job before its files start disappearing; already-marked
+  jobs are revisited each pass, so a deletion that failed half way (a locked
+  file on Windows) is retried. Accepted gap: a request that already passed the
+  workspace check in the same instant can still hit missing files, and fails
+  with its own typed error.
+- **Deletion is confined to the two roots.** The target is always
+  `<root>/<job_id>` derived from the id (never the stored `workspace_path`),
+  and `confined_job_dir()` refuses an id that isn't a single path component
+  (`..`, separators, a drive) or that resolves anywhere but directly under the
+  root — including through a symlink or junction. The roots themselves are
+  never removed. Git's read-only object files are made writable and retried
+  (`rmtree(onexc=…)`), which Windows needs.
+- **Not covered:** directories with no job record at all (e.g. from a deleted
+  database) are left alone, as are the plan/digest caches (SQLite rows, not
+  source trees).
+- **Tests:** `test_retention.py` — the age threshold either side of the
+  period and with a different setting, every non-finished state protected,
+  every finished state swept with the record kept, the stale-listing
+  conditional mark, retry of leftovers, path confinement (bad ids, symlink,
+  and a `..` job id that would otherwise delete `var/`), the lifespan's
+  startup pass, and each of the four routes' error.
+
 ## Live activity log during agent phases
 
 The job status screen shows a right-hand "Activity log" panel alongside the

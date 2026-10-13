@@ -703,7 +703,17 @@ export function JobStatusView(props: { jobId: string }) {
                 <dd className="break-all">{job.repo_info.local_path}</dd>
               </>
             ) : null}
-            {job.workspace_path ? (
+            {job.workspace_removed_at ? (
+              <>
+                <dt>Implementation workspace</dt>
+                <dd>
+                  Deleted by the retention policy on{" "}
+                  {new Date(job.workspace_removed_at).toLocaleDateString()}. The
+                  plan, diff and cost history are kept; start a new job to
+                  implement or push again.
+                </dd>
+              </>
+            ) : job.workspace_path ? (
               <>
                 <dt>Implementation workspace</dt>
                 <dd className="break-all">{job.workspace_path}</dd>
