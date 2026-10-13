@@ -1194,7 +1194,10 @@ touched, however old.
   and push then fail with `IMPLEMENTATION_WORKSPACE_MISSING` and a message
   that says the retention policy removed it and to start a new job
   (`_require_workspace` in `routes.py`); the job page shows "Deleted by the
-  retention policy on …" in place of the workspace path.
+  retention policy on …" in place of the workspace path. One exception: a
+  repeat push of an already-pushed branch under the same name still returns
+  the earlier result, since that reply needs no git — the workspace check
+  sits after it. Pushing under a new name still fails.
 - **"Untouched" means `updated_at`,** so creating a branch or pushing restarts
   the clock. `updated_at` is also the concurrency token: the mark is one
   conditional `UPDATE` (`JobStore.mark_workspace_removed`) that only applies if
@@ -1221,7 +1224,7 @@ touched, however old.
   every finished state swept with the record kept, the stale-listing
   conditional mark, retry of leftovers, path confinement (bad ids, symlink,
   and a `..` job id that would otherwise delete `var/`), the lifespan's
-  startup pass, and each of the four routes' error.
+  startup pass, each of the four routes' error, and the repeat-push reply.
 
 ## Live activity log during agent phases
 

@@ -286,3 +286,30 @@ def test_workspace_actions_on_a_swept_job_fail_with_a_clear_error(
     error = response.json()["error"]
     assert error["code"] == "IMPLEMENTATION_WORKSPACE_MISSING"
     assert "retention" in error["message"]
+
+
+def test_repeat_push_of_a_swept_job_still_reports_the_earlier_push(
+    client: TestClient, store: JobStore, settings: Settings
+) -> None:
+    job = _add_job(store, settings, state=JobState.IMPLEMENTATION_READY, age=timedelta(days=30))
+    job.branch_name = "jira2pullreq/PROJ-1"
+    job.branch_pushed_at = NOW - timedelta(days=30)
+    job.branch_push_remote_url = "https://github.com/acme/repo.git"
+    job.workspace_removed_at = NOW
+    store.save(job)
+
+    # Nothing to do, so no workspace needed: the earlier result comes back.
+    repeat = client.post(f"/api/jobs/{job.id}/push-branch")
+    assert repeat.status_code == 200
+    assert repeat.json() == {
+        "branch_name": "jira2pullreq/PROJ-1",
+        "remote_url": "https://github.com/acme/repo.git",
+        "compare_url": "https://github.com/acme/repo/compare/jira2pullreq/PROJ-1?expand=1",
+    }
+
+    # Pushing under a new name would need git, so it still fails.
+    renamed = client.post(
+        f"/api/jobs/{job.id}/push-branch", json={"branch_name": "jira2pullreq/PROJ-1-v2"}
+    )
+    assert renamed.status_code == 400
+    assert renamed.json()["error"]["code"] == "IMPLEMENTATION_WORKSPACE_MISSING"

@@ -501,14 +501,14 @@ async def push_branch(
     ensure_job_access(job, user)
     if job.branch_name is None:
         raise AppError(ErrorCode.BRANCH_PUSH_NOT_AVAILABLE)
-    workspace = _require_workspace(job)
 
     branch_name = normalize_branch_name(payload.branch_name if payload is not None else None)
 
     # Idempotent: a repeat push with no rename requested, on a job already
     # pushed, re-reports the existing result instead of re-attempting —
     # otherwise it would incorrectly hit the "branch already exists on the
-    # remote" collision check against its *own* prior push.
+    # remote" collision check against its *own* prior push. Needs no git, so
+    # it still answers after the retention sweep removed the workspace.
     if (
         job.branch_pushed_at is not None
         and job.branch_push_remote_url is not None
@@ -520,6 +520,7 @@ async def push_branch(
             compare_url=github_compare_url(job.branch_push_remote_url, job.branch_name),
         )
 
+    workspace = _require_workspace(job)
     settings = get_settings()
     credentials: PushCredentials | None = None
     push_provider: str | None = None
