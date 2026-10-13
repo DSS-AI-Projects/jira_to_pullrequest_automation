@@ -61,6 +61,7 @@ class ErrorCode(StrEnum):
     BRANCH_PUSH_REJECTED = "BRANCH_PUSH_REJECTED"
     BRANCH_PUSH_FAILED = "BRANCH_PUSH_FAILED"
     BRANCH_PUSH_REAUTH_REQUIRED = "BRANCH_PUSH_REAUTH_REQUIRED"
+    JOB_INTERRUPTED = "JOB_INTERRUPTED"
     INTERNAL = "INTERNAL"
 
 
@@ -191,6 +192,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.BRANCH_PUSH_REAUTH_REQUIRED: (
         "Connect your repository account with write access before pushing."
     ),
+    ErrorCode.JOB_INTERRUPTED: "The server restarted while this job was running. Retry it.",
     ErrorCode.INTERNAL: "An internal error occurred.",
 }
 

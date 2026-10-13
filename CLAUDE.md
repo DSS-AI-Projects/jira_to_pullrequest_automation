@@ -608,6 +608,27 @@ Every job ends in a terminal state. Two async pipelines drive it:
   IMPLEMENTATION_QUEUED → IMPLEMENTING → VALIDATING → IMPLEMENTATION_READY |
   IMPLEMENTATION_FAILED`.
 
+**Jobs interrupted by a restart end terminal too (`JOB_INTERRUPTED`).** Jobs run
+as in-process asyncio tasks, so a restart, deploy, or crash kills them without
+any of the runner's failure handling — they used to stay in their running state
+forever. On startup, `_lifespan` (`app/main.py`) calls
+`recover_interrupted_jobs()` (`app/jobs/runner.py`), which finds every
+non-terminal job (`JobStore.list_unfinished_jobs`) and treats it exactly like a
+failed step, with `JOB_INTERRUPTED` ("The server restarted while this job was
+running. Retry it.") and `stage` = the state it was in: plan-pipeline states →
+`FAILED`; `IMPLEMENTATION_QUEUED`/`IMPLEMENTING`/`VALIDATING` →
+`IMPLEMENTATION_FAILED`, with whatever the agent had already written attached
+as the "Changes made before the failure" diff; `CORRECTING`/`REVALIDATING` →
+back to `IMPLEMENTATION_READY` with `implementation_correction_error` set (the
+one correction attempt counts as used; the original result and validation stay,
+and the diff is re-read from the workspace so it matches what a later
+create-branch would commit). The frontend shows it like any other error, and
+the existing Retry flow applies. Safe only because the backend runs as a single
+process (one uvicorn worker): with several workers, one starting up would fail
+jobs another is still running. Known limitation: a CRLF repo interrupted
+mid-agent keeps its LF-normalized files (the list of converted paths lived in
+the dead process), so the recovered diff can show line-ending noise.
+
 ## Requirement source: Jira ticket or uploaded document
 
 `POST /api/jobs` accepts **exactly one** of `ticket` (a Jira key/URL) or an uploaded

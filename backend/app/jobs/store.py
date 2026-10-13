@@ -25,7 +25,7 @@ from app.auth.models import (
     User,
     UserRole,
 )
-from app.jobs.models import Job
+from app.jobs.models import TERMINAL_STATES, Job
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -246,6 +246,20 @@ class JobStore:
             )
             self._conn.commit()
         return cursor.rowcount == 1
+
+    def list_unfinished_jobs(self) -> list[Job]:
+        """Every job not in a terminal state, oldest first. Used once at
+        startup to find jobs a previous process was running when it stopped
+        (see recover_interrupted_jobs in app/jobs/runner.py)."""
+        terminal = sorted(state.value for state in TERMINAL_STATES)
+        placeholders = ", ".join("?" for _ in terminal)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT data FROM jobs WHERE state NOT IN ({placeholders}) "
+                "ORDER BY created_at ASC",
+                terminal,
+            ).fetchall()
+        return [Job.model_validate_json(row[0]) for row in rows]
 
     def cost_summary_by_owner(self) -> list[OwnerCostRow]:
         with self._lock:
