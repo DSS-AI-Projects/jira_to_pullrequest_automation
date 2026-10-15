@@ -502,12 +502,12 @@ every step. The `test_workspace_guard.py` F1 cases cover `..`, absolute
 paths, nested `.git`, Glob/Grep patterns and the Windows aliases.
 
 **Residual risk:** the machine's global and system git config are still
-trusted, the same way the ambient credential helper is. Validation runs as the
-backend's own OS user with its HOME, so it can still write `~/.gitconfig`, and
-it already sees the backend's environment. Closing that gap is the separate
-validation-isolation design (`docs/validation-isolation-proposal.md` on branch
-`claude/validation-isolation-proposal-964a78`), which is awaiting the owner's
-sign-off.
+trusted, the same way the ambient credential helper is. Since validation
+isolation phase 1, validation gets a fresh per-run HOME and an allowlisted
+environment, so it no longer writes the backend user's `~/.gitconfig` through
+HOME or sees the backend's secrets. But it still runs as the backend's own OS
+user, so it could reach that file by absolute path; phase 2's throwaway
+container (`docs/validation-isolation-proposal.md`) closes that.
 4. **Secrets never in URLs, client error responses, or committed files.** Error
    responses are scrubbed to typed codes + safe messages; delegated OAuth tokens are
    encrypted at rest; gitleaks runs in CI and as a pre-commit hook.

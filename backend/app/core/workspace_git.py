@@ -37,6 +37,7 @@ denied any path inside `.git` (app/steps/workspace_guard.py).
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import tempfile
@@ -98,6 +99,14 @@ def workspace_git_command(workspace: Path, *args: str, config: Sequence[str] = (
     return ["git", *overrides, "-C", str(workspace), *args]
 
 
+def _config_file_env() -> dict[str, str]:
+    """`git config --file` reads or writes only the named file, so it needs
+    nothing from the backend's environment beyond finding git itself — and
+    gets nothing else (no server secrets; security invariant 6)."""
+    keep = ("PATH", "PATHEXT", "SYSTEMROOT", "WINDIR")
+    return {key: os.environ[key] for key in keep if key in os.environ}
+
+
 def _read_config_entries(config_path: Path) -> list[tuple[str, str | None]]:
     # `--file` parses just that file: no include.* following (off by default
     # for --file), nothing executed. Run from the empty hooks dir so git
@@ -113,6 +122,7 @@ def _read_config_entries(config_path: Path) -> list[tuple[str, str | None]]:
             "--list",
         ],
         cwd=_empty_hooks_dir(),
+        env=_config_file_env(),
         capture_output=True,
         timeout=_CONFIG_TIMEOUT_SECONDS,
         check=False,
@@ -144,6 +154,7 @@ def _rewrite_config(config_path: Path, entries: list[tuple[str, str | None]]) ->
                 "true" if value is None else value,
             ],
             cwd=_empty_hooks_dir(),
+            env=_config_file_env(),
             capture_output=True,
             timeout=_CONFIG_TIMEOUT_SECONDS,
             check=True,
