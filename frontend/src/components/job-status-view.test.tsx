@@ -584,6 +584,44 @@ describe("JobStatusView", () => {
     expect(push).toHaveBeenCalledWith("/");
   });
 
+  it("shows a server-restart interruption like any other failure, with Retry", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-interrupted",
+      ticket_key: "KAN-32",
+      repo_url: "https://github.com/acme/repo",
+      planning_notes: null,
+      state: "IMPLEMENTATION_FAILED",
+      error: {
+        code: "JOB_INTERRUPTED",
+        message: "The server restarted while this job was running. Retry it.",
+        stage: "IMPLEMENTING",
+      },
+      repo_info: null,
+      workspace_path: null,
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-10-13T09:00:00Z",
+      updated_at: "2026-10-13T09:05:00Z",
+    });
+
+    render(<JobStatusView jobId="job-interrupted" />);
+
+    expect(
+      await screen.findByText(
+        "JOB_INTERRUPTED: The server restarted while this job was running. Retry it.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
   it("shows recorded planning cost on a failed job that never reached a plan", async () => {
     fetchJob.mockResolvedValue({
       id: "job-failed-planning",
@@ -1712,5 +1750,70 @@ describe("JobStatusView", () => {
     expect(
       screen.queryByRole("button", { name: "Retry" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("explains a workspace removed by retention and shows the error when implementing", async () => {
+    fetchJob.mockResolvedValue({
+      id: "job-swept",
+      ticket_key: "KAN-25",
+      repo_url: "https://github.com/acme/repo.git",
+      planning_notes: null,
+      state: "PLAN_READY",
+      error: null,
+      repo_info: {
+        source_kind: "REMOTE",
+        branch: "main",
+        commit_sha: "a".repeat(40),
+        origin_url: "https://github.com/acme/repo.git",
+        is_dirty: false,
+        local_path: null,
+      },
+      workspace_path: "D:\\workdir\\job-swept\\repo",
+      workspace_removed_at: "2026-10-01T00:00:00Z",
+      plan: {
+        schema_version: 2,
+        summary: "Update the greeting text.",
+        ticket_type: "chore",
+        estimated_story_points: 2,
+        complexity_level: "low",
+        impacted_files: [],
+        proposed_changes: [],
+        test_strategy: "Inspect README manually.",
+        risks: [],
+        open_questions: [],
+      },
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    });
+    implementJob.mockRejectedValue(
+      new Error(
+        "This job's workspace was deleted by the retention policy after the job sat unused.",
+      ),
+    );
+
+    render(<JobStatusView jobId="job-swept" />);
+
+    expect(
+      await screen.findByText(/Deleted by the retention policy on/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/D:\\workdir\\job-swept\\repo/i),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Approve and Implement/i }),
+    );
+    expect(
+      await screen.findByText(/workspace was deleted by the retention policy/i),
+    ).toBeInTheDocument();
   });
 });

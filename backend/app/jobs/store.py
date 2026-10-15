@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,7 +25,7 @@ from app.auth.models import (
     User,
     UserRole,
 )
-from app.jobs.models import Job
+from app.jobs.models import TERMINAL_STATES, Job
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -101,6 +102,14 @@ class OwnerCostRow:
     # The optional "Attempt automatic fix" pass — a separate agent run with
     # its own recorded cost (Job.implementation_correction_usage).
     correction_cost_usd: float = 0.0
+
+
+@dataclass(frozen=True)
+class RetentionCandidate:
+    job_id: str
+    state: str
+    updated_at: str  # as stored (ISO 8601); the optimistic-concurrency token
+    workspace_removed: bool
 
 
 class JobStore:
@@ -196,6 +205,61 @@ class JobStore:
         jobs = [Job.model_validate_json(row[0]) for row in page_rows]
         next_cursor = page_rows[-1][1] if has_more and page_rows else None
         return jobs, next_cursor
+
+    def list_retention_candidates(self, states: Iterable[str]) -> list[RetentionCandidate]:
+        """Lightweight rows (no full JSON decode) for every job in `states` —
+        the retention sweep's input. Already-swept jobs are included so a
+        deletion that failed half-way is retried."""
+        state_list = list(states)
+        placeholders = ", ".join("?" for _ in state_list)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, state, json_extract(data, '$.updated_at'), "
+                "json_extract(data, '$.workspace_removed_at') IS NOT NULL "
+                f"FROM jobs WHERE state IN ({placeholders})",
+                state_list,
+            ).fetchall()
+        return [
+            RetentionCandidate(
+                job_id=row[0], state=row[1], updated_at=row[2], workspace_removed=bool(row[3])
+            )
+            for row in rows
+        ]
+
+    def mark_workspace_removed(
+        self, job_id: str, *, states: Iterable[str], expected_updated_at: str, removed_at: datetime
+    ) -> bool:
+        """Atomically stamp `workspace_removed_at`, but only if the job is
+        still in one of `states` and unchanged since it was listed (its
+        updated_at still equals `expected_updated_at`). A single conditional
+        UPDATE rather than get()+save(), so a request that moved the job on
+        in between is never overwritten by a stale copy. True if stamped."""
+        state_list = list(states)
+        placeholders = ", ".join("?" for _ in state_list)
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE jobs SET data = json_set(data, '$.workspace_removed_at', ?) "
+                f"WHERE id = ? AND state IN ({placeholders}) "
+                "AND json_extract(data, '$.updated_at') = ? "
+                "AND json_extract(data, '$.workspace_removed_at') IS NULL",
+                (removed_at.isoformat(), job_id, *state_list, expected_updated_at),
+            )
+            self._conn.commit()
+        return cursor.rowcount == 1
+
+    def list_unfinished_jobs(self) -> list[Job]:
+        """Every job not in a terminal state, oldest first. Used once at
+        startup to find jobs a previous process was running when it stopped
+        (see recover_interrupted_jobs in app/jobs/runner.py)."""
+        terminal = sorted(state.value for state in TERMINAL_STATES)
+        placeholders = ", ".join("?" for _ in terminal)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT data FROM jobs WHERE state NOT IN ({placeholders}) "
+                "ORDER BY created_at ASC",
+                terminal,
+            ).fetchall()
+        return [Job.model_validate_json(row[0]) for row in rows]
 
     def cost_summary_by_owner(self) -> list[OwnerCostRow]:
         with self._lock:

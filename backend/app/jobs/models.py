@@ -220,6 +220,11 @@ class Job(BaseModel):
     branch_pushed_by_user_id: str | None = None
     branch_push_provider: str | None = None
     branch_push_account: str | None = None
+    # Set when the retention sweep (app/jobs/retention.py) deleted this
+    # finished job's clone workspace and uploaded document. The record itself
+    # — plan, diff, validation, cost — is kept; anything that needs the
+    # workspace fails with IMPLEMENTATION_WORKSPACE_MISSING from then on.
+    workspace_removed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

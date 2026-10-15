@@ -32,7 +32,8 @@ from app.api.routes import router as api_router  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.errors import AppError, ErrorCode  # noqa: E402
 from app.core.logging import configure_logging, get_logger  # noqa: E402
-from app.jobs.runner import JobSteps  # noqa: E402
+from app.jobs.retention import workspace_retention  # noqa: E402
+from app.jobs.runner import JobSteps, recover_interrupted_jobs  # noqa: E402
 from app.jobs.store import JobStore  # noqa: E402
 from app.steps import default_steps  # noqa: E402
 
@@ -43,7 +44,10 @@ logger = get_logger(__name__)
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # (Re)attach the redaction filter after uvicorn installs its own handlers.
     configure_logging()
-    yield
+    # Jobs a previous process was running when it stopped can never finish.
+    await recover_interrupted_jobs(app.state.job_store)
+    async with workspace_retention(app.state.job_store, get_settings()):
+        yield
 
 
 def create_app(store: JobStore | None = None, steps: JobSteps | None = None) -> FastAPI:

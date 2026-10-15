@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     # Runtime data
     workdir: Path = BACKEND_ROOT / "var" / "workdir"
     db_path: Path = BACKEND_ROOT / "var" / "jobs.db"
+
+    # Retention: a finished job's clone workspace (workdir/<job>/) and uploaded
+    # PDF (document_upload_dir/<job>/) are deleted once the job has been left
+    # untouched for this many days; the job record (plan, diff, cost) is kept.
+    # See app/jobs/retention.py.
+    workspace_retention_enabled: bool = True
+    workspace_retention_days: float = Field(default=14, gt=0)
+    workspace_retention_interval_minutes: float = Field(default=360, gt=0)
 
     # Requirement document upload (alternative to a Jira ticket) — PDF only
     document_upload_dir: Path = BACKEND_ROOT / "var" / "uploads"
