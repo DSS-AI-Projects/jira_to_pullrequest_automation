@@ -8,6 +8,8 @@ absolute path, and nothing stopped it. The layout below mirrors that.
 """
 
 import asyncio
+import os
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,7 +19,11 @@ from claude_agent_sdk import HookContext, HookInput
 from app.core.config import get_settings
 from app.steps import implement_agent, plan_agent
 from app.steps.agent_progress import report_progress_to
-from app.steps.workspace_guard import find_outside_path, workspace_guard_hooks
+from app.steps.workspace_guard import (
+    find_git_dir_path,
+    find_outside_path,
+    workspace_guard_hooks,
+)
 
 FAKE_ANTHROPIC_KEY = "sk-ant-" + "api03-" + "e" * 32
 
@@ -196,3 +202,93 @@ def test_both_agents_install_the_guard_and_load_no_setting_sources(
         matchers = options.hooks["PreToolUse"]
         assert len(matchers) == 1
         assert matchers[0].matcher is None  # every tool, not a named subset
+
+
+# --- Security finding F1: no agent access to the workspace's .git ---------
+# A hook or `core.hooksPath`/`core.fsmonitor`/filter config written there
+# would run when the backend later commits or pushes.
+
+
+@pytest.fixture
+def git_workspace(layout: tuple[Path, Path]) -> Path:
+    _app_root, workspace = layout
+    subprocess.run(["git", "-C", str(workspace), "init", "-q"], check=True)
+    return workspace
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Write", {"file_path": ".git/hooks/pre-commit", "content": "x"}),
+        ("Write", {"file_path": ".git/hooks/x", "content": "x"}),
+        ("Edit", {"file_path": ".git/config", "old_string": "a", "new_string": "b"}),
+        ("Write", {"file_path": "src/../.git/hooks/pre-push", "content": "x"}),
+        ("Edit", {"file_path": "./.git/config", "old_string": "a", "new_string": "b"}),
+        ("Read", {"file_path": ".git/config"}),
+        ("Write", {"file_path": "vendor/lib/.git/hooks/x", "content": "x"}),
+        ("Glob", {"pattern": "*", "path": ".git"}),
+        ("Glob", {"pattern": ".git/hooks/*"}),
+        ("Grep", {"pattern": "url", "glob": ".git/*"}),
+    ],
+)
+def test_paths_inside_dot_git_are_denied(
+    git_workspace: Path, tool: str, tool_input: dict[str, Any]
+) -> None:
+    root = git_workspace.resolve()
+    assert find_outside_path(tool, tool_input, root) is None  # inside the workspace...
+    assert find_git_dir_path(tool, tool_input, root) is not None  # ...but in .git
+
+
+def test_absolute_paths_into_dot_git_are_denied(git_workspace: Path) -> None:
+    root = git_workspace.resolve()
+    for target in (".git/hooks/x", ".git/config"):
+        raw = str(git_workspace / target)
+        assert find_git_dir_path("Write", {"file_path": raw}, root) == raw
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only path aliases")
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ".GIT/hooks/x",
+        ".Git/CONFIG",
+        ".git./hooks/x",
+        ".git /config",
+        ".git::$INDEX_ALLOCATION/hooks/x",
+        "SRC/../.GiT/hooks/pre-commit",
+    ],
+)
+def test_windows_aliases_of_dot_git_are_denied(git_workspace: Path, raw: str) -> None:
+    root = git_workspace.resolve()
+    assert find_git_dir_path("Write", {"file_path": raw, "content": "x"}, root) == raw
+    absolute = str(git_workspace) + "\\" + raw.replace("/", "\\")
+    assert find_git_dir_path("Write", {"file_path": absolute, "content": "x"}, root) == absolute
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Write", {"file_path": ".gitignore", "content": "x"}),
+        ("Write", {"file_path": ".gitattributes", "content": "x"}),
+        ("Write", {"file_path": ".github/workflows/ci.yml", "content": "x"}),
+        ("Read", {"file_path": "src/git/helpers.py"}),
+        ("Grep", {"pattern": "TODO"}),
+        ("Glob", {"pattern": "**/*.py"}),
+    ],
+)
+def test_git_lookalike_project_files_are_allowed(
+    git_workspace: Path, tool: str, tool_input: dict[str, Any]
+) -> None:
+    assert find_git_dir_path(tool, tool_input, git_workspace.resolve()) is None
+
+
+def test_hook_denies_writes_into_dot_git(git_workspace: Path) -> None:
+    reported: list[str] = []
+    with report_progress_to(reported.append):
+        result = _run_hook(git_workspace, "Write", {"file_path": ".git/hooks/x", "content": "x"})
+
+    output = result["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert ".git" in output["permissionDecisionReason"]
+    assert reported == ["Blocked Write inside .git: .git/hooks/x"]
+    assert not (git_workspace / ".git" / "hooks" / "x").exists()

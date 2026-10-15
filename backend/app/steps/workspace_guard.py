@@ -16,6 +16,16 @@ pre-approved tools — and denies any call whose path arguments resolve
 (after `..`, `~`, and symlink resolution) outside the workspace. The denial
 reason goes back to the agent, so it can retry with a workspace path instead
 of failing the job outright.
+
+The same hook also denies any path inside the workspace's `.git` directory
+(security finding F1): hooks, `core.hooksPath`, `core.fsmonitor` or filter
+drivers written there would run when the backend later commits or pushes —
+with the server's environment and, on a delegated push, the clicking user's
+auth header. The backend's own git runs are hardened against that
+independently (app/core/workspace_git.py); this keeps the agents from
+planting it in the first place. On Windows the check also catches the
+aliases the filesystem treats as `.git` (case, trailing dots/spaces, `::$`
+stream suffixes, 8.3 short names).
 """
 
 from __future__ import annotations
@@ -85,6 +95,60 @@ def _pattern_base(pattern: str) -> str | None:
     return literal if literal.endswith(("/", "\\")) else str(Path(literal).parent)
 
 
+def _is_git_component(part: str) -> bool:
+    name = os.path.normcase(part)
+    if os.name == "nt":
+        # NTFS treats `.git.`, `.git ` and `.git::$INDEX_ALLOCATION` as `.git`.
+        name = name.split(":", 1)[0].rstrip(" .")
+    return name == ".git"
+
+
+def is_inside_git_dir(resolved: Path, root: Path) -> bool:
+    """Whether an already-resolved path is a `.git` directory (or inside
+    one) within the workspace `root` — the workspace's own or a nested one."""
+    if not is_within(resolved, root):
+        return False
+    relative = os.path.relpath(_normalized(resolved), _normalized(root))
+    if any(_is_git_component(part) for part in Path(relative).parts):
+        return True
+    # Any other name the filesystem resolves to the same directory (a
+    # Windows 8.3 short name such as `GIT~1`).
+    git_dir = root / ".git"
+    if not git_dir.exists():
+        return False
+    for ancestor in (resolved, *resolved.parents):
+        if not is_within(ancestor, root) or _normalized(ancestor) == _normalized(root):
+            break
+        try:
+            if ancestor.exists() and ancestor.samefile(git_dir):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def find_git_dir_path(tool_name: str, tool_input: dict[str, Any], root: Path) -> str | None:
+    """The first path argument of this tool call that names something
+    inside a `.git` directory of the workspace, or None."""
+    for key in _PATH_KEYS:
+        value = tool_input.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            resolved = resolve_tool_path(value, root)
+        except (OSError, ValueError):
+            return value
+        if is_inside_git_dir(resolved, root):
+            return value
+    for key in _PATTERN_KEYS_BY_TOOL.get(tool_name, ()):
+        value = tool_input.get(key)
+        if isinstance(value, str) and any(
+            _is_git_component(part) for part in re.split(r"[\\/]", value)
+        ):
+            return value
+    return None
+
+
 def find_outside_path(tool_name: str, tool_input: dict[str, Any], root: Path) -> str | None:
     """The first path argument of this tool call that resolves outside
     `root`, or None if every path it names is inside."""
@@ -122,7 +186,22 @@ def workspace_guard_hooks(workspace: Path) -> dict[HookEvent, list[HookMatcher]]
         tool_input = cast(dict[str, Any], data.get("tool_input") or {})
         outside = find_outside_path(tool_name, tool_input, root)
         if outside is None:
-            return {}
+            git_path = find_git_dir_path(tool_name, tool_input, root)
+            if git_path is None:
+                return {}
+            logger.warning("Blocked %s inside .git: %s", tool_name, redact(git_path))
+            report(f"Blocked {tool_name} inside .git: {git_path}")
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"Access denied: {git_path} is inside the repository's .git "
+                        "directory, which agents may not read or change. Work only "
+                        "on the project's own files."
+                    ),
+                }
+            }
         logger.warning("Blocked %s outside the job workspace: %s", tool_name, redact(outside))
         report(f"Blocked {tool_name} outside the workspace: {outside}")
         return {

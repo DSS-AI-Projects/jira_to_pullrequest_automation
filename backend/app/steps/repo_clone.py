@@ -31,6 +31,7 @@ from app.auth.git_auth import delegated_clone_auth_header
 from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger, redact
+from app.core.workspace_git import workspace_git_command
 from app.jobs.models import RepoInfo, RepoSourceKind
 from app.jobs.runner import CloneResult
 from app.jobs.store import JobStore
@@ -157,7 +158,7 @@ def _looks_like_missing_branch_error(stderr_text: str) -> bool:
 def _run_git(args: list[str], cwd: Path, env: dict[str, str], timeout_seconds: int) -> str:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(cwd), *args],
+            workspace_git_command(cwd, *args),
             capture_output=True,
             text=True,
             env=env,
@@ -185,7 +186,7 @@ def _run_git_optional(
 ) -> str | None:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(cwd), *args],
+            workspace_git_command(cwd, *args),
             capture_output=True,
             text=True,
             env=env,
@@ -217,7 +218,7 @@ def _validate_local_source_path(path: Path) -> None:
 def _is_git_work_tree(path: Path, env: dict[str, str], timeout_seconds: int) -> bool:
     try:
         inside = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            workspace_git_command(path, "rev-parse", "--is-inside-work-tree"),
             capture_output=True,
             text=True,
             env=env,
@@ -317,6 +318,7 @@ def _populate_folder_workspace(
             *_GIT_INIT_IDENTITY,
             "commit",
             "-q",
+            "--no-verify",
             "--allow-empty",
             "-m",
             f"jira2pullreq: baseline snapshot for job {job_id}",
