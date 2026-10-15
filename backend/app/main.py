@@ -32,6 +32,8 @@ from app.api.routes import router as api_router  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.errors import AppError, ErrorCode  # noqa: E402
 from app.core.logging import configure_logging, get_logger  # noqa: E402
+from app.core.process_hardening import make_process_non_dumpable  # noqa: E402
+from app.core.secrets import register_configured_secrets  # noqa: E402
 from app.jobs.retention import workspace_retention  # noqa: E402
 from app.jobs.runner import JobSteps, recover_interrupted_jobs  # noqa: E402
 from app.jobs.store import JobStore  # noqa: E402
@@ -44,6 +46,10 @@ logger = get_logger(__name__)
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # (Re)attach the redaction filter after uvicorn installs its own handlers.
     configure_logging()
+    # Validation children run as this uid; keep them out of /proc/<pid>/environ.
+    make_process_non_dumpable()
+    # Every configured secret is known to the redactor from the start.
+    register_configured_secrets()
     # Jobs a previous process was running when it stopped can never finish.
     await recover_interrupted_jobs(app.state.job_store)
     async with workspace_retention(app.state.job_store, get_settings()):

@@ -207,6 +207,17 @@ class Settings(BaseSettings):
     # implementation agent is very unlikely to Edit a file this large).
     workspace_line_ending_max_file_bytes: int = 2_000_000
 
+    # Post-implementation validation runs the target repo's own code (npm
+    # lifecycle scripts, lint/test scripts, pytest) as a plain subprocess —
+    # an allowlisted env and a .git-less copy, but the backend's own uid, not
+    # a sandbox (docs/validation-isolation-proposal.md). Off = every job's
+    # validation is SKIPPED; deploy/vm forces it off.
+    validation_enabled: bool = True
+    # With trusted-proxy auth (a shared deployment), validation is SKIPPED
+    # unless this is set: one repo's code could otherwise read every user's
+    # data. Set it only on a single-tenant deployment that accepts that risk.
+    validation_allow_unsandboxed: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

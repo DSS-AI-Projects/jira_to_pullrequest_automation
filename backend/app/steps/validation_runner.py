@@ -1,16 +1,37 @@
-"""Post-implementation validation runner for isolated workspace clones."""
+"""Post-implementation validation runner for isolated workspace clones.
+
+This is the only place the app executes the target repo's own code (npm
+lifecycle scripts, `npm run lint`/`npm test`, `pytest`), so it is treated as
+hostile (security invariant 6, docs/validation-isolation-proposal.md):
+
+- Commands run on a copy of the working tree without `.git`
+  (`<job>/validation/`), and nothing is copied back — validation can't plant
+  git hooks or slip build/test artifacts into the reviewed commit.
+- The child gets an allowlisted environment (`validation_env`) with a fresh
+  per-run home (`<job>/validation-home/`), never the backend's own env.
+- Output is redacted before it is stored, shown, or quoted to the agent.
+- On a shared deployment (trusted-proxy auth) nothing runs unless explicitly
+  allowed: this is still a plain subprocess under the backend's own uid, not a
+  sandbox — that's phase 2 of the proposal, not built yet.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from app.core import secrets
+from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger, redact
 from app.jobs.models import ValidationResult, ValidationStatus
@@ -29,6 +50,45 @@ _INSTALL_TIMEOUT_SECONDS = 300
 # can resolve a failed `npm install`, so feeding it to the corrective agent
 # would just burn its one-shot budget on an unfixable prompt.
 INSTALL_STEP_NAME = "npm install"
+
+# Per-job directories next to the workspace (`<workdir>/<job>/repo`), so
+# workspace retention removes them together with the job directory.
+VALIDATION_DIR_NAME = "validation"
+VALIDATION_HOME_DIR_NAME = "validation-home"
+
+# Never copied into the validation copy: `.git` so validation can't touch the
+# workspace's hooks/config (create-branch and push run git there later), and
+# `node_modules` because the copy keeps its own install between runs.
+_COPY_EXCLUDED_NAMES = frozenset({".git", "node_modules"})
+
+# Environment the validation child may inherit from the backend. An allowlist,
+# not a denylist: anything not named here — every secret included — is absent.
+_PASSTHROUGH_ENV = (
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    # Windows: Python/Node fail without these; .cmd shims need COMSPEC/PATHEXT.
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    # Corporate TLS (the backend image sets SSL_CERT_FILE for the internal CA).
+    "SSL_CERT_FILE",
+    "NODE_EXTRA_CA_CERTS",
+)
+# Passed only when the URL carries no userinfo (http://user:pass@proxy).
+_PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")
+_SECRET_SHAPED_KEY_RE = re.compile(r"(?i)token|secret|key|password|credential")
+
+_DISABLED_SUMMARY = "Validation is disabled on this deployment."
+_UNSANDBOXED_SUMMARY = (
+    "Validation is not run on this shared deployment: it would execute the "
+    "repository's own code without a sandbox."
+)
 
 
 @dataclass(frozen=True)
@@ -60,7 +120,9 @@ def _python_commands(workspace_path: Path) -> list[ValidationCommand]:
         commands.append(
             ValidationCommand(
                 name="ruff",
-                command=[sys.executable, "-m", "ruff", "check", "."],
+                # -I: the repo's root isn't put on sys.path, so a `ruff.py`
+                # in the repo can't shadow ruff and run as code.
+                command=[sys.executable, "-I", "-m", "ruff", "check", "."],
             )
         )
 
@@ -165,9 +227,123 @@ def _coerce_output(value: str | bytes | None) -> str:
     return value
 
 
+def validation_env(run_home: Path, git_ceiling: Path) -> dict[str, str]:
+    """The complete environment for a validation command: allowlisted
+    pass-throughs plus a per-run home, temp dir and npm config. Nothing else
+    from the backend's environment reaches the child.
+
+    `git_ceiling` is the job directory. The validation copy has no `.git`, so
+    without a ceiling git would walk up from it into whatever repository
+    encloses the workdir — in local dev, this app's own checkout, where a
+    husky `prepare` (`git config core.hooksPath .husky`) would land."""
+    env = {key: os.environ[key] for key in _PASSTHROUGH_ENV if os.environ.get(key)}
+    for key in _PROXY_ENV:
+        value = os.environ.get(key)
+        if value and "@" not in value:
+            env[key] = value
+    tmp = run_home / "tmp"
+    env.update(
+        {
+            # A fresh home: no ~/.npmrc (registry tokens), ~/.git-credentials,
+            # ~/.config/gh or ~/.claude of the user the backend runs as.
+            "HOME": str(run_home),
+            "USERPROFILE": str(run_home),
+            "APPDATA": str(run_home / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(run_home / "AppData" / "Local"),
+            "TMPDIR": str(tmp),
+            "TMP": str(tmp),
+            "TEMP": str(tmp),
+            # Per-run cache: nothing shared between jobs (an unpinned
+            # `npm install` cache entry could otherwise be poisoned for the next).
+            "npm_config_cache": str(run_home / "npm-cache"),
+            "npm_config_userconfig": str(run_home / ".npmrc"),
+            "npm_config_globalconfig": str(run_home / "npmrc-global"),
+            "npm_config_update_notifier": "false",
+            "npm_config_fund": "false",
+            "npm_config_audit": "false",
+            # Test runners: no watch mode, no prompts.
+            "CI": "true",
+            "NO_COLOR": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "Never",
+            "GIT_CEILING_DIRECTORIES": str(git_ceiling),
+        }
+    )
+    _assert_no_secret_values(env)
+    return env
+
+
+def _assert_no_secret_values(env: Mapping[str, str]) -> None:
+    """Fail closed if a secret could reach the child: a guard against a future
+    edit adding the wrong variable to the allowlist above."""
+    registered = secrets.registered_secrets()
+    for key, value in env.items():
+        if _SECRET_SHAPED_KEY_RE.search(key) or any(secret in value for secret in registered):
+            raise AppError(
+                ErrorCode.VALIDATION_FAILED,
+                internal_detail=f"validation env rejected: {key} looks secret-bearing",
+            )
+
+
+def _make_writable_and_retry(func: Callable[[str], object], path: str, _exc: BaseException) -> None:
+    # Read-only files (git objects, some npm packages) block rmtree on Windows.
+    Path(path).chmod(stat.S_IWRITE)
+    func(path)
+
+
+def _remove_tree(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path, onexc=_make_writable_and_retry)
+
+
+def _remove_tree_best_effort(path: Path) -> None:
+    try:
+        _remove_tree(path)
+    except OSError:
+        logger.warning("could not remove validation directory %s", path)
+
+
+def prepare_validation_copy(workspace_path: Path, run_dir: Path) -> None:
+    """Make `run_dir` a copy of the workspace's working tree, without `.git`.
+
+    A previous copy's `node_modules` is kept, so the post-correction
+    revalidation doesn't reinstall; everything else is replaced, so files the
+    previous run created don't linger. Symlinks are copied as links, never
+    followed, so a repo symlink can't pull an outside file into the copy.
+    Nothing is ever copied back to the workspace.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    for entry in run_dir.iterdir():
+        if entry.name != "node_modules":
+            _remove_tree(entry)
+
+    def _ignore(_directory: str, names: list[str]) -> set[str]:
+        return {name for name in names if name in _COPY_EXCLUDED_NAMES}
+
+    shutil.copytree(workspace_path, run_dir, ignore=_ignore, symlinks=True, dirs_exist_ok=True)
+
+
+def _prepare_run_home(run_home: Path) -> None:
+    _remove_tree(run_home)
+    for directory in (
+        run_home / "tmp",
+        run_home / "AppData" / "Roaming",
+        run_home / "AppData" / "Local",
+        run_home / "npm-cache",
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    (run_home / ".npmrc").write_text("", encoding="utf-8")
+    (run_home / "npmrc-global").write_text("", encoding="utf-8")
+
+
 def _run_command_sync(
-    workspace_path: Path,
+    run_dir: Path,
     command: ValidationCommand,
+    env: Mapping[str, str],
     timeout: int = _COMMAND_TIMEOUT_SECONDS,
 ) -> ValidationResult:
     resolved_executable = _resolve_executable(command.command[0])
@@ -184,7 +360,8 @@ def _run_command_sync(
     try:
         completed = subprocess.run(
             argv,
-            cwd=workspace_path,
+            cwd=run_dir,
+            env=dict(env),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -206,7 +383,7 @@ def _run_command_sync(
             command=" ".join(command.command),
             status=ValidationStatus.FAILED,
             summary="Validation command timed out.",
-            output_excerpt=_truncate_output(combined),
+            output_excerpt=_safe_excerpt(combined),
         )
 
     combined_output = "\n".join(
@@ -218,39 +395,93 @@ def _run_command_sync(
             command=" ".join(command.command),
             status=ValidationStatus.PASSED,
             summary="Validation command passed.",
-            output_excerpt=_truncate_output(combined_output),
+            output_excerpt=_safe_excerpt(combined_output),
         )
     return ValidationResult(
         name=command.name,
         command=" ".join(command.command),
         status=ValidationStatus.FAILED,
         summary=f"Validation command failed with exit code {completed.returncode}.",
-        output_excerpt=_truncate_output(combined_output),
+        output_excerpt=_safe_excerpt(combined_output),
     )
 
 
+def _safe_excerpt(output: str) -> str | None:
+    # Redact before truncating, so a secret straddling the cut can't leak a
+    # prefix the redactor no longer recognizes.
+    return _truncate_output(redact(output))
+
+
+def _skipped_profile(summary: str) -> list[ValidationResult]:
+    return [
+        ValidationResult(
+            name="validation-profile",
+            command="",
+            status=ValidationStatus.SKIPPED,
+            summary=summary,
+        )
+    ]
+
+
+def _blocked_reason(settings: Settings) -> str | None:
+    if not settings.validation_enabled:
+        return _DISABLED_SUMMARY
+    # Trusted-proxy auth marks a shared deployment; there an unsandboxed run
+    # would expose every user's data to one repo's code. Fail safe.
+    if settings.auth_trusted_proxy_enabled and not settings.validation_allow_unsandboxed:
+        return _UNSANDBOXED_SUMMARY
+    return None
+
+
 async def validate_workspace(workspace_path: Path) -> list[ValidationResult]:
+    blocked = _blocked_reason(get_settings())
+    if blocked is not None:
+        return _skipped_profile(blocked)
+
     python_commands = _python_commands(workspace_path)
     node_commands = _node_commands(workspace_path)
     if not python_commands and not node_commands:
-        return [
-            ValidationResult(
-                name="validation-profile",
-                command="",
-                status=ValidationStatus.SKIPPED,
-                summary="No recognized validation profile was detected for this repository.",
-            )
-        ]
+        return _skipped_profile(
+            "No recognized validation profile was detected for this repository."
+        )
 
+    # Every configured secret must be known to redact() before any output is
+    # captured; registration is otherwise lazy (on first read).
+    secrets.register_configured_secrets()
+
+    job_dir = workspace_path.parent
+    run_dir = job_dir / VALIDATION_DIR_NAME
+    run_home = job_dir / VALIDATION_HOME_DIR_NAME
+    try:
+        await asyncio.to_thread(prepare_validation_copy, workspace_path, run_dir)
+        await asyncio.to_thread(_prepare_run_home, run_home)
+    except OSError as exc:
+        raise AppError(
+            ErrorCode.VALIDATION_FAILED,
+            internal_detail=redact(f"validation copy failed: {type(exc).__name__}: {exc}"),
+        ) from exc
+    try:
+        env = validation_env(run_home, git_ceiling=job_dir)
+        return await _run_profiles(run_dir, env, python_commands, node_commands)
+    finally:
+        await asyncio.to_thread(_remove_tree_best_effort, run_home)
+
+
+async def _run_profiles(
+    run_dir: Path,
+    env: Mapping[str, str],
+    python_commands: list[ValidationCommand],
+    node_commands: list[ValidationCommand],
+) -> list[ValidationResult]:
     results: list[ValidationResult] = []
     for command in python_commands:
-        results.append(await asyncio.to_thread(_run_command_sync, workspace_path, command))
+        results.append(await asyncio.to_thread(_run_command_sync, run_dir, command, env))
 
     if node_commands:
-        install_command = npm_install_command(workspace_path)
+        install_command = npm_install_command(run_dir)
         if install_command is not None:
             install_result = await asyncio.to_thread(
-                _run_command_sync, workspace_path, install_command, _INSTALL_TIMEOUT_SECONDS
+                _run_command_sync, run_dir, install_command, env, _INSTALL_TIMEOUT_SECONDS
             )
             results.append(install_result)
             if install_result.status != ValidationStatus.PASSED:
@@ -270,7 +501,7 @@ async def validate_workspace(workspace_path: Path) -> list[ValidationResult]:
                 )
                 return results
         for command in node_commands:
-            results.append(await asyncio.to_thread(_run_command_sync, workspace_path, command))
+            results.append(await asyncio.to_thread(_run_command_sync, run_dir, command, env))
 
     return results
 

@@ -142,6 +142,18 @@ docker compose --env-file deploy/vm/vm.env.local -f deploy/vm/docker-compose.yml
   also signs the user out of other Microsoft web apps there (Outlook, Teams).
   If a session expires while a page is open, the next action goes to
   `/signin` and back.
+- **Validation is off on this stack** (`VALIDATION_ENABLED: "false"` in
+  `docker-compose.yml`, forced like the auth settings). Validation runs the
+  target repository's own code (npm install scripts, lint and test scripts,
+  pytest), and without a sandbox that code could read the server's secrets,
+  its database and other users' workspaces. Jobs still plan, implement, show
+  the diff, and create and push branches; the validation section reports
+  "Validation is disabled on this deployment" and no automatic fix is offered.
+  It comes back once validation runs in a throwaway sandbox container
+  (`docs/validation-isolation-proposal.md`, phase 2). A value in
+  `backend/.env` can't turn it back on (compose's `environment:` wins), and
+  even with it on, a backend with trusted-proxy sign-in skips validation
+  unless `VALIDATION_ALLOW_UNSANDBOXED=true` is also set.
 - **Rollback**: `down` this stack and start the previous one; the data volume
   is untouched either way.
 - **Multiple team instances on one VM**: give each its own

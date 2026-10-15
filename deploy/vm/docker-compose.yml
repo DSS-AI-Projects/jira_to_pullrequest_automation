@@ -40,6 +40,10 @@ services:
       AUTH_SSO_PROVIDER_LABEL: Microsoft
       AUTH_SSO_IDP_LOGOUT_URL: https://login.microsoftonline.com/${ENTRA_TENANT_ID:?set ENTRA_TENANT_ID in vm.env.local}/oauth2/v2.0/logout
       AUTH_SSO_POST_LOGOUT_REDIRECT_URL: https://${APP_HOSTNAME}/signin/signed-out
+      # Validation runs the target repo's own code (npm scripts, tests). Until
+      # it runs in a sandbox, it stays off on this shared stack: every job's
+      # validation is reported as skipped. docs/validation-isolation-proposal.md
+      VALIDATION_ENABLED: "false"
     # No "ports:" on purpose — the backend is reachable only through nginx.
     volumes:
       - backend_var:/app/var

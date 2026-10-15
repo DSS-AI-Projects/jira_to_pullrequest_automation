@@ -465,6 +465,15 @@ it changes deployment volume layout.
    technical constraints or context to shape the generated plan itself, not just
    the later implementation. It also participates in the plan cache key, since that
    key hashes the full rendered prompt.
+6. **Untrusted repo code never runs with server secrets.** Validation commands
+   (the only place this app executes target-repo code) run with an allowlisted
+   environment, on a `.git`-less copy of the workspace, and on a shared
+   deployment only inside a sandbox — which doesn't exist yet, so there they
+   don't run at all. Their output is redacted before it is stored. Mechanical
+   checks: `test_validation_isolation.py` (a canary repo run through the real
+   validation path, no mocks) and `test_subprocess_env_policy.py` (every
+   process launch in `backend/app/` passes `env=` explicitly or is on a
+   commented allowlist). See **Validation isolation** below.
 
 ## Deterministic work stays out of the LLM
 
@@ -943,8 +952,8 @@ dependencies first (`npm ci` if a lockfile is present, else `npm install`) befor
 running lint/test; without this, any devDependency binary (`ng`, `eslint`,
 `vitest`, ...) fails with "not recognized"/"command not found" every time, which
 looks like a validation failure but isn't a real code defect. Install is
-best-effort and skipped if `node_modules` already exists (e.g. the post-correction
-revalidation reuses the same workspace); if install itself fails, the remaining
+best-effort and skipped if the validation copy's `node_modules` already exists
+(e.g. the post-correction revalidation reuses the same copy); if install itself fails, the remaining
 npm-based checks are reported `SKIPPED` rather than run (they'd fail identically),
 and that failure is **not** eligible fodder for the validation-correction pass
 below — no source edit can fix a missing dependency, so feeding it to the
@@ -954,6 +963,71 @@ Windows, launching `npm`/`npx`/etc. also requires resolving the executable via
 `subprocess.run` without `shell=True` only auto-appends `.exe` when searching
 PATH, so passing a bare name like `"npm"` fails even though it correctly resolves
 to an `npm.cmd` shim.
+
+### Validation isolation (invariant 6; phases 0 and 1 of `docs/validation-isolation-proposal.md`)
+
+Validation is the one place the app runs the target repo's own code: npm
+lifecycle scripts (of the repo and every dependency), `npm run lint`/`npm
+test`, `pytest` — and test files the implementation agent may have written
+under a prompt-injected ticket. It used to run in the workspace with the
+backend's whole environment (`ANTHROPIC_API_KEY`, every OAuth client secret
+and Fernet key) and store its output unredacted, shown on the job page and
+quoted to the correction agent. Owner-approved stopgap, all in
+`validation_runner.py`:
+
+- **Off on shared deployments.** `VALIDATION_ENABLED=false` (forced in
+  `deploy/vm/docker-compose.yml`) reports one `SKIPPED` result, "Validation is
+  disabled on this deployment", and runs nothing; `correctable_failures()`
+  then offers no fix. Independently, a backend with
+  `AUTH_TRUSTED_PROXY_ENABLED=true` skips validation unless
+  `VALIDATION_ALLOW_UNSANDBOXED=true` — a shared deployment fails safe even
+  from a compose file that forgot the switch. (Validation never worked on the
+  VM image anyway: it has no Node, and `uv sync --no-dev` leaves out ruff and
+  pytest.)
+- **Allowlisted environment** (`validation_env()`): `PATH`, locale, the
+  Windows basics (`SYSTEMROOT`, `COMSPEC`, `PATHEXT`, …), CA-bundle variables,
+  proxy variables without userinfo — and nothing else from the backend. On
+  top: a fresh per-run home (`<job>/validation-home/`, deleted after each run:
+  no `~/.npmrc`, `~/.git-credentials`, `~/.claude` of the backend's user),
+  temp dir and npm cache inside it, empty npm user/global config, `CI=true`,
+  and `GIT_CEILING_DIRECTORIES` = the job dir. `_assert_no_secret_values`
+  fails closed (`VALIDATION_FAILED`) if any value contains a registered secret
+  or any key looks secret-shaped — a guard against a future allowlist edit.
+  An allowlist on purpose: the agents' `scrubbed_env()` is a denylist whose
+  value filter depends on lazy registration.
+- **A `.git`-less copy** (`prepare_validation_copy`): the working tree is
+  copied to `<job>/validation/` without `.git` and `node_modules`, commands
+  run there, nothing is copied back. Validation can't plant hooks or
+  `core.hooksPath` in the workspace that create-branch and push later run git
+  in, and coverage/snapshot/build artifacts no longer reach `git add -A`. The
+  copy keeps its own `node_modules` between runs; everything else is replaced
+  each time; symlinks are copied as links, never followed. **The ceiling is
+  load-bearing:** with no `.git` in the copy, git run from it (husky's
+  `git config core.hooksPath .husky`) would otherwise walk up into the
+  enclosing repository — in local dev, this app's own checkout.
+- **Redacted output**: `redact()` runs on the combined output *before* the
+  1,200-character truncation (a secret straddling the cut would otherwise leak
+  an unrecognizable prefix), on the timeout path too.
+  `secrets.register_configured_secrets()` (at startup and before each
+  validation) reads every secret getter so the redactor knows all of them,
+  not just those used since the last restart; a test fails if a new `get_*`
+  reader is left out of `_SECRET_READERS`.
+- **`python -I -m ruff`**: `python -m` puts the cwd first on `sys.path`, so a
+  `ruff.py` in the repo would have run instead of ruff. pytest keeps plain
+  `-m` (projects rely on the root being importable, and it runs repo code by
+  design).
+- **Non-dumpable backend on Linux** (`core/process_hardening.py`,
+  `prctl(PR_SET_DUMPABLE, 0)` at startup): `/proc/<pid>/environ` keeps the
+  environment the process *started* with, and a same-uid child could read it
+  or ptrace the backend; now it can't.
+
+**What this does not fix** (why the VM keeps validation off): the child still
+runs as the backend's uid, so a deliberate absolute-path read of the SQLite
+DB, another job's workspace, or (local dev) `backend/.env` works, and so does
+network access. The owner-approved target is phase 2 — a throwaway container
+per run behind a small broker, rootless Docker + gVisor, network limited to an
+npm proxy for install and none for lint/test — not built yet. npm lifecycle
+scripts stay on (owner decision; no `--ignore-scripts`).
 
 Approving implementation may include optional free-text **clarifications** —
 answers to the plan's `open_questions` or other guidance — submitted alongside
@@ -1237,6 +1311,12 @@ touched, however old.
   root — including through a symlink or junction. The roots themselves are
   never removed. Git's read-only object files are made writable and retried
   (`rmtree(onexc=…)`), which Windows needs.
+- **Validation's per-job directories go with it.** The validation copy
+  (`<workdir>/<job_id>/validation/`, kept between runs for its
+  `node_modules`) and the per-run home (`<workdir>/<job_id>/validation-home/`,
+  normally already deleted after each run) sit inside the job directory next
+  to `repo/` on purpose, so deleting `<workdir>/<job_id>` removes them too.
+  Keep any new per-job directory there for the same reason.
 - **Not covered:** directories with no job record at all (e.g. from a deleted
   database) are left alone, as are the plan/digest caches (SQLite rows, not
   source trees).

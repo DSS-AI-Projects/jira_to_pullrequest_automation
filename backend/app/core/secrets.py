@@ -115,3 +115,28 @@ def get_bitbucket_oauth_encryption_key() -> str | None:
 def get_anthropic_api_key() -> str | None:
     """Read the Anthropic API key. Call only inside the planning agent step."""
     return _read("ANTHROPIC_API_KEY")
+
+
+def register_configured_secrets() -> None:
+    """Register every configured secret with the redactor now, rather than on
+    first use. Registration is otherwise lazy, so text produced before a
+    secret's first read (validation output, at startup) wouldn't be masked.
+    Values are discarded; only the redactor's registry keeps them."""
+    for reader in _SECRET_READERS:
+        reader()
+
+
+# Every reader above. test_validation_isolation checks this covers each get_*
+# function in this module, so a new secret can't be left out.
+_SECRET_READERS = (
+    get_jira_api_token,
+    get_jira_oauth_client_secret,
+    get_jira_oauth_encryption_key,
+    get_github_oauth_client_secret,
+    get_github_oauth_encryption_key,
+    get_gitlab_oauth_client_secret,
+    get_gitlab_oauth_encryption_key,
+    get_bitbucket_oauth_client_secret,
+    get_bitbucket_oauth_encryption_key,
+    get_anthropic_api_key,
+)

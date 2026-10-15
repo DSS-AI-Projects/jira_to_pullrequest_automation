@@ -1,10 +1,22 @@
 # Proposal: isolate the validation step from the backend's secrets
 
-**Status:** proposal, awaiting owner sign-off. Nothing here is implemented.
-CLAUDE.md requires sign-off for security-architecture changes, and this
-changes the trust boundary around untrusted code.
+**Status:** signed off by the owner (2026-10-15). **Phase 0 and phase 1 are
+implemented** (see §10 for what was built and where it differs from the text
+below). Phase 2 is approved in principle with rootless Docker + gVisor as the
+runtime, and not built yet.
 
 **Author:** Claude Code session (validation-isolation-proposal), 2026-10-13.
+
+## Owner decisions (2026-10-15)
+
+| # | Question (§8) | Decision |
+|---|---|---|
+| 1 | Phase 0 now | **Approved.** Done |
+| 2 | Phase 1, including `PR_SET_DUMPABLE` | **Approved.** Done |
+| 3 | Phase 2 runtime | **Rootless sandbox daemon + gVisor.** Not built yet |
+| 4 | Q1, `npm --ignore-scripts` | **Run them.** Lifecycle scripts stay on; no setting added |
+| 5 | Invariant 6 and its two checks | **Approved as written.** Added to CLAUDE.md |
+| 6 | F1 (git hooks / `.git` writes) | Being fixed in a separate change, not here |
 
 ## TL;DR
 
@@ -20,8 +32,8 @@ Recommended order:
 
 | Phase | What | Effort | Closes |
 |---|---|---|---|
-| **0 (now)** | Turn validation off on shared deployments until phase 2 lands (new `VALIDATION_ENABLED`, forced to `false` in `deploy/vm/docker-compose.yml`) | ~0.5 day | Everything, on the VM, at the cost of a feature that **doesn't work there today anyway** (§2.5) |
-| **1 (stopgap)** | Allowlisted child environment, per-run `HOME`, `python -I` for ruff, redaction of `output_excerpt`, validation on a `.git`-less copy of the workspace, eager secret registration | 2–3 days | Accidental and casual leaks: secrets in env, secrets printed into output, validation tampering with the workspace's `.git` |
+| **0 (now) — done** | Turn validation off on shared deployments until phase 2 lands (new `VALIDATION_ENABLED`, forced to `false` in `deploy/vm/docker-compose.yml`) | ~0.5 day | Everything, on the VM, at the cost of a feature that **doesn't work there today anyway** (§2.5) |
+| **1 (stopgap) — done** | Allowlisted child environment, per-run `HOME`, `python -I` for ruff, redaction of `output_excerpt`, validation on a `.git`-less copy of the workspace, eager secret registration | 2–3 days | Accidental and casual leaks: secrets in env, secrets printed into output, validation tampering with the workspace's `.git` |
 | **2 (target)** | Validation in a throwaway container per run, launched by a small broker sidecar: no secrets, no DB, no other workspaces, CPU/memory/PID/time limits, network limited to a registry proxy during install and none afterwards | 7–10 days (+1–2 for rootless/gVisor) | A deliberate attacker who controls the repo or steers the implementation agent |
 
 Phase 1 alone is **not** a security boundary: in the container the child can
@@ -638,15 +650,19 @@ workspace built to attack it.
   - prints the full `os.environ`, every value, then fails, so it lands in
     `output_excerpt`;
   - writes `sorted(os.environ)` (keys only) to a file in the run directory;
-  - tries to open `../../../jobs.db`-style relative paths and the absolute
-    `settings.db_path`, and records which succeeded;
-  - writes `.git/hooks/pre-commit` relative to the original workspace path.
+  - runs `git config core.hooksPath …` and writes `.git/hooks/pre-commit`
+    from its cwd, as husky's `prepare` or a hostile `postinstall` would;
+  - (phase 2, sandbox marker) tries to open the DB and another workspace
+    by absolute path, and records which succeeded.
 - Assertions:
   - no canary value appears in any `ValidationResult` field;
-  - the recorded env keys are a subset of the allowlist;
-  - the original workspace's `.git/hooks/pre-commit` does not exist, and
-    `git status` in the original workspace is unchanged;
-  - (phase 2, sandbox marker) the DB/other-workspace opens all failed.
+  - the recorded env keys are exactly the allowlist;
+  - the original workspace's `.git/hooks/pre-commit` does not exist, its
+    `.git/config` and `git status` are unchanged, and neither is the config
+    of a repository *enclosing* the workdir (see §10);
+  - (phase 2) the DB/other-workspace opens all failed. In phase 1 they
+    succeed: the child has the backend's uid, so a *deliberate* write to
+    `../repo/.git` or read of the DB isn't blocked, and isn't tested.
 - Plus `ruff.py` in the workspace root that writes a marker file: assert the
   marker isn't created (§3.4).
 - A Node variant, skipped when `npm` isn't on PATH, with a `postinstall`
@@ -739,6 +755,8 @@ Locally they're skipped unless `VALIDATION_SANDBOX_TESTS=1`.
 
 ## 8. Decisions requested from the owner
 
+(Answered 2026-10-15; see "Owner decisions" at the top.)
+
 1. **Approve phase 0 now** (validation off on the VM via compose)?
 2. **Approve phase 1** as specified, including `PR_SET_DUMPABLE` on Linux?
 3. **Phase 2 runtime:** rootless sandbox daemon + gVisor (recommended for
@@ -758,3 +776,40 @@ Locally they're skipped unless `VALIDATION_SANDBOX_TESTS=1`.
 | Phase 2: executor seam, broker (`sandbox/`), validation image, npm proxy, compose and networks, README, tests 6.3 | 7–10 days |
 | Phase 2 hardening: rootless sandbox daemon setup script + docs, gVisor install + perf check | 1–2 days |
 | F1 (git hooks / `.git` writes) | 1 day |
+
+## 10. Phases 0 and 1 as built (2026-10-15)
+
+Code: `backend/app/steps/validation_runner.py`, `core/secrets.py`
+(`register_configured_secrets`), `core/process_hardening.py`, `core/config.py`
+(`VALIDATION_ENABLED`, `VALIDATION_ALLOW_UNSANDBOXED`), `main.py` (startup),
+`deploy/vm/docker-compose.yml`. Tests: `test_validation_runner.py`,
+`test_validation_isolation.py`, `test_subprocess_env_policy.py`. Runbook text:
+CLAUDE.md "Validation isolation", `deploy/vm/README.md`.
+
+Where it differs from the sections above:
+
+- **`GIT_CEILING_DIRECTORIES` added to the environment (§3.1/§3.3).** Found
+  while writing the canary: the validation copy has no `.git`, so git run
+  from it searches upward — and in local dev the workdir is inside this app's
+  own checkout. Husky's `prepare` (`git config core.hooksPath .husky`) would
+  have rewritten the *app's* git config. The ceiling is the job directory;
+  the canary nests the job inside a stand-in "app" repository and asserts
+  its config is unchanged.
+- **The shared-deployment guard (§4.7) landed in phase 1**, without a
+  `VALIDATION_SANDBOX` setting: there is only the local executor, so the rule
+  is "trusted-proxy auth ⇒ skipped unless `VALIDATION_ALLOW_UNSANDBOXED=true`".
+  §6.2's last test is written against that.
+- **`npm --ignore-scripts`: not added** (decision Q1).
+- **Static-check allowlist (§6.1 b)** turned out to be two call sites, not
+  the ones guessed: `jobs/runner.py:_run_git_command` (diff collection) and
+  `steps/branch_prep.py:_validate_branch_name` (`git check-ref-format`). Every
+  other launch already passed `env=` (possibly `None` conditionally, which
+  the check accepts as a visible decision). A stale-entry test keeps the
+  allowlist honest.
+- **Redaction runs before truncation on all three result paths**
+  (pass, fail, timeout), and `register_configured_secrets()` runs both at
+  startup and at the start of each validation, so tests and any non-server
+  entry point get the same guarantee.
+- **The per-run home is removed after each validation run; the validation
+  copy is kept** for its `node_modules` and removed with the job directory by
+  workspace retention.
