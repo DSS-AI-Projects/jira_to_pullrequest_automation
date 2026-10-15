@@ -16,6 +16,11 @@ from pathlib import Path
 from app.core.config import Settings
 from app.core.errors import DEFAULT_MESSAGES, AppError, ErrorCode
 from app.core.logging import get_logger
+from app.core.workspace_git import (
+    UnsafeWorkspaceGitError,
+    prepare_workspace_git,
+    workspace_git_command,
+)
 from app.jobs.models import (
     AgentUsage,
     ImplementationDiff,
@@ -147,8 +152,10 @@ def _fail(
 
 
 def _run_git_command(workspace_path: Path, *args: str) -> str:
+    # Hardened: no repository hooks/fsmonitor (see app/core/workspace_git.py).
+    # Callers run prepare_workspace_git() once per operation first.
     completed = subprocess.run(
-        ["git", "-C", str(workspace_path), *args],
+        workspace_git_command(workspace_path, *args),
         check=True,
         capture_output=True,
         text=True,
@@ -160,8 +167,9 @@ def _run_git_command(workspace_path: Path, *args: str) -> str:
 
 def _read_git_head_sync(workspace_path: Path) -> str | None:
     try:
+        prepare_workspace_git(workspace_path)
         return _run_git_command(workspace_path, "rev-parse", "HEAD").strip() or None
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, UnsafeWorkspaceGitError):
         return None
     except FileNotFoundError:
         return None
@@ -184,6 +192,7 @@ def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> Im
     # own, and the implement agent has no Bash tool to run `git add` itself —
     # without this, newly created files would silently be missing from the
     # diff even though the agent reported creating them.
+    prepare_workspace_git(workspace_path)
     _run_git_command(workspace_path, "add", "-A")
 
     overall_patch = _run_git_command(
@@ -191,6 +200,7 @@ def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> Im
         "diff",
         "--cached",
         "--no-ext-diff",
+        "--no-textconv",
         "--find-renames",
         "--unified=3",
         base_ref,
@@ -210,6 +220,7 @@ def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> Im
             "diff",
             "--cached",
             "--no-ext-diff",
+            "--no-textconv",
             "--find-renames",
             "--unified=3",
             base_ref,
@@ -247,6 +258,8 @@ async def _collect_implementation_diff(
             "git is unavailable while collecting implementation diff for %s",
             workspace_path,
         )
+    except UnsafeWorkspaceGitError as exc:
+        logger.warning("refusing to collect a diff from %s: %s", workspace_path, exc)
     return None
 
 

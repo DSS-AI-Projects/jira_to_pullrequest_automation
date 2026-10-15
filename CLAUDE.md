@@ -430,7 +430,9 @@ Three layers now, all in `build_options()` of `plan_agent.py` /
   the harness's own structured-output tool — are untouched. A denial is logged
   (redacted), shown in the job's activity log ("Blocked Write outside the
   workspace: …"), and returned to the agent with a reason it can act on, so a
-  stray absolute path costs one retried tool call, not the job.
+  stray absolute path costs one retried tool call, not the job. The same hook
+  denies any path inside the workspace's `.git` (see **The backend's git
+  never runs repository-controlled code** below).
 - **`setting_sources=[]`** — no user/project/local settings, so no inherited
   `CLAUDE.md`, hooks, or permissions from the host or from this app's own
   checkout. (The target repo's own `CLAUDE.md`/`README.md` still reaches the
@@ -444,6 +446,68 @@ Three layers now, all in `build_options()` of `plan_agent.py` /
 Not done, optional defense in depth: moving `WORKDIR` out of the app's own
 checkout. With the three layers above it's no longer load-bearing, and moving
 it changes deployment volume layout.
+
+## The backend's git never runs repository-controlled code (security finding F1)
+
+The implementation agent (Edit/Write) and the validation step (which runs the
+repo's own tests, linters and `npm install` scripts) can both write into a
+workspace. Before this fix, anything they put in `.git` ran when the backend
+later ran git there: a `.git/hooks/pre-commit` ran on create-branch, a
+`pre-push` ran on Push, and so did `core.hooksPath`, `core.fsmonitor` and
+clean/smudge filter drivers set in `.git/config`. All of these ran inside the
+backend with its full environment. On a delegated push, a pre-push hook could
+also read the clicking user's `Authorization` header, because git hands `-c`
+overrides to hooks in `GIT_CONFIG_PARAMETERS`. Two layers now prevent this:
+
+- **Hardened git runs** (`app/core/workspace_git.py`). Every backend git call
+  on a workspace goes through `workspace_git_command()`: create-branch, push,
+  `ls-remote`, diff collection (`app/jobs/runner.py`), and the clone step's
+  inspection and folder-baseline commit (`repo_clone.py`). It adds
+  `-c core.hooksPath=<an empty temp dir owned by the backend process>` and
+  `-c core.fsmonitor=false`, placed after the caller's own `-c` entries so
+  they win. `commit` and `push` also pass `--no-verify`, and diffs pass
+  `--no-ext-diff --no-textconv`. Before each operation,
+  `prepare_workspace_git()` refuses a `.git` that is a symlink/junction or a
+  `gitdir:` file, or that contains a `commondir` redirect. Each of those
+  points git at a different repository. The refusal surfaces as
+  `BRANCH_CREATION_FAILED` / `BRANCH_PUSH_FAILED`, or as no diff during diff
+  collection. It also cuts `.git/config` down to an **allowlist** of the keys
+  `git clone`/`git init` write: `core.repositoryformatversion`/`filemode`/
+  `bare`/`logallrefupdates`/`symlinks`/`ignorecase`/`precomposeunicode`,
+  `extensions.objectformat`/`refstorage`, `remote.*.url`/`fetch`/`tagopt`,
+  `branch.*.remote`/`merge`, and `user.name`/`email`. Everything else is
+  dropped and logged by key name, never by value: filter, diff and merge
+  drivers, `include.path`, `url.*.insteadOf` (which could redirect a push
+  carrying the user's token), `core.sshCommand`, `gpg.program`, credential
+  helpers, and a husky-style `core.hooksPath`. Reading the config uses
+  `git config --file … --list`, which executes nothing and doesn't follow
+  includes. An allowlist fails safe on keys nobody thought of.
+- **Agents can't touch `.git`.** `workspace_guard.py` also denies any tool
+  path inside a `.git` directory of the workspace, at any depth and for reads
+  as well as writes. It also denies a Glob `pattern` or Grep `glob` with a
+  `.git` segment. The check runs after `..` and symlink resolution and
+  catches the Windows aliases NTFS treats as `.git`: case variants,
+  `.git.`/`.git `, `.git::$INDEX_ALLOCATION`, and 8.3 short names (via
+  `samefile`). The denial reads "Blocked Write inside .git: …" in the
+  activity log. `.gitignore`, `.gitattributes` and `.github/` stay allowed,
+  since they are project files.
+
+Tests: `test_workspace_git.py` plants every trigger above: hooks in
+`.git/hooks` and in a `core.hooksPath` dir, an fsmonitor, filter/textconv/
+external-diff drivers selected by `.gitattributes`, and a pre-push hook
+planted after create-branch. It then runs diff collection, create-branch, a
+delegated push and an ambient push, and asserts a marker file stays empty.
+Before the fix that marker recorded hooks, fsmonitor and filter runs from
+every step. The `test_workspace_guard.py` F1 cases cover `..`, absolute
+paths, nested `.git`, Glob/Grep patterns and the Windows aliases.
+
+**Residual risk:** the machine's global and system git config are still
+trusted, the same way the ambient credential helper is. Validation runs as the
+backend's own OS user with its HOME, so it can still write `~/.gitconfig`, and
+it already sees the backend's environment. Closing that gap is the separate
+validation-isolation design (`docs/validation-isolation-proposal.md` on branch
+`claude/validation-isolation-proposal-964a78`), which is awaiting the owner's
+sign-off.
 4. **Secrets never in URLs, client error responses, or committed files.** Error
    responses are scrubbed to typed codes + safe messages; delegated OAuth tokens are
    encrypted at rest; gitleaks runs in CI and as a pre-commit hook.

@@ -31,6 +31,11 @@ from pathlib import Path
 
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger, redact
+from app.core.workspace_git import (
+    UnsafeWorkspaceGitError,
+    prepare_workspace_git,
+    workspace_git_command,
+)
 from app.jobs.models import Job, RequirementSource
 from app.jobs.runner import BranchResult, CommitAuthor, PushCredentials, PushResult
 
@@ -82,10 +87,11 @@ def _run_git(
     # `config` entries become one-off `-c key=value` overrides for this git
     # process only. They may carry a credential (a delegated push's auth
     # header), so they're deliberately left out of every error message below.
-    overrides = [part for entry in config for part in ("-c", entry)]
+    # The command is hardened against repository-controlled hooks/fsmonitor
+    # (app/core/workspace_git.py); callers run _prepare_workspace first.
     try:
         completed = subprocess.run(
-            ["git", *overrides, "-C", str(workspace_path), *args],
+            workspace_git_command(workspace_path, *args, config=config),
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -105,6 +111,17 @@ def _run_git(
     return completed.stdout.strip()
 
 
+def _prepare_workspace(workspace_path: Path, error_code: ErrorCode) -> None:
+    """Security finding F1: the implementation agent and the validation
+    step (which runs the repo's own code) have both had the workspace since
+    the last git run here, so drop any repository-controlled git config
+    before committing or pushing — see app/core/workspace_git.py."""
+    try:
+        prepare_workspace_git(workspace_path)
+    except UnsafeWorkspaceGitError as exc:
+        raise AppError(error_code, internal_detail=str(exc)) from exc
+
+
 def _validate_branch_name(workspace_path: Path, name: str) -> None:
     if not name or len(name) > _MAX_BRANCH_NAME_LENGTH:
         raise AppError(ErrorCode.BRANCH_NAME_INVALID)
@@ -112,8 +129,7 @@ def _validate_branch_name(workspace_path: Path, name: str) -> None:
     # (no double dots, no "@{", no trailing ".lock", control characters,
     # etc. — git already gets this right).
     completed = subprocess.run(
-        ["git", "check-ref-format", "--branch", name],
-        cwd=workspace_path,
+        workspace_git_command(workspace_path, "check-ref-format", "--branch", name),
         capture_output=True,
         text=True,
         timeout=10,
@@ -150,6 +166,7 @@ def _create_branch_sync(
     if len(message) > _MAX_COMMIT_MESSAGE_LENGTH:
         raise AppError(ErrorCode.INPUT_INVALID)
 
+    _prepare_workspace(workspace_path, ErrorCode.BRANCH_CREATION_FAILED)
     _validate_branch_name(workspace_path, name)
 
     # HEAD is still at the baseline at this point — the implement/correction
@@ -169,7 +186,7 @@ def _create_branch_sync(
             user_message="There are no changes to commit for this job.",
         )
 
-    _run_git(workspace_path, "commit", "-m", message, config=_author_config(author))
+    _run_git(workspace_path, "commit", "--no-verify", "-m", message, config=_author_config(author))
     commit_sha = _run_git(workspace_path, "rev-parse", "HEAD")
 
     logger.info("job %s: created branch %s at %s", job.id, name, commit_sha)
@@ -201,17 +218,9 @@ def _remote_branch_exists(
 ) -> bool:
     config = _push_config(credentials)
     completed = subprocess.run(
-        [
-            "git",
-            *[part for entry in config for part in ("-c", entry)],
-            "-C",
-            str(workspace_path),
-            "ls-remote",
-            "--exit-code",
-            "--heads",
-            remote_url,
-            name,
-        ],
+        workspace_git_command(
+            workspace_path, "ls-remote", "--exit-code", "--heads", remote_url, name, config=config
+        ),
         capture_output=True,
         text=True,
         timeout=_PUSH_TIMEOUT_SECONDS,
@@ -266,6 +275,7 @@ def _push_branch_sync(
         # (a LOCAL job's origin may be an SSH remote — see git_auth).
         remote_url = credentials.remote_url
 
+    _prepare_workspace(workspace_path, ErrorCode.BRANCH_PUSH_FAILED)
     name = job.branch_name
     if branch_name and branch_name != job.branch_name:
         # Pushing under a different name (e.g. after a BRANCH_PUSH_REJECTED
@@ -289,6 +299,7 @@ def _push_branch_sync(
         _run_git(
             workspace_path,
             "push",
+            "--no-verify",
             remote_url,
             f"{source}:refs/heads/{name}",
             error_code=ErrorCode.BRANCH_PUSH_FAILED,
