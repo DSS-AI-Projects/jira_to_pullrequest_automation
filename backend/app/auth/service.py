@@ -92,11 +92,11 @@ def _upsert_identity_user(request: Request, identity: Identity, settings: Settin
 def _resolve_session_user(
     request: Request, settings: Settings, identity: Identity | None
 ) -> User | None:
-    session_id = request.cookies.get(_cookie_name(settings))
-    if not session_id:
+    session_token = request.cookies.get(_cookie_name(settings))
+    if not session_token:
         return None
     store = _store(request)
-    session = store.get_session(session_id)
+    session = store.get_session(session_token)
     if session is None:
         return None
     user = store.get_user(session.user_id)
@@ -104,7 +104,7 @@ def _resolve_session_user(
         # The proxy now vouches for someone else — e.g. user A signed out of
         # SSO only, then user B signed in on the same browser. A's app session
         # must not outlive that, or B would keep working as A.
-        store.delete_session(session_id)
+        store.delete_session(session_token)
         return None
     return user
 
@@ -154,10 +154,10 @@ def require_admin(user: User | None) -> None:
         raise AppError(ErrorCode.FORBIDDEN)
 
 
-def set_session_cookie(response: Response, session_id: str, settings: Settings) -> None:
+def set_session_cookie(response: Response, session_token: str, settings: Settings) -> None:
     response.set_cookie(
         key=_cookie_name(settings),
-        value=session_id,
+        value=session_token,
         httponly=True,
         secure=settings.auth_session_cookie_secure,
         samesite="lax",
@@ -191,8 +191,8 @@ def build_session_info(
     if user is None and allow_bootstrap and identity is not None:
         user = _upsert_identity_user(request, identity, settings)
         if response is not None:
-            session = _store(request).create_session(user.id, settings.auth_session_ttl_hours)
-            set_session_cookie(response, session.id, settings)
+            session_token = _store(request).create_session(user.id, settings.auth_session_ttl_hours)
+            set_session_cookie(response, session_token, settings)
 
     return SessionInfo(
         auth_enabled=True,

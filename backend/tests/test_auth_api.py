@@ -1,7 +1,9 @@
 import json
+import sqlite3
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
@@ -356,6 +358,42 @@ def test_cost_summary_aggregates_and_resolves_user_identity(
     assert worker_row["correction_cost_usd"] == pytest.approx(0.05)
     assert worker_row["total_cost_usd"] == pytest.approx(0.55)
     assert body["grand_total_usd"] == pytest.approx(0.55)
+
+
+def test_session_cookie_value_is_never_stored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F3: anyone who can read the database must not be able to lift a
+    working session cookie out of it."""
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_LOGIN", "true")
+    get_settings.cache_clear()
+    db_path = tmp_path / "jobs.db"
+    store = JobStore(db_path)
+    app = create_app(store=store, steps=make_fake_steps())
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            login(client)
+            token = client.cookies.get("jira2pullreq_session")
+            assert token
+
+            raw = sqlite3.connect(str(db_path))
+            try:
+                rows = raw.execute("SELECT id, user_id, expires_at, data FROM sessions").fetchall()
+            finally:
+                raw.close()
+            assert len(rows) == 1
+            assert all(token not in column for column in rows[0])
+            # The cookie still works, and the stored key doesn't.
+            assert client.get("/api/repos").status_code == 200
+            client.cookies.set("jira2pullreq_session", rows[0][0])
+            assert client.get("/api/repos").status_code == 401
+
+            client.cookies.set("jira2pullreq_session", token)
+            assert client.post("/api/auth/logout").status_code == 200
+            assert store.get_session(token) is None
+    finally:
+        get_settings.cache_clear()
 
 
 def test_logout_revokes_session(auth_client: TestClient) -> None:

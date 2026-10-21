@@ -24,6 +24,8 @@ from app.auth.models import (
     Session,
     User,
     UserRole,
+    hash_session_token,
+    new_session_token,
 )
 from app.jobs.models import TERMINAL_STATES, Job
 
@@ -127,6 +129,7 @@ class JobStore:
             self._conn.execute(_REPO_HOSTING_CONNECTIONS_SCHEMA)
             self._conn.execute(_PROVIDER_OAUTH_STATES_SCHEMA)
             self._migrate_owner_user_id()
+            self._migrate_plaintext_sessions()
             self._conn.commit()
 
     def _migrate_owner_user_id(self) -> None:
@@ -146,6 +149,17 @@ class JobStore:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_owner_created ON jobs (owner_user_id, created_at)"
         )
+
+    def _migrate_plaintext_sessions(self) -> None:
+        """One-time sign-out for DBs from before session tokens were hashed.
+
+        Old rows are keyed by the cookie value itself (a 32-char uuid hex);
+        new rows by its SHA-256 hex digest (64 chars). Old rows can no longer
+        match any cookie — lookups hash the cookie first — but they still
+        hold usable-looking secrets, so they're deleted. Idempotent: on a
+        fresh or already-migrated DB every row is 64 chars and nothing goes.
+        """
+        self._conn.execute("DELETE FROM sessions WHERE length(id) != 64")
 
     def create(self, job: Job) -> None:
         with self._lock:
@@ -343,8 +357,12 @@ class JobStore:
             row = self._conn.execute("SELECT data FROM users WHERE id = ?", (user_id,)).fetchone()
         return User.model_validate_json(row[0]) if row else None
 
-    def create_session(self, user_id: str, ttl_hours: int) -> Session:
-        session = Session.new(user_id=user_id, ttl_hours=ttl_hours)
+    def create_session(self, user_id: str, ttl_hours: int) -> str:
+        """Store a new session and return its cookie token. Only the token's
+        hash is written; the token itself exists nowhere but in the return
+        value (and then the browser's cookie)."""
+        token = new_session_token()
+        session = Session.new(token=token, user_id=user_id, ttl_hours=ttl_hours)
         with self._lock:
             self._conn.execute(
                 "INSERT INTO sessions (id, user_id, expires_at, data) VALUES (?, ?, ?, ?)",
@@ -356,26 +374,29 @@ class JobStore:
                 ),
             )
             self._conn.commit()
-        return session
+        return token
 
-    def get_session(self, session_id: str) -> Session | None:
+    def get_session(self, token: str) -> Session | None:
+        """Look a session up by its cookie token (hashed before the query)."""
+        session_hash = hash_session_token(token)
         with self._lock:
             row = self._conn.execute(
                 "SELECT data FROM sessions WHERE id = ?",
-                (session_id,),
+                (session_hash,),
             ).fetchone()
             if row is None:
                 return None
             session = Session.model_validate_json(row[0])
             if session.is_expired:
-                self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+                self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_hash,))
                 self._conn.commit()
                 return None
         return session
 
-    def delete_session(self, session_id: str) -> None:
+    def delete_session(self, token: str) -> None:
+        """Delete a session by its cookie token (hashed before the query)."""
         with self._lock:
-            self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self._conn.execute("DELETE FROM sessions WHERE id = ?", (hash_session_token(token),))
             self._conn.commit()
 
     def save_jira_connection(self, connection: JiraConnection) -> JiraConnection:

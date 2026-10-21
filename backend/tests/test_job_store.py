@@ -1,6 +1,8 @@
+import hashlib
 import json
 import sqlite3
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -264,6 +266,96 @@ def test_migration_backfills_owner_user_id_on_pre_existing_db(tmp_path: Path) ->
     jobs, _ = store.list_jobs(owner_user_id="user-legacy", limit=20)
 
     assert [job.ticket_key for job in jobs] == ["PROJ-9"]
+
+
+def _raw_session_rows(db_path: Path) -> list[tuple[str, str, str, str]]:
+    raw = sqlite3.connect(str(db_path))
+    try:
+        return raw.execute("SELECT id, user_id, expires_at, data FROM sessions").fetchall()
+    finally:
+        raw.close()
+
+
+def test_session_row_stores_only_a_hash_of_the_cookie_token(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.db"
+    store = JobStore(db_path)
+
+    token = store.create_session("user-1", ttl_hours=12)
+
+    rows = _raw_session_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0][0] == hashlib.sha256(token.encode("utf-8")).hexdigest()
+    # Nowhere in the row — key, columns, or JSON blob — is the cookie value.
+    assert all(token not in column for column in rows[0])
+
+
+def test_session_lookup_and_delete_work_by_cookie_token(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.db"
+    store = JobStore(db_path)
+    token = store.create_session("user-1", ttl_hours=12)
+
+    session = store.get_session(token)
+    assert session is not None
+    assert session.user_id == "user-1"
+
+    # What a database reader sees is not a usable cookie.
+    stored_hash = _raw_session_rows(db_path)[0][0]
+    assert store.get_session(stored_hash) is None
+
+    store.delete_session(token)
+    assert store.get_session(token) is None
+    assert _raw_session_rows(db_path) == []
+
+
+def test_expired_session_is_rejected_and_removed(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.db"
+    store = JobStore(db_path)
+    token = store.create_session("user-1", ttl_hours=0)
+
+    assert store.get_session(token) is None
+    assert _raw_session_rows(db_path) == []
+
+
+def test_migration_signs_out_plaintext_sessions_once(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.db"
+    # A database from before session tokens were hashed: the row's key is
+    # the cookie value itself (a uuid4 hex).
+    legacy_token = uuid.uuid4().hex
+    now = datetime.now(UTC)
+    raw = sqlite3.connect(str(db_path))
+    raw.execute(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, "
+        "expires_at TEXT NOT NULL, data TEXT NOT NULL)"
+    )
+    raw.execute(
+        "INSERT INTO sessions (id, user_id, expires_at, data) VALUES (?, ?, ?, ?)",
+        (
+            legacy_token,
+            "user-legacy",
+            (now + timedelta(hours=12)).isoformat(),
+            json.dumps(
+                {
+                    "id": legacy_token,
+                    "user_id": "user-legacy",
+                    "expires_at": (now + timedelta(hours=12)).isoformat(),
+                    "created_at": now.isoformat(),
+                }
+            ),
+        ),
+    )
+    raw.commit()
+    raw.close()
+
+    store = JobStore(db_path)
+    assert _raw_session_rows(db_path) == []
+    assert store.get_session(legacy_token) is None
+
+    # Idempotent: reopening the upgraded DB keeps sessions made since.
+    token = store.create_session("user-1", ttl_hours=12)
+    reopened = JobStore(db_path)
+    session = reopened.get_session(token)
+    assert session is not None
+    assert session.user_id == "user-1"
 
 
 def test_cost_summary_by_owner_aggregates_and_handles_missing_costs(tmp_path: Path) -> None:

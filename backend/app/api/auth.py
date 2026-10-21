@@ -87,8 +87,8 @@ async def dev_login(payload: DevLoginRequest, request: Request, response: Respon
         provider_subject=email,
         role=role,
     )
-    session = store.create_session(user.id, settings.auth_session_ttl_hours)
-    set_session_cookie(response, session.id, settings)
+    session_token = store.create_session(user.id, settings.auth_session_ttl_hours)
+    set_session_cookie(response, session_token, settings)
     return SessionInfo(
         auth_enabled=True,
         can_dev_login=settings.auth_allow_dev_login,
@@ -100,9 +100,9 @@ async def dev_login(payload: DevLoginRequest, request: Request, response: Respon
 @router.post("/logout", response_model=LogoutResponse)
 async def logout(request: Request, response: Response) -> LogoutResponse:
     settings = get_settings()
-    session_id = request.cookies.get(settings.auth_session_cookie_name)
-    if session_id:
-        _store(request).delete_session(session_id)
+    session_token = request.cookies.get(settings.auth_session_cookie_name)
+    if session_token:
+        _store(request).delete_session(session_token)
     clear_session_cookie(response, settings)
     return LogoutResponse()
 

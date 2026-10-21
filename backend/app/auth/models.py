@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -67,19 +68,34 @@ class User(BaseModel):
         )
 
 
+def new_session_token() -> str:
+    """The app session cookie's value: 256 random bits. Only its hash
+    (hash_session_token) is ever stored, so the database alone can't be used
+    to take over a session. Never log it."""
+    return token_urlsafe(32)
+
+
+def hash_session_token(token: str) -> str:
+    """SHA-256 hex digest of a session cookie value — the `sessions` table key.
+    No salt or slow hash needed: the input is a high-entropy random token,
+    not a password, so it can't be guessed from its digest."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 class Session(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # hash_session_token() of the cookie value, never the cookie value itself.
     id: str
     user_id: str
     expires_at: datetime
     created_at: datetime
 
     @classmethod
-    def new(cls, *, user_id: str, ttl_hours: int) -> Session:
+    def new(cls, *, token: str, user_id: str, ttl_hours: int) -> Session:
         now = datetime.now(UTC)
         return cls(
-            id=uuid.uuid4().hex,
+            id=hash_session_token(token),
             user_id=user_id,
             expires_at=now + timedelta(hours=ttl_hours),
             created_at=now,
