@@ -88,6 +88,25 @@ enabled (`backend/app/auth/`, `backend/app/api/auth.py`):
 - Every job is stamped with the signed-in user as `owner_user_id`; non-admins can
   only read/implement their own jobs. `AUTH_ADMIN_EMAILS` grants cross-job access.
 - Server-side sessions live in SQLite; the browser holds only an HTTP-only cookie.
+- **Only a hash of the session cookie is stored (security finding F3).** The
+  cookie value is `secrets.token_urlsafe(32)` (`new_session_token()` in
+  `auth/models.py`); the `sessions` row is keyed by its SHA-256 hex digest
+  (`hash_session_token()`) — no salt or slow hash, since the input is a
+  256-bit random token, not a password. `JobStore.create_session` returns the
+  token and writes only the hash; `get_session` / `delete_session` take the
+  cookie value and hash it before querying. So reading the DB file no longer
+  lets anyone take over a session: the stored key is not a valid cookie. The
+  token is never logged. Tests: `test_session_row_stores_only_a_hash_of_the_cookie_token`,
+  `test_session_lookup_and_delete_work_by_cookie_token` (`test_job_store.py`),
+  `test_session_cookie_value_is_never_stored` (`test_auth_api.py`, end to end
+  through dev login, a request, and logout).
+- **One-time sign-out on upgrade.** Rows written before F3 are keyed by the
+  plaintext cookie (32-char uuid hex). `JobStore._migrate_plaintext_sessions`
+  deletes every `sessions` row whose key isn't 64 chars, on every start —
+  idempotent, a no-op once upgraded (`test_migration_signs_out_plaintext_sessions_once`).
+  Everyone signed in at upgrade time is signed out once; behind SSO the next
+  page load signs them straight back in via the proxy identity, with dev
+  login they sign in again by hand.
 - Two bootstrap modes: **dev login** (`AUTH_ALLOW_DEV_LOGIN`) and **trusted-proxy
   headers** (`AUTH_TRUSTED_PROXY_*`), the latter validated against an allowlisted
   source CIDR set before any identity header is trusted.
