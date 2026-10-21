@@ -37,7 +37,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "PTH"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["app", "tests"]
+# deploy/vm/backup: the VM stack's stdlib-only backup sidecar (tests/test_vm_backup.py).
+include = ["app", "tests", "../deploy/vm/backup"]
 venvPath = "."
 venv = ".venv"
 # FastAPI registers routes/handlers via decorators; the names are never read again.
@@ -46,7 +47,7 @@ reportUnusedFunction = "none"
 [[tool.pyright.executionEnvironments]]
 # starlette's TestClient is effectively untyped; don't fight it in tests.
 root = "tests"
-extraPaths = ["."]
+extraPaths = [".", "../deploy/vm/backup"]
 reportUnknownMemberType = "none"
 reportUnknownVariableType = "none"
 reportUnknownArgumentType = "none"

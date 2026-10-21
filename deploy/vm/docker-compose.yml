@@ -11,10 +11,39 @@
 # - Paths are relative to this file (deploy/vm/), and the project and data
 #   volume names are fixed by vm.env.local, so the SQLite database survives
 #   rebuilds and can reuse the volume an earlier stack created.
+# - A `backup` sidecar snapshots that database daily into BACKUP_HOST_DIR on
+#   the VM; `db-restore` (run on demand) restores one. Every service's
+#   container log is size-capped.
 #
-# Setup steps, including the Entra ID app registration: deploy/vm/README.md.
+# Setup steps, including the Entra ID app registration and backups:
+# deploy/vm/README.md.
 
 name: ${COMPOSE_PROJECT_NAME:-jira2pullreq}
+
+# Docker's default json-file log grows without limit; cap each container at
+# DOCKER_LOG_MAX_FILE files of DOCKER_LOG_MAX_SIZE (50 MB with the defaults).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+    max-file: "${DOCKER_LOG_MAX_FILE:-5}"
+
+# The backup and restore containers: the stdlib-only script on the base
+# image the backend is already built from, no network, no capabilities, a
+# read-only root filesystem. They run as uid 1000, the backend image's
+# appuser, which owns the database (a restored file must stay writable by it).
+x-db-tool: &db-tool
+  image: python:3.12-slim
+  user: "1000:1000"
+  network_mode: none
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging: *logging
 
 services:
   backend:
@@ -23,6 +52,7 @@ services:
       dockerfile: Dockerfile
     image: jira2pullreq-backend:local
     restart: unless-stopped
+    logging: *logging
     env_file:
       - ${BACKEND_ENV_FILE:-../../backend/.env}
     environment:
@@ -67,6 +97,7 @@ services:
       dockerfile: Dockerfile
     image: jira2pullreq-frontend:local
     restart: unless-stopped
+    logging: *logging
     environment:
       NODE_ENV: production
       # NEXT_PUBLIC_API_BASE_URL stays unset: the browser calls /api/ on the
@@ -83,6 +114,7 @@ services:
   oauth2-proxy:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.12.0
     restart: unless-stopped
+    logging: *logging
     env_file:
       - ${OAUTH2_PROXY_ENV_FILE:-../oauth2-proxy/azure-entra.env.local}
     environment:
@@ -100,6 +132,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    logging: *logging
     depends_on:
       - backend
       - frontend
@@ -117,6 +150,53 @@ services:
     networks:
       app_net:
         ipv4_address: ${APP_SUBNET_PREFIX:-172.30.0}.10
+
+  backup:
+    <<: *db-tool
+    restart: unless-stopped
+    # Online backup API + PRAGMA integrity_check, keeping the newest
+    # BACKUP_KEEP. The data volume is mounted read-only: the sidecar can't
+    # change the database. The Fernet keys are NOT in these snapshots (they
+    # live in backend/.env) and must be backed up somewhere else.
+    command: ["python", "/opt/backup/sqlite_backup.py", "run"]
+    environment:
+      BACKUP_SOURCE: /data/jobs.db
+      BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - backend_var:/data:ro
+      - ./backup/sqlite_backup.py:/opt/backup/sqlite_backup.py:ro
+      - ${BACKUP_HOST_DIR:-/var/backups/jira2pullreq}:/backups
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Unhealthy once the newest snapshot is more than an hour overdue.
+    healthcheck:
+      test: ["CMD", "python", "/opt/backup/sqlite_backup.py", "health"]
+      interval: 5m
+      timeout: 30s
+      retries: 1
+      start_period: 5m
+
+  # Not started by `up`. Restore (backend and backup stopped first):
+  #   docker compose ... run --rm db-restore restore /backups/<snapshot>.db
+  # Without arguments it lists the snapshots. deploy/vm/README.md, "Backups".
+  db-restore:
+    <<: *db-tool
+    profiles: ["restore"]
+    restart: "no"
+    entrypoint: ["python", "/opt/backup/sqlite_backup.py"]
+    command: ["list"]
+    environment:
+      BACKUP_SOURCE: /data/jobs.db
+      BACKUP_DIR: /backups
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - backend_var:/data
+      - ./backup/sqlite_backup.py:/opt/backup/sqlite_backup.py:ro
+      - ${BACKUP_HOST_DIR:-/var/backups/jira2pullreq}:/backups:ro
 
 networks:
   app_net:

@@ -73,10 +73,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if BACKEND.exists():
-        run("backend: ruff lint", backend_tool("ruff", "check", "."), cwd=BACKEND)
+        # The VM backup sidecar's script is linted and type-checked (pyproject's
+        # pyright include) with the backend's settings; its tests live there too.
+        ruff_paths = [".", "../deploy/vm/backup"]
+        run("backend: ruff lint", backend_tool("ruff", "check", *ruff_paths), cwd=BACKEND)
         run(
             "backend: ruff format",
-            backend_tool("ruff", "format", "--check", "."),
+            backend_tool("ruff", "format", "--check", *ruff_paths),
             cwd=BACKEND,
         )
         run("backend: pyright", backend_tool("pyright"), cwd=BACKEND)

@@ -1579,6 +1579,27 @@ workflow engine; a network-locked sandbox; an embeddings/vector index.
   in as any email, including an admin's. Users are matched by email, so
   switching a VM to Entra ID keeps each user's jobs and connections when their
   Entra email matches the one they used before.
+- VM backups: a `backup` sidecar (`deploy/vm/backup/sqlite_backup.py`,
+  stdlib-only, on `python:3.12-slim`; no network, no capabilities, read-only
+  rootfs, the data volume mounted **read-only**, uid 1000 = the backend's
+  `appuser`) snapshots `jobs.db` with the SQLite online backup API — never a
+  file copy, which can catch a torn write — runs `PRAGMA integrity_check` on
+  the `.partial` file before renaming it to `jobs-<UTC>.db` in
+  `BACKUP_HOST_DIR`, keeps the newest `BACKUP_KEEP` (14), every
+  `BACKUP_INTERVAL_HOURS` (24) measured from the newest snapshot (restarts
+  don't add snapshots); a failed snapshot retries in 15 min and never rotates
+  a good one out; healthcheck = newest snapshot at most an hour overdue. The
+  read-only mount relies on the backend's default rollback journal — moving
+  the DB to WAL needs the mount (and README) revisited. Restore is the
+  on-demand `db-restore` service (profile `restore`, rw volume): verifies the
+  snapshot, refuses a locked DB, saves the current one as
+  `jobs.db.pre-restore-<UTC>`, deletes stale `-journal/-wal/-shm` (else SQLite
+  replays the old DB's journal onto the restored file), swaps it in. The
+  Fernet `*_OAUTH_ENCRYPTION_KEY`s are deliberately not in snapshots and must
+  be backed up separately (Key Vault); a restore without them loses every
+  provider connection. Tests: `backend/tests/test_vm_backup.py`; the script is
+  in pyright's include and `check.py`'s ruff paths. Every VM service logs via
+  `json-file` capped by `DOCKER_LOG_MAX_SIZE`/`DOCKER_LOG_MAX_FILE` (10m × 5).
 
 ## Quality gates — all must pass before merge
 

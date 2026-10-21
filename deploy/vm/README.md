@@ -7,7 +7,8 @@ their Microsoft Entra ID account, and the app's development login is off.
 | --- | --- |
 | `docker-compose.yml` | nginx + oauth2-proxy + backend + frontend on a private network; only nginx is published |
 | `nginx.conf.template` | TLS, Entra sign-in on every page and API call, identity headers for the backend, upload and timeout limits |
-| `vm.env.example` | Non-secret settings (hostname, certificate files, network range, data volume); copy to `vm.env.local` |
+| `vm.env.example` | Non-secret settings (hostname, certificate files, network range, data volume, backups, log rotation); copy to `vm.env.local` |
+| `backup/sqlite_backup.py` | Database snapshots, verification and restore, run by the `backup` and `db-restore` services |
 
 Secrets stay out of these files: the Entra client and cookie secrets go in
 `deploy/oauth2-proxy/azure-entra.env.local`, everything else in
@@ -73,6 +74,12 @@ In `vm.env.local` set:
 - `ENTRA_TENANT_ID`: the Directory (tenant) ID, for the Microsoft sign-out.
 - `APP_SUBNET_PREFIX`: keep `172.30.0` unless `ip route` or
   `docker network ls` shows it in use.
+- `BACKUP_HOST_DIR`: where daily database snapshots go on the VM (default
+  `/var/backups/jira2pullreq`). Create it before starting the stack:
+  `sudo install -d -o 1000 -g 1000 -m 700 /var/backups/jira2pullreq`
+  (uid 1000 is the backend image's `appuser`; a folder Docker creates itself
+  is owned by root and the backup service can't write to it). See
+  [5. Backups](#5-backups).
 - `BACKEND_VAR_VOLUME`: **when moving from the repo-root stack**, set it to that
   stack's existing data volume (`docker volume ls`, e.g.
   `<folder>_backend_var`) so jobs, users and provider connections carry over.
@@ -130,6 +137,118 @@ docker compose --env-file deploy/vm/vm.env.local -f deploy/vm/docker-compose.yml
 
 5. On a job page, the Push card still shows your connected accounts (if your
    Entra email matches your previous login email).
+
+### 5. Backups
+
+Everything the app keeps — users, sessions, jobs and their plans, and the
+encrypted provider connections — is in one SQLite file, `/app/var/jobs.db`,
+on the `BACKEND_VAR_VOLUME` volume. The `backup` service protects it:
+
+- Every `BACKUP_INTERVAL_HOURS` (default 24) it takes a snapshot with
+  SQLite's online backup API (a consistent copy even while the backend is
+  writing; a plain file copy can catch a half-written transaction), checks it
+  with `PRAGMA integrity_check`, and only then saves it as
+  `BACKUP_HOST_DIR/jobs-<UTC time>.db` (mode 600). It keeps the newest
+  `BACKUP_KEEP` (default 14) and deletes older ones. A failed snapshot is
+  retried after 15 minutes and never deletes a good one.
+- The schedule follows the newest snapshot, so restarting the stack doesn't
+  add extra snapshots: on start it takes one right away only if there is
+  none yet or the newest is older than the interval.
+- The service has no network, no Linux capabilities, a read-only root
+  filesystem, and the data volume **read-only**: it can't change the database.
+- `docker compose ps` shows it **unhealthy** when the newest snapshot is more
+  than an hour overdue; `logs backup` says why (for example, a
+  `BACKUP_HOST_DIR` it can't write to).
+
+Use the same `--env-file … -f …` as in step 3 (shortened to `dc` here):
+
+```bash
+alias dc='docker compose --env-file deploy/vm/vm.env.local -f deploy/vm/docker-compose.yml'
+dc ps backup                        # healthy?
+dc logs --tail 20 backup            # "snapshot … written, integrity_check ok"
+dc run --rm db-restore              # list snapshots, newest first
+dc exec backup python /opt/backup/sqlite_backup.py once   # take one now
+```
+
+#### Copy snapshots off the VM
+
+Snapshots on the VM's own disk don't survive losing the VM or its disk.
+Copy them somewhere else daily, after the snapshot — for example, pulled by a
+backup server:
+
+```bash
+rsync -a --chmod=F600 vm-host:/var/backups/jira2pullreq/ /srv/backups/jira2pullreq/
+```
+
+or pushed from the VM by a root cron job to an Azure Storage container
+(with a lifecycle rule for retention), using a managed identity:
+
+```bash
+azcopy login --identity
+azcopy sync /var/backups/jira2pullreq "https://<account>.blob.core.windows.net/<container>/jira2pullreq" --delete-destination=false
+```
+
+Snapshots contain users' emails, ticket and plan content, and encrypted
+provider tokens: give the destination the same access control as the VM.
+To check a copied file anywhere with Python 3.11+:
+`python3 deploy/vm/backup/sqlite_backup.py verify jobs-<time>.db`.
+
+#### Back up the Fernet keys separately
+
+The Jira, GitHub, GitLab and Bitbucket tokens in the database are encrypted
+with `JIRA_OAUTH_ENCRYPTION_KEY`, `GITHUB_OAUTH_ENCRYPTION_KEY`,
+`GITLAB_OAUTH_ENCRYPTION_KEY` and `BITBUCKET_OAUTH_ENCRYPTION_KEY` from
+`backend/.env`. **A snapshot restored without the same keys loses every
+provider connection** (users must reconnect each one; jobs and users are
+still there). The keys are not in the snapshots, and must never be stored
+with them — whoever has both can decrypt the tokens:
+
+- Keep each key as a secret in Azure Key Vault (or your organization's
+  secret store), with access separate from the backup storage.
+- When a key is rotated, keep the old value until no snapshot that needs it
+  is retained anywhere.
+- Back up `backend/.env` and `deploy/oauth2-proxy/azure-entra.env.local` the
+  same way; the other settings in them can be re-created, the keys can't.
+
+#### Restore
+
+1. Stop the backend and the backup service (users get an error page until
+   step 4):
+
+   ```bash
+   dc stop backend backup
+   ```
+
+2. Pick a snapshot (`dc run --rm db-restore`). One copied back from off the
+   VM goes into `BACKUP_HOST_DIR` first, readable by uid 1000.
+3. Restore it:
+
+   ```bash
+   dc run --rm db-restore restore /backups/jobs-20261021T023000Z.db
+   ```
+
+   It re-checks the snapshot's integrity, refuses if the database is still
+   in use, saves the current database beside it as
+   `jobs.db.pre-restore-<time>` (so the restore can be undone the same way),
+   removes stale `-journal`/`-wal`/`-shm` files, and swaps the snapshot in.
+4. Start everything again and check a job page:
+
+   ```bash
+   dc up -d
+   ```
+
+The `pre-restore` copies stay on the data volume until removed by hand
+(`dc exec backend sh -c 'rm /app/var/jobs.db.pre-restore-*'`).
+
+On a new VM: follow steps 1–3 with the **same Fernet keys** (from the key
+vault, not a snapshot), then restore as above — the stack's first start
+creates the volume and an empty database, which the restore replaces.
+
+#### Container logs
+
+Every service logs through Docker's `json-file` driver capped at
+`DOCKER_LOG_MAX_FILE` files of `DOCKER_LOG_MAX_SIZE` (default 5 × 10 MB per
+container); older log lines are dropped.
 
 ### Notes
 
