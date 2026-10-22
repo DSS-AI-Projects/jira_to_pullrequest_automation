@@ -275,6 +275,22 @@ class JobStore:
             ).fetchall()
         return [Job.model_validate_json(row[0]) for row in rows]
 
+    def list_owner_jobs_updated_since(self, owner_user_id: str, since: datetime) -> list[Job]:
+        """Every job of `owner_user_id` changed at or after `since` — a
+        superset of the jobs with agent cost recorded since then, since
+        recording a cost always saves the job. The spend-limit input."""
+        # updated_at is stored inside the JSON as pydantic's ISO form; compare
+        # on the whole-second prefix, which only widens the match (callers
+        # filter precisely on the decoded jobs).
+        cutoff = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT data FROM jobs WHERE owner_user_id = ? "
+                "AND substr(json_extract(data, '$.updated_at'), 1, 19) >= ?",
+                (owner_user_id, cutoff),
+            ).fetchall()
+        return [Job.model_validate_json(row[0]) for row in rows]
+
     def cost_summary_by_owner(self) -> list[OwnerCostRow]:
         with self._lock:
             rows = self._conn.execute(

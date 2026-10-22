@@ -18,6 +18,7 @@ from app.auth.service import ensure_job_access, require_admin, require_current_u
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger
+from app.jobs.limits import AgentSlots, check_spend_limit
 from app.jobs.models import Job, JobState, RepoSourceKind, RequirementSource
 from app.jobs.runner import (
     CommitAuthor,
@@ -172,6 +173,10 @@ def _steps(request: Request) -> JobSteps:
     return cast(JobSteps, request.app.state.job_steps)
 
 
+def _slots(request: Request) -> AgentSlots:
+    return cast(AgentSlots, request.app.state.agent_slots)
+
+
 _WORKSPACE_REMOVED_MESSAGE = (
     "This job's workspace was deleted by the retention policy after the job sat "
     "unused. Its plan, diff and cost history are kept, but implementing, fixing, "
@@ -264,6 +269,7 @@ async def create_job(
     settings: Settings = get_settings()
     form = await request.form()
     reject_unknown_form_fields(set(form.keys()), JOB_CREATE_FORM_FIELDS)
+    check_spend_limit(_store(request), user.id if user else None, settings)
     require_exactly_one_requirement_source(ticket, requirement_document is not None)
     repo_url = normalize_repo(repo, settings)
     base_branch_normalized = normalize_base_branch(base_branch)
@@ -310,7 +316,7 @@ async def create_job(
         repo_url,
     )
 
-    task = asyncio.create_task(run_job(job.id, store, settings, _steps(request)))
+    task = asyncio.create_task(run_job(job.id, store, settings, _steps(request), _slots(request)))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return JobCreated(job_id=job.id)
@@ -375,6 +381,10 @@ async def implement_job(
     ):
         raise AppError(ErrorCode.IMPLEMENTATION_NOT_SUPPORTED)
     _require_workspace(job)
+    settings = get_settings()
+    # Spend is recorded against the job's owner, so it's the owner's budget
+    # that's checked, also when an admin acts on someone else's job.
+    check_spend_limit(store, job.owner_user_id, settings)
 
     now = datetime.now(UTC)
     job.error = None
@@ -392,7 +402,9 @@ async def implement_job(
     store.save(job)
     logger.info("job %s implementation approved", job.id)
 
-    task = asyncio.create_task(run_implementation(job.id, store, get_settings(), _steps(request)))
+    task = asyncio.create_task(
+        run_implementation(job.id, store, settings, _steps(request), _slots(request))
+    )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return JobCreated(job_id=job.id)
@@ -413,13 +425,16 @@ async def correct_validation(job_id: str, request: Request) -> JobCreated:
     ):
         raise AppError(ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE)
     _require_workspace(job)
+    settings = get_settings()
+    check_spend_limit(store, job.owner_user_id, settings)
 
     job.state = JobState.CORRECTING
+    job.implementation_correction_started_at = None
     store.save(job)
     logger.info("job %s validation correction started", job.id)
 
     task = asyncio.create_task(
-        run_validation_correction(job.id, store, get_settings(), _steps(request))
+        run_validation_correction(job.id, store, settings, _steps(request), _slots(request))
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)

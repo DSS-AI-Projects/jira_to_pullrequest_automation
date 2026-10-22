@@ -34,6 +34,7 @@ from app.core.errors import AppError, ErrorCode  # noqa: E402
 from app.core.logging import configure_logging, get_logger  # noqa: E402
 from app.core.process_hardening import make_process_non_dumpable  # noqa: E402
 from app.core.secrets import register_configured_secrets  # noqa: E402
+from app.jobs.limits import AgentSlots  # noqa: E402
 from app.jobs.retention import workspace_retention  # noqa: E402
 from app.jobs.runner import JobSteps, recover_interrupted_jobs  # noqa: E402
 from app.jobs.store import JobStore  # noqa: E402
@@ -62,6 +63,8 @@ def create_app(store: JobStore | None = None, steps: JobSteps | None = None) -> 
     app = FastAPI(title="jira2pullreq", lifespan=_lifespan)
     app.state.job_store = store if store is not None else JobStore(settings.db_path)
     app.state.job_steps = steps if steps is not None else default_steps()
+    # One cap for the whole process (single uvicorn worker by design).
+    app.state.agent_slots = AgentSlots(settings.max_concurrent_agent_runs)
     app.include_router(auth_router)
     app.include_router(api_router)
 

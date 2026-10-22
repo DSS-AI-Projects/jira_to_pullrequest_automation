@@ -1,6 +1,7 @@
 """Startup recovery: jobs a previous process left mid-flight end terminal."""
 
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -170,6 +171,8 @@ async def test_interrupted_correction_never_regresses_the_implementation(
         files=[ImplementationDiffFile(path="README.md", patch="+Implemented\n")],
     )
     job.validation_results = original_validation
+    # The correction agent had its slot and was running.
+    job.implementation_correction_started_at = datetime.now(UTC)
     store.save(job)
 
     assert await recover_interrupted_jobs(store) == 1

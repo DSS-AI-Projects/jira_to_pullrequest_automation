@@ -181,6 +181,13 @@ class Settings(BaseSettings):
     agent_implement_correction_max_turns: int = 10
     agent_implement_correction_max_budget_usd: float | None = 1.0
     agent_timeout_seconds: int = 600
+    # Load and spend limits (app/jobs/limits.py). At most this many agent
+    # runs (plan pipelines, implementations, corrections) execute at once;
+    # the rest wait in QUEUED / IMPLEMENTATION_QUEUED / CORRECTING, in order.
+    max_concurrent_agent_runs: int = Field(default=2, ge=1)
+    # Optional per-user cap on recorded agent cost over a rolling 24 hours,
+    # checked before a plan, implementation or correction starts. None = off.
+    user_daily_budget_usd: float | None = Field(default=None, gt=0)
     # Token-saving controls (see docs). Stub returns a canned plan with NO API
     # call (pipeline testing without credits). Cache reuses a prior plan for the
     # same ticket+repo inputs. Repo-doc injection front-loads CLAUDE.md/AGENTS.md/

@@ -192,6 +192,11 @@ class Job(BaseModel):
     # or fails — same rationale as usage/implementation_usage below: a failed
     # agent call still spends real Anthropic credits.
     implementation_correction_usage: AgentUsage | None = None
+    # When the correction agent got its slot and started (not when it was
+    # requested — it may wait in CORRECTING for a free agent slot). Stamps
+    # the correction's cost for the per-user spend window, and tells startup
+    # recovery whether an interrupted correction ever ran (app/jobs/limits.py).
+    implementation_correction_started_at: datetime | None = None
     # Set once a branch has been created and the reviewed diff committed to
     # it inside the isolated workspace (never pushed anywhere — see
     # ErrorCode.BRANCH_CREATION_NOT_AVAILABLE / BRANCH_CREATION_FAILED). The

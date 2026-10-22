@@ -689,7 +689,8 @@ outside-root / not-git / dirty / branch-mismatch), `BASE_BRANCH_NOT_FOUND`,
 planning — `AGENT_CONFIG_MISSING`, `AGENT_REQUEST_FAILED`, `PLAN_INVALID`,
 `BUDGET_EXCEEDED`; implementation — `IMPLEMENTATION_NOT_READY`,
 `IMPLEMENTATION_NOT_SUPPORTED`, `IMPLEMENTATION_WORKSPACE_MISSING`, `VALIDATION_FAILED`;
-validation correction — `VALIDATION_CORRECTION_NOT_AVAILABLE`; and `INTERNAL`. Raw
+validation correction — `VALIDATION_CORRECTION_NOT_AVAILABLE`; spend —
+`BUDGET_LIMIT_REACHED` (see **Load and spend limits**); and `INTERNAL`. Raw
 stack traces never reach the client.
 
 Every job ends in a terminal state. Two async pipelines drive it:
@@ -719,7 +720,11 @@ the existing Retry flow applies. Safe only because the backend runs as a single
 process (one uvicorn worker): with several workers, one starting up would fail
 jobs another is still running. Known limitation: a CRLF repo interrupted
 mid-agent keeps its LF-normalized files (the list of converted paths lived in
-the dead process), so the recovered diff can show line-ending noise.
+the dead process), so the recovered diff can show line-ending noise. A job
+that was only waiting for an agent slot (see **Load and spend limits**) is
+recovered the same way, with one exception: a correction that never got its
+slot (`implementation_correction_started_at` unset) doesn't use up the job's
+one correction attempt.
 
 ## Requirement source: Jira ticket or uploaded document
 
@@ -1537,6 +1542,61 @@ per owner directly in SQLite via
 `json_extract`/`SUM`, then resolves each `owner_user_id` to an email/display
 name for display. Surfaced as an admin-only `/admin/costs` page, linked from
 the header only when the signed-in user's role is `ADMIN`.
+
+## Load and spend limits
+
+Two controls for a shared deployment, both in `app/jobs/limits.py`.
+
+**Concurrency cap (`MAX_CONCURRENT_AGENT_RUNS`, default 2).** One
+`AgentSlots` (an `asyncio.Semaphore`, FIFO-fair) per process, created in
+`create_app` as `app.state.agent_slots` and passed by the three routes to
+`run_job` / `run_implementation` / `run_validation_correction` (`slots=`;
+`None` = unlimited, which is what tests calling the runner directly get).
+Each run holds a slot for its whole body — the plan pipeline's fetch, clone
+and repo map too, since they're also CPU/memory — and releases it in its
+`async with`, also on failure or cancellation. A job waiting for a slot stays
+in the state its route set: `QUEUED`, `IMPLEMENTATION_QUEUED`, or
+`CORRECTING` (no separate queued state for a correction; it reads as running
+with an empty activity log until it starts). Every slot holder is bounded by
+the clone timeout plus the agent's wall-clock timeout, so the queue always
+drains. The semaphore is in memory: a restart starts with every slot free,
+and `recover_interrupted_jobs` has already ended every job that was waiting
+(see **Failure behavior**). Correct only with one uvicorn worker — several
+workers would each have their own cap.
+
+**Per-user spend limit (`USER_DAILY_BUDGET_USD`, off by default).** The job
+owner's recorded agent cost over the last 24 hours, from the job records
+(`usage`, `implementation_usage`, `implementation_correction_usage`, so
+failed runs count — see **Cost is recorded even when the job fails**), each
+stamped with when that run started: planning with the job's `created_at`,
+implementation with `implementation_started_at`, the correction with
+`implementation_correction_started_at` (set when it gets its slot; older
+records fall back to `updated_at`, which can only over-count).
+`JobStore.list_owner_jobs_updated_since` narrows the scan to the owner's jobs
+touched in the window. `check_spend_limit` refuses at or over the limit with
+`BUDGET_LIMIT_REACHED` (HTTP 429), whose message gives the amount and the UTC
+time enough of the oldest spend leaves the window to fall back under the
+limit. Checked twice:
+
+- **In the route**, before `POST /jobs`, `/implement` and
+  `/correct-validation` change anything — the frontend shows it like any
+  other API error, and the job keeps its state.
+- **In the runner, once the slot is acquired**, because runs queued in a
+  burst all passed the route's check before any of their costs were
+  recorded. A plan job refused here ends `FAILED` (stage `QUEUED`, nothing
+  spent; Retry applies); an implementation ends `IMPLEMENTATION_FAILED`; a
+  correction goes back to `IMPLEMENTATION_READY` with
+  `implementation_correction_error` set and its one attempt **not** used.
+
+Decisions: **admins are not exempt** — the limit is about money, and an admin
+who needs more raises the setting. **The owner's budget is checked**, also
+when an admin acts on someone else's job, because spend is recorded against
+the owner (as in the admin cost summary). Jobs without an owner
+(`AUTH_ENABLED=false`) are never limited. Overshoot is bounded, not zero: a
+run in flight isn't counted until it records its cost, so a user can end up
+to (concurrent runs × the per-run `AGENT_*_MAX_BUDGET_USD` cap) over the
+limit — unbounded if `AGENT_IMPLEMENT_MAX_BUDGET_USD` is unset, so set it on
+a shared deployment. Tests: `test_agent_limits.py`.
 
 ## Scope
 

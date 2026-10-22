@@ -11,6 +11,7 @@ import asyncio
 import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.core.config import Settings
@@ -21,6 +22,7 @@ from app.core.workspace_git import (
     prepare_workspace_git,
     workspace_git_command,
 )
+from app.jobs.limits import AgentSlots, agent_slot, check_spend_limit
 from app.jobs.models import (
     AgentUsage,
     ImplementationDiff,
@@ -263,45 +265,56 @@ async def _collect_implementation_diff(
     return None
 
 
-async def run_job(job_id: str, store: JobStore, settings: Settings, steps: JobSteps) -> None:
+async def run_job(
+    job_id: str,
+    store: JobStore,
+    settings: Settings,
+    steps: JobSteps,
+    slots: AgentSlots | None = None,
+) -> None:
     job = store.get(job_id)
     if job is None:  # pragma: no cover - defensive
         logger.error("run_job: job %s not found", job_id)
         return
     try:
-        job = _advance(store, job, JobState.FETCHING_TICKET)
-        ticket = await steps.fetch_ticket(job, store)
+        async with agent_slot(slots, job.id):
+            # A job waiting for a slot stays QUEUED; re-check the owner's
+            # budget now, since runs queued in a burst all passed the
+            # route's check before any of their costs were recorded.
+            check_spend_limit(store, job.owner_user_id, settings)
+            job = _advance(store, job, JobState.FETCHING_TICKET)
+            ticket = await steps.fetch_ticket(job, store)
 
-        job = _advance(store, job, JobState.CLONING_REPO)
-        clone_result = await steps.clone_repo(
-            job.id,
-            job.ticket_key,
-            job.repo_url,
-            settings.workdir,
-            job.base_branch,
-            job.owner_user_id,
-            store,
-        )
-        clone_path = clone_result.clone_path
-        job.repo_info = clone_result.repo_info
-        job.workspace_path = str(clone_path)
+            job = _advance(store, job, JobState.CLONING_REPO)
+            clone_result = await steps.clone_repo(
+                job.id,
+                job.ticket_key,
+                job.repo_url,
+                settings.workdir,
+                job.base_branch,
+                job.owner_user_id,
+                store,
+            )
+            clone_path = clone_result.clone_path
+            job.repo_info = clone_result.repo_info
+            job.workspace_path = str(clone_path)
 
-        job = _advance(store, job, JobState.MAPPING_REPO)
-        repo_map = await steps.build_repo_map(clone_path)
+            job = _advance(store, job, JobState.MAPPING_REPO)
+            repo_map = await steps.build_repo_map(clone_path)
 
-        job = _advance(store, job, JobState.PLANNING)
-        # Deferred import: app.steps.__init__ imports JobSteps from this
-        # module, so a top-level import here would be circular.
-        from app.steps.agent_progress import report_progress_to
+            job = _advance(store, job, JobState.PLANNING)
+            # Deferred import: app.steps.__init__ imports JobSteps from this
+            # module, so a top-level import here would be circular.
+            from app.steps.agent_progress import report_progress_to
 
-        with report_progress_to(_start_activity_log(store, job)):
-            result = await steps.generate_plan(ticket, repo_map, clone_path, job.planning_notes)
+            with report_progress_to(_start_activity_log(store, job)):
+                result = await steps.generate_plan(ticket, repo_map, clone_path, job.planning_notes)
 
-        job.plan = result.plan
-        job.usage = result.usage
-        job.state = JobState.PLAN_READY
-        store.save(job)
-        logger.info("job %s: plan ready", job.id)
+            job.plan = result.plan
+            job.usage = result.usage
+            job.state = JobState.PLAN_READY
+            store.save(job)
+            logger.info("job %s: plan ready", job.id)
     except AppError as err:
         logger.warning(
             "job %s failed at %s: %s (%s)",
@@ -351,102 +364,111 @@ async def _refresh_diff_best_effort(job: Job) -> None:
 
 
 async def run_implementation(
-    job_id: str, store: JobStore, settings: Settings, steps: JobSteps
+    job_id: str,
+    store: JobStore,
+    settings: Settings,
+    steps: JobSteps,
+    slots: AgentSlots | None = None,
 ) -> None:
     job = store.get(job_id)
     if job is None:  # pragma: no cover - defensive
         logger.error("run_implementation: job %s not found", job_id)
         return
     try:
-        if job.state != JobState.IMPLEMENTATION_QUEUED or job.plan is None:
-            raise AppError(ErrorCode.IMPLEMENTATION_NOT_READY)
-        if job.repo_info is None or job.repo_info.source_kind not in (
-            RepoSourceKind.LOCAL,
-            RepoSourceKind.LOCAL_FOLDER,
-            RepoSourceKind.REMOTE,
-        ):
-            raise AppError(ErrorCode.IMPLEMENTATION_NOT_SUPPORTED)
-        if not job.workspace_path:
-            raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+        async with agent_slot(slots, job.id):
+            # Waits in IMPLEMENTATION_QUEUED; see run_job for the re-check.
+            check_spend_limit(store, job.owner_user_id, settings)
+            if job.state != JobState.IMPLEMENTATION_QUEUED or job.plan is None:
+                raise AppError(ErrorCode.IMPLEMENTATION_NOT_READY)
+            if job.repo_info is None or job.repo_info.source_kind not in (
+                RepoSourceKind.LOCAL,
+                RepoSourceKind.LOCAL_FOLDER,
+                RepoSourceKind.REMOTE,
+            ):
+                raise AppError(ErrorCode.IMPLEMENTATION_NOT_SUPPORTED)
+            if not job.workspace_path:
+                raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
 
-        workspace_path = Path(job.workspace_path)
-        if not workspace_path.exists():
-            raise AppError(
-                ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING,
-                internal_detail=f"workspace path missing: {workspace_path}",
-            )
-
-        base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
-        base_ref = base_ref or "HEAD"
-        job.implementation_baseline_commit_sha = base_ref
-        job.implementation_started_at = store.save(job).updated_at
-        job = _advance(store, job, JobState.IMPLEMENTING)
-        # Deferred imports: app.steps.__init__ imports JobSteps from this
-        # module, so a top-level import here would be circular.
-        from app.steps.agent_progress import report_progress_to
-        from app.steps.line_endings import normalize_to_lf, restore_original_line_endings
-
-        converted_line_endings: frozenset[Path] = frozenset()
-        if settings.workspace_normalize_line_endings:
-            converted_line_endings = await asyncio.to_thread(
-                normalize_to_lf, workspace_path, settings.workspace_line_ending_max_file_bytes
-            )
-        try:
-            with report_progress_to(_start_activity_log(store, job)):
-                implementation = await steps.implement_plan(job, workspace_path, None)
-        finally:
-            # Always restore — including on a raise — so a diff collected
-            # afterward (the happy path below, or _refresh_diff_best_effort
-            # on a failure) never shows line-ending-only noise, and the
-            # branch/commit the user eventually reviews keeps the repo's
-            # original convention.
-            if converted_line_endings:
-                await asyncio.to_thread(
-                    restore_original_line_endings, workspace_path, converted_line_endings
+            workspace_path = Path(job.workspace_path)
+            if not workspace_path.exists():
+                raise AppError(
+                    ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING,
+                    internal_detail=f"workspace path missing: {workspace_path}",
                 )
-        # Recorded as soon as the agent call returns, before the consistency
-        # check below can raise — so even the "claimed changes never landed"
-        # failure path still reports what the (completed, cost-incurring)
-        # agent run actually used.
-        job.implementation_usage = implementation.usage
-        store.save(job)
-        diff = await _collect_implementation_diff(workspace_path, base_ref)
 
-        if implementation.result.changed_files and (diff is None or not diff.files):
-            # The agent's own report doesn't match reality — its structured
-            # output claimed file changes that never actually landed on disk
-            # (most likely a tool call that silently failed and was not
-            # recovered from). Surfacing this as a hollow "success" with an
-            # empty diff would be misleading; fail explicitly instead.
-            claimed_paths = ", ".join(change.path for change in implementation.result.changed_files)
-            raise AppError(
-                ErrorCode.IMPLEMENTATION_INVALID,
-                user_message=(
-                    "The implementation agent reported changing "
-                    f"{len(implementation.result.changed_files)} file(s) "
-                    f"({claimed_paths}), but no actual code differences were found in "
-                    "the workspace afterward — most likely one of its edit attempts "
-                    "failed silently partway through and it did not recover. This is "
-                    "typically a one-off execution glitch, not a problem with the "
-                    "ticket itself — retrying often succeeds without any changes "
-                    "needed."
-                ),
-                internal_detail=(
-                    f"agent reported {len(implementation.result.changed_files)} changed "
-                    "file(s) but no working-tree differences were detected against the "
-                    "pre-implementation baseline"
-                ),
-            )
+            base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
+            base_ref = base_ref or "HEAD"
+            job.implementation_baseline_commit_sha = base_ref
+            job.implementation_started_at = store.save(job).updated_at
+            job = _advance(store, job, JobState.IMPLEMENTING)
+            # Deferred imports: app.steps.__init__ imports JobSteps from this
+            # module, so a top-level import here would be circular.
+            from app.steps.agent_progress import report_progress_to
+            from app.steps.line_endings import normalize_to_lf, restore_original_line_endings
 
-        job.implementation_result = implementation.result
-        job.implementation_diff = diff
-        store.save(job)
-        job = _advance(store, job, JobState.VALIDATING)
-        job.validation_results = await steps.validate_workspace(workspace_path)
-        job.implementation_finished_at = store.save(job).updated_at
-        job.state = JobState.IMPLEMENTATION_READY
-        store.save(job)
-        logger.info("job %s: implementation ready", job.id)
+            converted_line_endings: frozenset[Path] = frozenset()
+            if settings.workspace_normalize_line_endings:
+                converted_line_endings = await asyncio.to_thread(
+                    normalize_to_lf, workspace_path, settings.workspace_line_ending_max_file_bytes
+                )
+            try:
+                with report_progress_to(_start_activity_log(store, job)):
+                    implementation = await steps.implement_plan(job, workspace_path, None)
+            finally:
+                # Always restore — including on a raise — so a diff collected
+                # afterward (the happy path below, or _refresh_diff_best_effort
+                # on a failure) never shows line-ending-only noise, and the
+                # branch/commit the user eventually reviews keeps the repo's
+                # original convention.
+                if converted_line_endings:
+                    await asyncio.to_thread(
+                        restore_original_line_endings, workspace_path, converted_line_endings
+                    )
+            # Recorded as soon as the agent call returns, before the consistency
+            # check below can raise — so even the "claimed changes never landed"
+            # failure path still reports what the (completed, cost-incurring)
+            # agent run actually used.
+            job.implementation_usage = implementation.usage
+            store.save(job)
+            diff = await _collect_implementation_diff(workspace_path, base_ref)
+
+            if implementation.result.changed_files and (diff is None or not diff.files):
+                # The agent's own report doesn't match reality — its structured
+                # output claimed file changes that never actually landed on disk
+                # (most likely a tool call that silently failed and was not
+                # recovered from). Surfacing this as a hollow "success" with an
+                # empty diff would be misleading; fail explicitly instead.
+                claimed_paths = ", ".join(
+                    change.path for change in implementation.result.changed_files
+                )
+                raise AppError(
+                    ErrorCode.IMPLEMENTATION_INVALID,
+                    user_message=(
+                        "The implementation agent reported changing "
+                        f"{len(implementation.result.changed_files)} file(s) "
+                        f"({claimed_paths}), but no actual code differences were found in "
+                        "the workspace afterward — most likely one of its edit attempts "
+                        "failed silently partway through and it did not recover. This is "
+                        "typically a one-off execution glitch, not a problem with the "
+                        "ticket itself — retrying often succeeds without any changes "
+                        "needed."
+                    ),
+                    internal_detail=(
+                        f"agent reported {len(implementation.result.changed_files)} changed "
+                        "file(s) but no working-tree differences were detected against the "
+                        "pre-implementation baseline"
+                    ),
+                )
+
+            job.implementation_result = implementation.result
+            job.implementation_diff = diff
+            store.save(job)
+            job = _advance(store, job, JobState.VALIDATING)
+            job.validation_results = await steps.validate_workspace(workspace_path)
+            job.implementation_finished_at = store.save(job).updated_at
+            job.state = JobState.IMPLEMENTATION_READY
+            store.save(job)
+            logger.info("job %s: implementation ready", job.id)
     except AppError as err:
         logger.warning(
             "job %s implementation failed at %s: %s (%s)",
@@ -493,21 +515,35 @@ async def run_implementation(
             )
 
 
-def _record_correction_failure(store: JobStore, job: Job, code: ErrorCode, message: str) -> None:
+def _record_correction_failure(
+    store: JobStore,
+    job: Job,
+    code: ErrorCode,
+    message: str,
+    *,
+    attempt_used: bool = True,
+) -> None:
     # A correction attempt is strictly best-effort: whether it succeeds,
     # partially succeeds, or the agent call itself fails, the job always
     # lands back on IMPLEMENTATION_READY. The original implementation_result
     # and implementation_diff are left untouched — a failed correction never
     # regresses a job that already had a working (if imperfectly validated)
-    # implementation.
+    # implementation. `attempt_used=False` is for a correction refused before
+    # its agent ever ran (spend limit, or interrupted while waiting for a
+    # slot): the one attempt stays available.
     job.implementation_correction_error = JobError(code=code, message=message, stage=job.state)
-    job.implementation_correction_attempted = True
+    if attempt_used:
+        job.implementation_correction_attempted = True
     job.state = JobState.IMPLEMENTATION_READY
     store.save(job)
 
 
 async def run_validation_correction(
-    job_id: str, store: JobStore, settings: Settings, steps: JobSteps
+    job_id: str,
+    store: JobStore,
+    settings: Settings,
+    steps: JobSteps,
+    slots: AgentSlots | None = None,
 ) -> None:
     # Deferred import: app.steps.__init__ imports JobSteps from this module,
     # so a top-level import here would be circular.
@@ -518,60 +554,65 @@ async def run_validation_correction(
         logger.error("run_validation_correction: job %s not found", job_id)
         return
     try:
-        if job.state != JobState.CORRECTING:
-            raise AppError(ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE)
-        if not job.workspace_path:
-            raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+        async with agent_slot(slots, job.id):
+            # Waits in CORRECTING; see run_job for the re-check.
+            check_spend_limit(store, job.owner_user_id, settings)
+            if job.state != JobState.CORRECTING:
+                raise AppError(ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE)
+            job.implementation_correction_started_at = datetime.now(UTC)
+            store.save(job)
+            if not job.workspace_path:
+                raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
 
-        workspace_path = Path(job.workspace_path)
-        if not workspace_path.exists():
-            raise AppError(
-                ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING,
-                internal_detail=f"workspace path missing: {workspace_path}",
-            )
-
-        failed_results = correctable_failures(job.validation_results)
-        base_ref = job.implementation_baseline_commit_sha
-        if not base_ref:
-            # Defensive fallback for a job implemented before this field
-            # existed on Job.
-            base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
-            base_ref = base_ref or "HEAD"
-
-        # Deferred imports: app.steps.__init__ imports JobSteps from this
-        # module, so a top-level import here would be circular.
-        from app.steps.agent_progress import report_progress_to
-        from app.steps.line_endings import normalize_to_lf, restore_original_line_endings
-
-        converted_line_endings: frozenset[Path] = frozenset()
-        if settings.workspace_normalize_line_endings:
-            converted_line_endings = await asyncio.to_thread(
-                normalize_to_lf, workspace_path, settings.workspace_line_ending_max_file_bytes
-            )
-        try:
-            with report_progress_to(_start_activity_log(store, job)):
-                correction = await steps.implement_plan(job, workspace_path, failed_results)
-        finally:
-            if converted_line_endings:
-                await asyncio.to_thread(
-                    restore_original_line_endings, workspace_path, converted_line_endings
+            workspace_path = Path(job.workspace_path)
+            if not workspace_path.exists():
+                raise AppError(
+                    ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING,
+                    internal_detail=f"workspace path missing: {workspace_path}",
                 )
-        job.implementation_correction_result = correction.result
-        job.implementation_correction_usage = correction.usage
-        store.save(job)
 
-        job = _advance(store, job, JobState.REVALIDATING)
-        diff = await _collect_implementation_diff(workspace_path, base_ref)
-        if diff is not None:
-            # A diff-collection failure here is best-effort like elsewhere in
-            # this pipeline — keep whatever diff the original implementation
-            # already recorded rather than clobbering it with None.
-            job.implementation_diff = diff
-        job.validation_results = await steps.validate_workspace(workspace_path)
-        job.implementation_correction_attempted = True
-        job.state = JobState.IMPLEMENTATION_READY
-        store.save(job)
-        logger.info("job %s: validation correction complete", job.id)
+            failed_results = correctable_failures(job.validation_results)
+            base_ref = job.implementation_baseline_commit_sha
+            if not base_ref:
+                # Defensive fallback for a job implemented before this field
+                # existed on Job.
+                base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
+                base_ref = base_ref or "HEAD"
+
+            # Deferred imports: app.steps.__init__ imports JobSteps from this
+            # module, so a top-level import here would be circular.
+            from app.steps.agent_progress import report_progress_to
+            from app.steps.line_endings import normalize_to_lf, restore_original_line_endings
+
+            converted_line_endings: frozenset[Path] = frozenset()
+            if settings.workspace_normalize_line_endings:
+                converted_line_endings = await asyncio.to_thread(
+                    normalize_to_lf, workspace_path, settings.workspace_line_ending_max_file_bytes
+                )
+            try:
+                with report_progress_to(_start_activity_log(store, job)):
+                    correction = await steps.implement_plan(job, workspace_path, failed_results)
+            finally:
+                if converted_line_endings:
+                    await asyncio.to_thread(
+                        restore_original_line_endings, workspace_path, converted_line_endings
+                    )
+            job.implementation_correction_result = correction.result
+            job.implementation_correction_usage = correction.usage
+            store.save(job)
+
+            job = _advance(store, job, JobState.REVALIDATING)
+            diff = await _collect_implementation_diff(workspace_path, base_ref)
+            if diff is not None:
+                # A diff-collection failure here is best-effort like elsewhere in
+                # this pipeline — keep whatever diff the original implementation
+                # already recorded rather than clobbering it with None.
+                job.implementation_diff = diff
+            job.validation_results = await steps.validate_workspace(workspace_path)
+            job.implementation_correction_attempted = True
+            job.state = JobState.IMPLEMENTATION_READY
+            store.save(job)
+            logger.info("job %s: validation correction complete", job.id)
     except AppError as err:
         logger.warning(
             "job %s validation correction failed at %s: %s (%s)",
@@ -583,7 +624,13 @@ async def run_validation_correction(
         if err.usage is not None:
             job.implementation_correction_usage = AgentUsage.model_validate(err.usage)
         await _refresh_diff_best_effort(job)
-        _record_correction_failure(store, job, err.code, err.user_message)
+        _record_correction_failure(
+            store,
+            job,
+            err.code,
+            err.user_message,
+            attempt_used=err.code != ErrorCode.BUDGET_LIMIT_REACHED,
+        )
     except Exception:
         logger.exception("job %s validation correction crashed at %s", job.id, job.state)
         await _refresh_diff_best_effort(job)
@@ -637,7 +684,15 @@ async def recover_interrupted_jobs(store: JobStore) -> int:
             interrupted_at = job.state
             if interrupted_at in _CORRECTION_STATES:
                 await _refresh_diff_best_effort(job)
-                _record_correction_failure(store, job, ErrorCode.JOB_INTERRUPTED, message)
+                # A correction still waiting for an agent slot never ran, so
+                # it doesn't use up the job's one attempt.
+                _record_correction_failure(
+                    store,
+                    job,
+                    ErrorCode.JOB_INTERRUPTED,
+                    message,
+                    attempt_used=job.implementation_correction_started_at is not None,
+                )
             elif interrupted_at in _IMPLEMENTATION_STATES:
                 await _refresh_diff_best_effort(job)
                 _fail(

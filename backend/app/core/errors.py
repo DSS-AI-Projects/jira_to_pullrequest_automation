@@ -62,6 +62,7 @@ class ErrorCode(StrEnum):
     BRANCH_PUSH_FAILED = "BRANCH_PUSH_FAILED"
     BRANCH_PUSH_REAUTH_REQUIRED = "BRANCH_PUSH_REAUTH_REQUIRED"
     JOB_INTERRUPTED = "JOB_INTERRUPTED"
+    BUDGET_LIMIT_REACHED = "BUDGET_LIMIT_REACHED"
     INTERNAL = "INTERNAL"
 
 
@@ -193,6 +194,9 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
         "Connect your repository account with write access before pushing."
     ),
     ErrorCode.JOB_INTERRUPTED: "The server restarted while this job was running. Retry it.",
+    ErrorCode.BUDGET_LIMIT_REACHED: (
+        "You have reached your AI budget for the last 24 hours. Try again later."
+    ),
     ErrorCode.INTERNAL: "An internal error occurred.",
 }
 
@@ -231,6 +235,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.UNAUTHENTICATED: 401,
     ErrorCode.FORBIDDEN: 403,
     ErrorCode.JOB_NOT_FOUND: 404,
+    ErrorCode.BUDGET_LIMIT_REACHED: 429,
     ErrorCode.INTERNAL: 500,
 }
 
