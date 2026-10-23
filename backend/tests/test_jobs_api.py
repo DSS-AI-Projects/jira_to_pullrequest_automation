@@ -999,6 +999,111 @@ def test_reuploading_the_same_pdf_yields_the_same_synthetic_key(
     assert first_key != third_key
 
 
+# --- pasted requirement text (the TEXT source) ---
+
+_PASTED = "Users can export the monthly report as CSV.\nOnly admins see the button."
+
+
+def test_submit_with_pasted_text_reaches_plan_ready_and_keeps_the_text(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={
+            "repo": "git@github.com:acme/repo.git",
+            "requirement_title": "  CSV export ",
+            "requirement_text": _PASTED,
+        },
+    )
+    assert response.status_code == 202
+    body = poll_until_terminal(client, response.json()["job_id"])
+
+    assert body["state"] == "PLAN_READY"
+    assert body["requirement_source"] == "TEXT"
+    assert body["ticket_key"].startswith("TXT-")
+    assert body["requirement_title"] == "CSV export"
+    # Kept on the record so Retry can bring it back to the form.
+    assert body["requirement_text"] == _PASTED
+
+
+def test_pasting_the_same_text_again_yields_the_same_key(client: TestClient) -> None:
+    """Deterministic like the PDF fallback, so a resubmission hits the plan
+    cache (which hashes the full prompt, key included)."""
+
+    def submit(text: str) -> str:
+        response = client.post(
+            "/api/jobs",
+            data={"repo": "git@github.com:acme/repo.git", "requirement_text": text},
+        )
+        assert response.status_code == 202
+        return cast(str, poll_until_terminal(client, response.json()["job_id"])["ticket_key"])
+
+    assert submit(_PASTED) == submit(_PASTED)
+    assert submit(_PASTED) != submit("A completely different requirement.")
+
+
+def test_submit_with_pasted_text_uses_a_typed_ticket_key(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={
+            "repo": "git@github.com:acme/repo.git",
+            "requirement_text": _PASTED,
+            "text_ticket_key": "mantis-1234",
+        },
+    )
+    assert response.status_code == 202
+    body = poll_until_terminal(client, response.json()["job_id"])
+    assert body["ticket_key"] == "MANTIS-1234"
+
+
+def test_submit_with_pasted_text_and_a_ticket_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={
+            "ticket": "PROJ-1",
+            "repo": "git@github.com:acme/repo.git",
+            "requirement_text": _PASTED,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+
+
+def test_submit_with_blank_pasted_text_counts_as_no_requirement(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={"repo": "git@github.com:acme/repo.git", "requirement_text": "   "},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+
+
+def test_submit_with_too_long_pasted_text_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={"repo": "git@github.com:acme/repo.git", "requirement_text": "x" * 20_001},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+    assert "20,000" in response.json()["error"]["message"]
+
+
+def test_pasted_text_with_a_credential_is_rejected_and_never_stored(
+    client: TestClient, store: JobStore
+) -> None:
+    response = client.post(
+        "/api/jobs",
+        data={
+            "repo": "git@github.com:acme/repo.git",
+            "requirement_text": f"Call the API with {FAKE_TOKEN}",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+    assert FAKE_TOKEN not in response.text
+    assert store.list_unfinished_jobs() == []
+
+
 def test_submit_with_document_ticket_key_field_uses_the_typed_key(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

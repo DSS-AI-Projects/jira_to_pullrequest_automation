@@ -50,6 +50,7 @@ class JobError(BaseModel):
 class RequirementSource(StrEnum):
     JIRA = "JIRA"
     DOCUMENT = "DOCUMENT"  # uploaded PDF — see document_fetch.py
+    TEXT = "TEXT"  # pasted into the form — see requirement_text.py
 
 
 class RepoSourceKind(StrEnum):
@@ -141,6 +142,10 @@ class Job(BaseModel):
     ticket_key: str
     requirement_source: RequirementSource = RequirementSource.JIRA
     requirement_document_name: str | None = None
+    # A TEXT job's requirement, as pasted. Kept on the record (unlike a PDF,
+    # which lives in var/uploads) so Retry can bring it back to the form.
+    requirement_title: str | None = None
+    requirement_text: str | None = None
     repo_url: str
     # An existing branch to clone from instead of the repo's default branch
     # (e.g. "develop", or an in-progress ticket branch) — None means "use the
@@ -243,6 +248,8 @@ class Job(BaseModel):
         requirement_source: RequirementSource = RequirementSource.JIRA,
         requirement_document_name: str | None = None,
         base_branch: str | None = None,
+        requirement_title: str | None = None,
+        requirement_text: str | None = None,
     ) -> Job:
         now = datetime.now(UTC)
         return cls(
@@ -251,6 +258,8 @@ class Job(BaseModel):
             ticket_key=ticket_key,
             requirement_source=requirement_source,
             requirement_document_name=requirement_document_name,
+            requirement_title=requirement_title,
+            requirement_text=requirement_text,
             repo_url=repo_url,
             base_branch=base_branch,
             planning_notes=planning_notes,

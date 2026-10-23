@@ -43,6 +43,8 @@ from app.schemas.inputs import (
     normalize_document_ticket_key,
     normalize_planning_notes,
     normalize_repo,
+    normalize_requirement_text,
+    normalize_requirement_title,
     normalize_ticket,
     reject_unknown_form_fields,
     require_exactly_one_requirement_source,
@@ -53,6 +55,7 @@ from app.steps.document_fetch import (
     extract_pdf_text_from_bytes,
     requirement_document_path,
 )
+from app.steps.requirement_text import synthetic_text_key
 from app.steps.validation_runner import correctable_failures
 
 logger = get_logger(__name__)
@@ -264,19 +267,39 @@ async def create_job(
     planning_notes: str | None = Form(default=None, max_length=4000),
     requirement_document: UploadFile | None = File(default=None),  # noqa: B008
     document_ticket_key: str | None = Form(default=None, max_length=2000),
+    # Generous transport limits; the typed checks (length, credential shape)
+    # are normalize_requirement_text/_title's, with user-safe messages.
+    requirement_title: str | None = Form(default=None, max_length=2000),
+    requirement_text: str | None = Form(default=None, max_length=100_000),
+    text_ticket_key: str | None = Form(default=None, max_length=2000),
 ) -> JobCreated:
     user = require_current_user(request)
     settings: Settings = get_settings()
     form = await request.form()
     reject_unknown_form_fields(set(form.keys()), JOB_CREATE_FORM_FIELDS)
     check_spend_limit(_store(request), user.id if user else None, settings)
-    require_exactly_one_requirement_source(ticket, requirement_document is not None)
+    requirement_text_normalized = normalize_requirement_text(requirement_text)
+    require_exactly_one_requirement_source(
+        ticket,
+        requirement_document is not None,
+        has_text=requirement_text_normalized is not None,
+    )
     repo_url = normalize_repo(repo, settings)
     base_branch_normalized = normalize_base_branch(base_branch)
     planning_notes_normalized = normalize_planning_notes(planning_notes)
 
     document_content: bytes | None = None
-    if requirement_document is not None:
+    requirement_title_normalized: str | None = None
+    if requirement_text_normalized is not None:
+        requirement_title_normalized = normalize_requirement_title(requirement_title)
+        # Same priority as a PDF minus auto-detection: a typed key (any
+        # PROJ-123 shape, e.g. MANTIS-1234), else a deterministic hash.
+        ticket_key = normalize_document_ticket_key(text_ticket_key, settings) or synthetic_text_key(
+            requirement_title_normalized, requirement_text_normalized
+        )
+        requirement_source = RequirementSource.TEXT
+        requirement_document_name = None
+    elif requirement_document is not None:
         document_content = await requirement_document.read()
         validate_uploaded_document(document_content, settings)
         ticket_key = await _resolve_document_ticket_key(
@@ -299,6 +322,8 @@ async def create_job(
         requirement_source=requirement_source,
         requirement_document_name=requirement_document_name,
         base_branch=base_branch_normalized,
+        requirement_title=requirement_title_normalized,
+        requirement_text=requirement_text_normalized,
     )
 
     if document_content is not None:

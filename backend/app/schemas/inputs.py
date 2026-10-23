@@ -1,8 +1,8 @@
 """Form input validation — security invariants 1 and 5.
 
 The job-create submission is a small set of non-secret fields — exactly one
-of a Jira ticket identifier or an uploaded PDF, plus a repo identifier and
-optional planning notes. Field values that look like credentials are
+of a Jira ticket identifier, an uploaded PDF, or pasted requirement text,
+plus a repo identifier and optional planning notes. Field values that look like credentials are
 rejected without ever being logged or stored.
 """
 
@@ -124,8 +124,17 @@ JOB_CREATE_FORM_FIELDS = frozenset(
         "planning_notes",
         "requirement_document",
         "document_ticket_key",
+        "requirement_title",
+        "requirement_text",
+        "text_ticket_key",
     }
 )
+
+# A pasted requirement: long enough for a detailed issue with acceptance
+# criteria, short enough not to blow the planning budget (the PDF source caps
+# its extracted text the same way, DOCUMENT_MAX_EXTRACTED_CHARS).
+REQUIREMENT_TEXT_MAX_CHARS = 20_000
+REQUIREMENT_TITLE_MAX_CHARS = 200
 
 
 def reject_unknown_form_fields(field_names: set[str], allowed: frozenset[str]) -> None:
@@ -143,18 +152,28 @@ def reject_unknown_form_fields(field_names: set[str], allowed: frozenset[str]) -
         )
 
 
-def require_exactly_one_requirement_source(ticket: str | None, has_document: bool) -> None:
-    """Exactly one of a Jira ticket or an uploaded document must be provided."""
+def require_exactly_one_requirement_source(
+    ticket: str | None, has_document: bool, *, has_text: bool = False
+) -> None:
+    """Exactly one of a Jira ticket, an uploaded document, or pasted
+    requirement text must be provided."""
     ticket_provided = bool(ticket and ticket.strip())
-    if ticket_provided and has_document:
+    provided = sum((ticket_provided, has_document, has_text))
+    if provided > 1:
         raise AppError(
             ErrorCode.INPUT_INVALID,
-            user_message=("Provide either a Jira ticket or a requirement document, not both."),
+            user_message=(
+                "Provide only one requirement: a Jira ticket, a requirement document, "
+                "or pasted text."
+            ),
         )
-    if not ticket_provided and not has_document:
+    if provided == 0:
         raise AppError(
             ErrorCode.INPUT_INVALID,
-            user_message="Provide a Jira ticket key/URL or upload a requirement document.",
+            user_message=(
+                "Provide a Jira ticket key/URL, upload a requirement document, "
+                "or paste the requirement text."
+            ),
         )
 
 
@@ -197,6 +216,33 @@ def _normalize_free_text(raw: str | None, field: str) -> str | None:
     if not value:
         return None
     _reject_credential_shaped(value, field)
+    return value
+
+
+def normalize_requirement_text(raw: str | None) -> str | None:
+    """Trim and validate a pasted requirement (the TEXT source). Blank means
+    "not provided"; the exactly-one-source check decides whether that's an
+    error. Untrusted data like ticket content (invariant 5), and rejected if
+    it contains anything credential-shaped (invariant 1)."""
+    value = _normalize_free_text(raw, "requirement text")
+    if value is not None and len(value) > REQUIREMENT_TEXT_MAX_CHARS:
+        raise AppError(
+            ErrorCode.INPUT_INVALID,
+            user_message=(
+                f"The requirement text is too long ({len(value):,} characters; "
+                f"the limit is {REQUIREMENT_TEXT_MAX_CHARS:,}). Paste the essential "
+                "parts, or upload it as a PDF."
+            ),
+        )
+    return value
+
+
+def normalize_requirement_title(raw: str | None) -> str | None:
+    """Trim and validate the optional title of a pasted requirement."""
+    value = _normalize_free_text(raw, "requirement title")
+    if value is not None:
+        # One line: it becomes the ticket summary.
+        value = " ".join(value.split())[:REQUIREMENT_TITLE_MAX_CHARS]
     return value
 
 

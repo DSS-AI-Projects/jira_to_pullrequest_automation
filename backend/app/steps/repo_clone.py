@@ -38,10 +38,10 @@ from app.jobs.store import JobStore
 
 logger = get_logger(__name__)
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
-# Matches only the hashed fallback key routes.py mints for a document-sourced
-# job with no real ticket key (DOC- + 8 uppercase hex chars) — see the
-# is_synthetic_document_key usage below.
-_SYNTHETIC_DOCUMENT_KEY_RE = re.compile(r"^DOC-[0-9A-F]{8}$")
+# Matches only the hashed fallback key routes.py mints for a document- or
+# text-sourced job with no real ticket key (DOC-/TXT- + 8 uppercase hex
+# chars) — see the is_synthetic_document_key usage below.
+_SYNTHETIC_DOCUMENT_KEY_RE = re.compile(r"^(?:DOC|TXT)-[0-9A-F]{8}$")
 
 # Folder-copy safeguard (ALLOW_LOCAL_NON_GIT_FOLDERS): names never copied into
 # the workspace, regardless of .gitignore. A plain folder has no git history

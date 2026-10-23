@@ -13,15 +13,19 @@ from app.steps.jira_fetch import fetch_ticket as fetch_jira_ticket
 from app.steps.plan_agent import generate_plan
 from app.steps.repo_clone import clone_repo
 from app.steps.repo_map import build_repo_map
+from app.steps.requirement_text import fetch_requirement_text
 from app.steps.validation_runner import validate_workspace
 
 
 async def fetch_requirement(job: Job, store: JobStore) -> TicketData:
-    """Dispatch to the Jira fetch or the document-extraction step, whichever
-    the job was created with — both produce the same TicketData shape, so
-    nothing downstream (planning) needs to know which source was used."""
+    """Dispatch to the Jira fetch, the document-extraction or the pasted-text
+    step, whichever the job was created with — all produce the same
+    TicketData shape, so nothing downstream (planning) needs to know which
+    source was used."""
     if job.requirement_source == RequirementSource.DOCUMENT:
         return await fetch_requirement_document(job, store)
+    if job.requirement_source == RequirementSource.TEXT:
+        return await fetch_requirement_text(job, store)
     return await fetch_jira_ticket(job, store)
 
 

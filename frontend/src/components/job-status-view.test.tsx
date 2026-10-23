@@ -579,6 +579,9 @@ describe("JobStatusView", () => {
       baseBranch: "",
       planningNotes: "Use the shared logger, not print().",
       documentTicketKey: "",
+      requirementTitle: "",
+      requirementText: "",
+      textTicketKey: "",
       implementationClarifications: "",
     });
     expect(push).toHaveBeenCalledWith("/");
@@ -720,6 +723,9 @@ describe("JobStatusView", () => {
       baseBranch: "",
       planningNotes: "",
       documentTicketKey: "",
+      requirementTitle: "",
+      requirementText: "",
+      textTicketKey: "",
       implementationClarifications:
         "Stuff Type will be form based field i.e. F=factory, D=dock.",
     });
@@ -1584,6 +1590,9 @@ describe("JobStatusView", () => {
       baseBranch: "",
       planningNotes: "",
       documentTicketKey: "",
+      requirementTitle: "",
+      requirementText: "",
+      textTicketKey: "",
       implementationClarifications: "",
     });
   });
@@ -1642,6 +1651,9 @@ describe("JobStatusView", () => {
       requirementSource: "DOCUMENT",
       requirementDocumentName: "requirements.pdf",
       documentTicketKey: "",
+      requirementTitle: "",
+      requirementText: "",
+      textTicketKey: "",
       implementationClarifications: "",
     });
   });
@@ -1699,6 +1711,60 @@ describe("JobStatusView", () => {
     expect(draft.documentTicketKey).toBe("KAN-31");
     expect(draft.ticket).toBe(""); // still not treated as a Jira-sourced job
   });
+
+  it.each([
+    ["TXT-A1B2C3D4", ""],
+    ["MANTIS-1234", "MANTIS-1234"],
+  ])(
+    "carries a pasted requirement back in full on retry (key %s)",
+    async (ticketKey, expectedTextTicketKey) => {
+      sessionStorage.clear();
+      fetchJob.mockResolvedValue({
+        id: "job-text-failed",
+        ticket_key: ticketKey,
+        requirement_source: "TEXT",
+        requirement_document_name: null,
+        requirement_title: "CSV export",
+        requirement_text: "Users can export the report as CSV.",
+        repo_url: "https://github.com/acme/repo.git",
+        planning_notes: null,
+        state: "FAILED",
+        error: {
+          code: "BUDGET_EXCEEDED",
+          message: "The planning step ran out of budget.",
+          stage: "PLANNING",
+        },
+        repo_info: null,
+        workspace_path: null,
+        plan: null,
+        usage: null,
+        implementation_usage: null,
+        implementation_result: null,
+        implementation_diff: null,
+        validation_results: [],
+        implementation_clarifications: null,
+        implementation_approved_at: null,
+        implementation_started_at: null,
+        implementation_finished_at: null,
+        created_at: "2026-10-23T10:00:00Z",
+        updated_at: "2026-10-23T10:05:00Z",
+      });
+
+      render(<JobStatusView jobId="job-text-failed" />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+
+      const draft = JSON.parse(
+        sessionStorage.getItem("jira2pullreq:retry-draft")!,
+      ) as RetryDraft;
+      expect(draft.requirementSource).toBe("TEXT");
+      expect(draft.ticket).toBe(""); // never treated as a Jira ticket
+      expect(draft.requirementTitle).toBe("CSV export");
+      expect(draft.requirementText).toBe("Users can export the report as CSV.");
+      // The generated TXT- id means nothing to type back in; a real key does.
+      expect(draft.textTicketKey).toBe(expectedTextTicketKey);
+    },
+  );
 
   it("does not show a Retry button for a job that has not failed", async () => {
     fetchJob.mockResolvedValue({

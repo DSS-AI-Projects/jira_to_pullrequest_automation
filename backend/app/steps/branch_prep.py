@@ -62,9 +62,9 @@ def _slugify(text: str, max_length: int = _MAX_SLUG_LENGTH) -> str:
 
 def default_branch_name(job: Job) -> str:
     """A ticket-based branch name, or a slugified-summary name for a
-    document-sourced job whose synthetic `DOC-XXXXXXXX` key alone wouldn't
-    mean anything to a reviewer."""
-    if job.requirement_source == RequirementSource.DOCUMENT:
+    document- or text-sourced job, whose synthetic `DOC-`/`TXT-XXXXXXXX` key
+    alone wouldn't mean anything to a reviewer."""
+    if job.requirement_source in (RequirementSource.DOCUMENT, RequirementSource.TEXT):
         summary = job.plan.summary if job.plan else ""
         slug = _slugify(summary)
         suffix = f"-{slug}" if slug else ""

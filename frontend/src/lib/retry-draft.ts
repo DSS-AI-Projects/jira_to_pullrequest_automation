@@ -17,8 +17,15 @@ export type RetryDraft = {
   // A document upload can't be carried forward (files aren't persisted in
   // sessionStorage) — requirementDocumentName is shown so the user knows
   // what to re-upload; the file input itself always starts empty.
-  requirementSource: "JIRA" | "DOCUMENT";
+  requirementSource: "JIRA" | "DOCUMENT" | "TEXT";
   requirementDocumentName: string | null;
+  // A TEXT job's pasted requirement, carried back in full (unlike a PDF,
+  // it's on the job record). Optional: a draft from an older build lacks them.
+  requirementTitle?: string;
+  requirementText?: string;
+  // A TEXT job's real ticket key, if one was typed; "" for the TXT-XXXXXXXX
+  // fallback, which means nothing to type back in.
+  textTicketKey?: string;
   // The failed job's resolved ticket key, carried forward only when it's a
   // real Jira key (typed or auto-detected — see routes.py's
   // _resolve_document_ticket_key) rather than the opaque DOC-XXXXXXXX

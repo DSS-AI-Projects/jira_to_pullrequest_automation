@@ -26,8 +26,9 @@ are green.
 
 The web form collects **only non-secret identifiers** (ticket key/URL, repo
 identifier) — or, as an alternative to a Jira ticket, an uploaded PDF requirement
-document, whose extracted text is treated as untrusted DATA exactly like ticket
-content (see **Requirement source: Jira ticket or uploaded document** below). No
+document or pasted requirement text, either of which is treated as untrusted DATA
+exactly like ticket content (see **Requirement source: Jira ticket, uploaded
+document, or pasted text** below). No
 credential field exists or will be added. Credentials reach the server only through
 env config or an OAuth redirect the user completes with the provider — never by
 typing a secret into this app's forms. Sources:
@@ -726,11 +727,40 @@ recovered the same way, with one exception: a correction that never got its
 slot (`implementation_correction_started_at` unset) doesn't use up the job's
 one correction attempt.
 
-## Requirement source: Jira ticket or uploaded document
+## Requirement source: Jira ticket, uploaded document, or pasted text
 
-`POST /api/jobs` accepts **exactly one** of `ticket` (a Jira key/URL) or an uploaded
-`requirement_document` (PDF) — enforced server-side (`INPUT_INVALID` if both or
-neither are present), mirrored client-side by a toggle on the job form. This is a
+`POST /api/jobs` accepts **exactly one** of `ticket` (a Jira key/URL), an uploaded
+`requirement_document` (PDF), or pasted `requirement_text` — enforced server-side
+(`INPUT_INVALID` if more than one or none is present; blank text counts as none),
+mirrored client-side by a three-way toggle on the job form.
+
+**Pasted text (`RequirementSource.TEXT`)** is for teams whose tracker the app
+doesn't integrate with — Mantis, Azure DevOps, email, Word — built first as the
+cheap, credential-free option from the Mantis design review (a real Mantis
+integration needs a shared read-only account, pending sign-off). The form takes
+an optional `requirement_title`, the `requirement_text` (≤
+`REQUIREMENT_TEXT_MAX_CHARS` = 20,000 after trimming; `normalize_requirement_text`
+gives a user-safe "too long" message, and the `Form` limit is a looser 100,000
+transport cap) and an optional `text_ticket_key` (any `PROJ-123` shape, e.g.
+`MANTIS-1234`, validated like the document key). The key is the typed one, else
+`synthetic_text_key()` = `TXT-` + 8 hex characters of a SHA-256 of title + text —
+deterministic for the plan cache, exactly like the PDF's `DOC-` fallback, and
+matched by the same `_SYNTHETIC_DOCUMENT_KEY_RE` (now `^(?:DOC|TXT)-[0-9A-F]{8}$`)
+so the local-branch-match check skips it and Retry doesn't prefill it. Text and
+title are both credential-shape checked (invariant 1); the title is collapsed to
+one line, capped at 200 characters. Unlike a PDF the text is **stored on the job**
+(`Job.requirement_title` / `requirement_text`, returned by `GET /jobs/{id}`), so
+Retry brings it back in full (`RetryDraft.requirementTitle/requirementText/
+textTicketKey`); it is therefore *not* removed by the workspace-retention sweep,
+which deletes files, not job records. `steps/requirement_text.py`'s
+`fetch_requirement_text` (plain code, no LLM) turns it into `TicketData` — summary
+= the title, else the first non-blank line (120 characters max); description =
+the text — quoted into the planning prompt inside `<ticket_data>` like Jira
+content (invariant 5). `default_branch_name` appends the plan-summary slug for
+TEXT jobs as for DOCUMENT ones (`jira2pullreq/txt-…-<slug>`). Tests:
+`test_requirement_text.py`, plus the TEXT cases in `test_inputs.py`,
+`test_jobs_api.py`, `test_branch_prep.py`, `test_repo_clone.py`,
+`job-form.test.tsx` and `job-status-view.test.tsx`. This is a
 multipart request, not JSON, so the endpoint declares individual `Form()`/`File()`
 parameters rather than a single Pydantic body model (mixing a Pydantic `Form()`
 model with a sibling `File()` field does not bind correctly in this FastAPI
@@ -1600,8 +1630,8 @@ a shared deployment. Tests: `test_agent_limits.py`.
 
 ## Scope
 
-**In:** non-secret form; a Jira ticket or an uploaded PDF requirement document as
-alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
+**In:** non-secret form; a Jira ticket, an uploaded PDF requirement document, or
+pasted requirement text as alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
 delegated Jira/GitHub/GitLab/Bitbucket Cloud OAuth with encrypted-at-rest
 tokens (used for repository discovery, `git clone` as the job owner, and —
 `PUSH_AUTH_MODE=delegated` — `git push` as the clicking user; see below); async

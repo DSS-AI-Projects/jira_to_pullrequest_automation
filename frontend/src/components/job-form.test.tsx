@@ -759,6 +759,113 @@ describe("JobForm", () => {
     expect(push).toHaveBeenCalledWith("/jobs/job-doc-with-key");
   });
 
+  it("submits a pasted requirement with its title and ticket key", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+    createJob.mockResolvedValue({ job_id: "job-text" });
+
+    render(<JobForm />);
+
+    await screen.findByText("github.com");
+    fireEvent.click(screen.getByRole("button", { name: "Paste text" }));
+    expect(screen.getByRole("button", { name: "Paste text" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    fireEvent.change(
+      screen.getByLabelText(/Repository URL or pre-configured name/i),
+      { target: { value: "hello-world-sample" } },
+    );
+    fireEvent.change(screen.getByLabelText(/Title \(optional\)/i), {
+      target: { value: "CSV export" },
+    });
+    fireEvent.change(
+      screen.getByPlaceholderText(/Paste the issue description/i),
+      { target: { value: "Users can export the report as CSV." } },
+    );
+    fireEvent.change(screen.getByLabelText(/Ticket key, if any/i), {
+      target: { value: "MANTIS-1234" },
+    });
+    expect(screen.getByText(/35 \/ 20,000 characters/)).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Generate implementation plan/i }),
+    );
+
+    await waitFor(() =>
+      expect(createJob).toHaveBeenCalledWith({
+        ticket: undefined,
+        repo: "hello-world-sample",
+        planning_notes: "",
+        requirement_title: "CSV export",
+        requirement_text: "Users can export the report as CSV.",
+        text_ticket_key: "MANTIS-1234",
+      }),
+    );
+    expect(push).toHaveBeenCalledWith("/jobs/job-text");
+  });
+
+  it("prefills the pasted requirement from a retry draft", async () => {
+    sessionStorage.setItem(
+      "jira2pullreq:retry-draft",
+      JSON.stringify({
+        ticket: "",
+        repo: "https://github.com/acme/repo.git",
+        repoMode: "remote",
+        planningNotes: "",
+        requirementSource: "TEXT",
+        requirementDocumentName: null,
+        documentTicketKey: "",
+        requirementTitle: "CSV export",
+        requirementText: "Users can export the report as CSV.",
+        textTicketKey: "MANTIS-1234",
+        implementationClarifications: "",
+      }),
+    );
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+
+    render(<JobForm />);
+
+    await screen.findByText("github.com");
+    expect(screen.getByRole("button", { name: "Paste text" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByLabelText(/Title \(optional\)/i)).toHaveValue(
+      "CSV export",
+    );
+    expect(
+      screen.getByPlaceholderText(/Paste the issue description/i),
+    ).toHaveValue("Users can export the report as CSV.");
+    expect(screen.getByLabelText(/Ticket key, if any/i)).toHaveValue(
+      "MANTIS-1234",
+    );
+  });
+
   it("prefills document mode from a retry draft for a document-sourced job", async () => {
     sessionStorage.setItem(
       "jira2pullreq:retry-draft",

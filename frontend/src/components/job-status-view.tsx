@@ -91,11 +91,11 @@ function githubCompareUrl(remoteUrl: string, branch: string): string | null {
 }
 
 // Mirrors _SYNTHETIC_DOCUMENT_KEY_RE in backend/app/steps/repo_clone.py —
-// matches only the hashed fallback key routes.py mints when a document-
-// sourced job has no real ticket key (typed or auto-detected). A DOCUMENT
-// job's ticket_key can now be a real Jira key, so this — not
-// requirement_source alone — decides whether it's worth prefilling on retry.
-const SYNTHETIC_DOCUMENT_KEY_RE = /^DOC-[0-9A-F]{8}$/;
+// matches only the hashed fallback key routes.py mints when a document- or
+// text-sourced job has no real ticket key (typed or auto-detected). Such a
+// job's ticket_key can be a real key, so this — not requirement_source
+// alone — decides whether it's worth prefilling on retry.
+const SYNTHETIC_DOCUMENT_KEY_RE = /^(?:DOC|TXT)-[0-9A-F]{8}$/;
 
 export function JobStatusView(props: { jobId: string }) {
   const router = useRouter();
@@ -329,7 +329,11 @@ export function JobStatusView(props: { jobId: string }) {
       // real key could be resolved — never prefill it as if it were one. It
       // can also be omitted here (kept as "") for a JIRA job since the
       // ticket field below already carries it in that case.
-      ticket: job.requirement_source === "DOCUMENT" ? "" : job.ticket_key,
+      ticket:
+        job.requirement_source === "DOCUMENT" ||
+        job.requirement_source === "TEXT"
+          ? ""
+          : job.ticket_key,
       repo: job.repo_url,
       repoMode: isLocalSource(job) ? "local" : "remote",
       baseBranch: job.base_branch ?? "",
@@ -340,6 +344,13 @@ export function JobStatusView(props: { jobId: string }) {
       // prefilling back into the optional document-ticket-key field.
       documentTicketKey:
         job.requirement_source === "DOCUMENT" && !isSyntheticDocumentKey
+          ? job.ticket_key
+          : "",
+      // A pasted requirement comes back in full, so a retry needs no retyping.
+      requirementTitle: job.requirement_title ?? "",
+      requirementText: job.requirement_text ?? "",
+      textTicketKey:
+        job.requirement_source === "TEXT" && !isSyntheticDocumentKey
           ? job.ticket_key
           : "",
       implementationClarifications: job.implementation_clarifications ?? "",

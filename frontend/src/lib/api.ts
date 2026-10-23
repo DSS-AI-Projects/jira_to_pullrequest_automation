@@ -229,13 +229,16 @@ export type ValidationResult = {
   output_excerpt: string | null;
 };
 
-export type RequirementSource = "JIRA" | "DOCUMENT";
+export type RequirementSource = "JIRA" | "DOCUMENT" | "TEXT";
 
 export type Job = {
   id: string;
   ticket_key: string;
   requirement_source: RequirementSource;
   requirement_document_name: string | null;
+  // A TEXT job's pasted requirement; null for Jira and document jobs.
+  requirement_title?: string | null;
+  requirement_text?: string | null;
   repo_url: string;
   base_branch: string | null;
   planning_notes: string | null;
@@ -508,6 +511,12 @@ export async function createJob(
     // getting an opaque DOC-XXXXXXXX key. Ignored server-side unless
     // requirement_document is also present.
     document_ticket_key?: string;
+    // The TEXT source: a requirement pasted in, for teams whose tracker the
+    // app doesn't integrate with. An optional ticket key (any PROJ-123
+    // shape) names the job; otherwise the server derives TXT-XXXXXXXX.
+    requirement_title?: string;
+    requirement_text?: string;
+    text_ticket_key?: string;
   },
   signal?: AbortSignal,
 ): Promise<JobCreated> {
@@ -530,6 +539,15 @@ export async function createJob(
   }
   if (payload.document_ticket_key !== undefined) {
     formData.append("document_ticket_key", payload.document_ticket_key);
+  }
+  if (payload.requirement_title !== undefined) {
+    formData.append("requirement_title", payload.requirement_title);
+  }
+  if (payload.requirement_text !== undefined) {
+    formData.append("requirement_text", payload.requirement_text);
+  }
+  if (payload.text_ticket_key !== undefined) {
+    formData.append("text_ticket_key", payload.text_ticket_key);
   }
   const response = await apiFetch("/api/jobs", {
     method: "POST",

@@ -454,6 +454,22 @@ async def test_synthetic_document_key_skips_branch_match_check(
     assert result.repo_info.branch == current_branch(source)
 
 
+async def test_synthetic_text_key_skips_branch_match_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same for a TXT-... key (requirement pasted into the form)."""
+    source = make_source_repo(tmp_path)
+
+    monkeypatch.setattr(
+        "app.steps.repo_clone.get_settings",
+        lambda: Settings(_env_file=None, require_local_branch_ticket_match=True),  # type: ignore[arg-type]
+    )
+
+    result = await clone_repo("job_txt_branch", "TXT-ABCD1234", str(source), tmp_path / "workdir")
+
+    assert result.repo_info.branch == current_branch(source)
+
+
 async def test_local_repo_branch_match_is_accepted_when_required(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

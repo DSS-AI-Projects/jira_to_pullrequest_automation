@@ -22,7 +22,9 @@ import { consumeRetryDraft } from "@/lib/retry-draft";
 
 const SAMPLE_TICKET = "PROJ-123";
 type RepoMode = "remote" | "local";
-type RequirementMode = "jira" | "document";
+type RequirementMode = "jira" | "document" | "text";
+// Mirrors REQUIREMENT_TEXT_MAX_CHARS in backend/app/schemas/inputs.py.
+const REQUIREMENT_TEXT_MAX_CHARS = 20_000;
 type ConnectedRepoProvider = "github" | "gitlab" | "bitbucket";
 type ConnectedRepoGroup = {
   provider: ConnectedRepoProvider;
@@ -43,6 +45,9 @@ export function JobForm() {
     null,
   );
   const [documentTicketKey, setDocumentTicketKey] = useState("");
+  const [requirementTitle, setRequirementTitle] = useState("");
+  const [requirementText, setRequirementText] = useState("");
+  const [textTicketKey, setTextTicketKey] = useState("");
   const [retriedDocumentName, setRetriedDocumentName] = useState<string | null>(
     null,
   );
@@ -81,6 +86,12 @@ export function JobForm() {
         // Defensive fallback for a draft saved by an older build of this
         // app (sessionStorage isn't versioned) that predates this field.
         setDocumentTicketKey(draft.documentTicketKey ?? "");
+      }
+      if (draft.requirementSource === "TEXT") {
+        setRequirementMode("text");
+        setRequirementTitle(draft.requirementTitle ?? "");
+        setRequirementText(draft.requirementText ?? "");
+        setTextTicketKey(draft.textTicketKey ?? "");
       }
     }
   }, []);
@@ -260,6 +271,16 @@ export function JobForm() {
             requirementMode === "document" && documentTicketKey.trim()
               ? documentTicketKey
               : undefined,
+          requirement_title:
+            requirementMode === "text" && requirementTitle.trim()
+              ? requirementTitle
+              : undefined,
+          requirement_text:
+            requirementMode === "text" ? requirementText : undefined,
+          text_ticket_key:
+            requirementMode === "text" && textTicketKey.trim()
+              ? textTicketKey
+              : undefined,
         });
         savePendingClarifications(result.job_id, retriedClarifications);
         router.push(`/jobs/${result.job_id}`);
@@ -280,9 +301,9 @@ export function JobForm() {
       <div className="panel-heading">
         <h2>Start a planning job</h2>
         <p>
-          Submit a Jira ticket (or upload a requirement document) and a
-          repository identifier. Jira, git, and Anthropic credentials stay on
-          the server.
+          Submit a Jira ticket (or upload a requirement document, or paste the
+          requirement) and a repository identifier. Jira, git, and Anthropic
+          credentials stay on the server.
         </p>
       </div>
 
@@ -343,6 +364,24 @@ export function JobForm() {
               >
                 Upload document
               </button>
+              <button
+                aria-selected={requirementMode === "text"}
+                className={[
+                  "pill-button",
+                  requirementMode === "text" ? "is-selected" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                onClick={() => {
+                  setRequirementMode("text");
+                  setTicket("");
+                  setRequirementDocument(null);
+                  setDocumentTicketKey("");
+                }}
+                type="button"
+              >
+                Paste text
+              </button>
             </div>
           </label>
 
@@ -360,6 +399,60 @@ export function JobForm() {
               />
               <small>Example: {SAMPLE_TICKET} or your Jira ticket URL.</small>
             </label>
+          ) : requirementMode === "text" ? (
+            <>
+              <label className="field" key="requirement-title-field">
+                <span>Title (optional)</span>
+                <input
+                  autoComplete="off"
+                  className="text-input"
+                  maxLength={200}
+                  name="requirementTitle"
+                  onChange={(event) => setRequirementTitle(event.target.value)}
+                  placeholder="Export the monthly report as CSV"
+                  value={requirementTitle}
+                />
+                <small>
+                  A one-line summary. Leave blank to use the first line of the
+                  text.
+                </small>
+              </label>
+              <label className="field" key="requirement-text-field">
+                <span>Requirement</span>
+                <textarea
+                  className="text-input"
+                  maxLength={REQUIREMENT_TEXT_MAX_CHARS}
+                  name="requirementText"
+                  onChange={(event) => setRequirementText(event.target.value)}
+                  placeholder="Paste the issue description, acceptance criteria and any notes from your tracker, email or document."
+                  required
+                  rows={10}
+                  value={requirementText}
+                />
+                <small>
+                  For trackers this app doesn&apos;t connect to (Mantis, Azure
+                  DevOps, email, …). Analyzed the same way a Jira ticket&apos;s
+                  description would be.{" "}
+                  {requirementText.length.toLocaleString()} /{" "}
+                  {REQUIREMENT_TEXT_MAX_CHARS.toLocaleString()} characters.
+                </small>
+              </label>
+              <label className="field" key="text-ticket-key-field">
+                <span>Ticket key, if any (optional)</span>
+                <input
+                  autoComplete="off"
+                  className="text-input"
+                  name="textTicketKey"
+                  onChange={(event) => setTextTicketKey(event.target.value)}
+                  placeholder="MANTIS-1234"
+                  value={textTicketKey}
+                />
+                <small>
+                  A key like MANTIS-1234 names the job and its branch. Leave
+                  blank for a generated id.
+                </small>
+              </label>
+            </>
           ) : (
             <label className="field" key="document-field">
               <span>Requirement document (PDF)</span>

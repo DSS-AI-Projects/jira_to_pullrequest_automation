@@ -101,6 +101,15 @@ def test_default_branch_name_slugifies_summary_for_document_jobs() -> None:
     )
 
 
+def test_default_branch_name_slugifies_summary_for_pasted_text_jobs() -> None:
+    job = _job(ticket_key="TXT-A1B2C3D4", requirement_source=RequirementSource.TEXT)
+    assert job.plan is not None
+    job.plan.summary = "Export the report as CSV"
+    assert (
+        branch_prep.default_branch_name(job) == "jira2pullreq/txt-a1b2c3d4-export-the-report-as-csv"
+    )
+
+
 def test_default_commit_message_combines_ticket_and_summary() -> None:
     job = _job()
     assert branch_prep.default_commit_message(job) == "KAN-34: Do the thing."

@@ -12,6 +12,8 @@ from app.schemas.inputs import (
     normalize_document_ticket_key,
     normalize_planning_notes,
     normalize_repo,
+    normalize_requirement_text,
+    normalize_requirement_title,
     normalize_ticket,
     reject_unknown_form_fields,
     require_exactly_one_requirement_source,
@@ -277,6 +279,57 @@ def test_blank_ticket_and_no_document_is_rejected() -> None:
     with pytest.raises(AppError) as excinfo:
         require_exactly_one_requirement_source("   ", has_document=False)
     assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+def test_text_only_is_accepted() -> None:
+    require_exactly_one_requirement_source(None, has_document=False, has_text=True)
+
+
+@pytest.mark.parametrize(
+    ("ticket", "has_document"), [("PROJ-123", False), (None, True), ("PROJ-123", True)]
+)
+def test_text_with_any_other_source_is_rejected(ticket: str | None, has_document: bool) -> None:
+    with pytest.raises(AppError) as excinfo:
+        require_exactly_one_requirement_source(ticket, has_document, has_text=True)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+# --- pasted requirement text ---
+
+
+def test_requirement_text_blank_is_not_provided() -> None:
+    assert normalize_requirement_text(None) is None
+    assert normalize_requirement_text("  \n ") is None
+
+
+def test_requirement_text_is_trimmed_but_keeps_its_lines() -> None:
+    assert normalize_requirement_text("  First line\nSecond line \n") == "First line\nSecond line"
+
+
+def test_requirement_text_over_the_limit_is_rejected_with_a_clear_message() -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_requirement_text("x" * 20_001)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    assert "20,000" in excinfo.value.user_message
+
+
+def test_requirement_text_at_the_limit_is_accepted() -> None:
+    assert normalize_requirement_text("x" * 20_000) == "x" * 20_000
+
+
+def test_requirement_text_with_a_credential_is_rejected_without_echoing_it() -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_requirement_text(f"Use this token to call the API: {FAKE_TOKEN}")
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    assert FAKE_TOKEN not in excinfo.value.user_message
+
+
+def test_requirement_title_is_one_line_and_capped() -> None:
+    assert normalize_requirement_title(None) is None
+    assert normalize_requirement_title("  CSV\n  export  ") == "CSV export"
+    title = normalize_requirement_title("t" * 500)
+    assert title is not None
+    assert len(title) == 200
 
 
 def test_both_ticket_and_document_is_rejected() -> None:
