@@ -50,7 +50,14 @@ from app.steps.workspace_guard import workspace_guard_hooks
 logger = get_logger(__name__)
 
 # Env var names that must never reach the agent subprocess (invariant 3).
-_SECRET_ENV_VARS = ("JIRA_API_TOKEN", "JIRA_EMAIL", "GITHUB_TOKEN", "GH_TOKEN", "GITLAB_TOKEN")
+_SECRET_ENV_VARS = (
+    "JIRA_API_TOKEN",
+    "JIRA_EMAIL",
+    "MANTIS_API_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITLAB_TOKEN",
+)
 
 _SYSTEM_PROMPT = """\
 You are a senior software engineer producing an implementation plan for a Jira

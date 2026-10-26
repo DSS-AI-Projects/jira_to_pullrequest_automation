@@ -140,8 +140,8 @@ docker compose --env-file deploy/vm/vm.env.local -f deploy/vm/docker-compose.yml
 
 ### 5. Backups
 
-Everything the app keeps — users, sessions, jobs and their plans, and the
-encrypted provider connections — is in one SQLite file, `/app/var/jobs.db`,
+Everything the app keeps â€” users, sessions, jobs and their plans, and the
+encrypted provider connections â€” is in one SQLite file, `/app/var/jobs.db`,
 on the `BACKEND_VAR_VOLUME` volume. The `backup` service protects it:
 
 - Every `BACKUP_INTERVAL_HOURS` (default 24) it takes a snapshot with
@@ -160,12 +160,12 @@ on the `BACKEND_VAR_VOLUME` volume. The `backup` service protects it:
   than an hour overdue; `logs backup` says why (for example, a
   `BACKUP_HOST_DIR` it can't write to).
 
-Use the same `--env-file … -f …` as in step 3 (shortened to `dc` here):
+Use the same `--env-file â€¦ -f â€¦` as in step 3 (shortened to `dc` here):
 
 ```bash
 alias dc='docker compose --env-file deploy/vm/vm.env.local -f deploy/vm/docker-compose.yml'
 dc ps backup                        # healthy?
-dc logs --tail 20 backup            # "snapshot … written, integrity_check ok"
+dc logs --tail 20 backup            # "snapshot â€¦ written, integrity_check ok"
 dc run --rm db-restore              # list snapshots, newest first
 dc exec backup python /opt/backup/sqlite_backup.py once   # take one now
 ```
@@ -173,7 +173,7 @@ dc exec backup python /opt/backup/sqlite_backup.py once   # take one now
 #### Copy snapshots off the VM
 
 Snapshots on the VM's own disk don't survive losing the VM or its disk.
-Copy them somewhere else daily, after the snapshot — for example, pulled by a
+Copy them somewhere else daily, after the snapshot â€” for example, pulled by a
 backup server:
 
 ```bash
@@ -201,7 +201,7 @@ with `JIRA_OAUTH_ENCRYPTION_KEY`, `GITHUB_OAUTH_ENCRYPTION_KEY`,
 `backend/.env`. **A snapshot restored without the same keys loses every
 provider connection** (users must reconnect each one; jobs and users are
 still there). The keys are not in the snapshots, and must never be stored
-with them — whoever has both can decrypt the tokens:
+with them â€” whoever has both can decrypt the tokens:
 
 - Keep each key as a secret in Azure Key Vault (or your organization's
   secret store), with access separate from the backup storage.
@@ -240,14 +240,14 @@ with them — whoever has both can decrypt the tokens:
 The `pre-restore` copies stay on the data volume until removed by hand
 (`dc exec backend sh -c 'rm /app/var/jobs.db.pre-restore-*'`).
 
-On a new VM: follow steps 1–3 with the **same Fernet keys** (from the key
-vault, not a snapshot), then restore as above — the stack's first start
+On a new VM: follow steps 1â€“3 with the **same Fernet keys** (from the key
+vault, not a snapshot), then restore as above â€” the stack's first start
 creates the volume and an empty database, which the restore replaces.
 
 #### Container logs
 
 Every service logs through Docker's `json-file` driver capped at
-`DOCKER_LOG_MAX_FILE` files of `DOCKER_LOG_MAX_SIZE` (default 5 × 10 MB per
+`DOCKER_LOG_MAX_FILE` files of `DOCKER_LOG_MAX_SIZE` (default 5 Ã— 10 MB per
 container); older log lines are dropped.
 
 ### Notes
@@ -273,6 +273,20 @@ container); older log lines are dropped.
   `backend/.env` can't turn it back on (compose's `environment:` wins), and
   even with it on, a backend with trusted-proxy sign-in skips validation
   unless `VALIDATION_ALLOW_UNSANDBOXED=true` is also set.
+- **Mantis issues as a requirement source** (optional): the app reads a
+  Mantis issue with **one shared, read-only Mantis account**, since Mantis has
+  no OAuth and the app never takes a pasted token. In Mantis, create a
+  dedicated user with the *viewer* access level and access to only the
+  projects whose teams use this app, then create an API token for it (My
+  Account â†’ API Tokens). In `backend/.env` set `MANTIS_ENABLED=true`,
+  `MANTIS_BASE_URL=https://<your mantis>` (https is required: the token
+  travels in a header), `MANTIS_API_TOKEN=<that token>`, and optionally
+  `MANTIS_KEY_PREFIX` (jobs are named `MANTIS-1234` by default) and
+  `MANTIS_ATTACHMENT_FETCH_ENABLED=true` for PDF attachments. Restart the
+  backend; the job form then shows **Mantis issue**. Every signed-in user can
+  fetch any issue that account can see, so keep its project list tight. The
+  VM must reach the Mantis server; an internal certificate works if the CA is
+  in the backend image (see `backend/certs/`).
 - **Rollback**: `down` this stack and start the previous one; the data volume
   is untouched either way.
 - **Multiple team instances on one VM**: give each its own

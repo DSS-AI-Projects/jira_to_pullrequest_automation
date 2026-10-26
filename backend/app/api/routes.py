@@ -41,6 +41,7 @@ from app.schemas.inputs import (
     normalize_clarifications,
     normalize_commit_message,
     normalize_document_ticket_key,
+    normalize_mantis_issue,
     normalize_planning_notes,
     normalize_repo,
     normalize_requirement_text,
@@ -54,6 +55,11 @@ from app.steps.document_fetch import (
     detect_ticket_key,
     extract_pdf_text_from_bytes,
     requirement_document_path,
+)
+from app.steps.mantis_fetch import (
+    mantis_issue_url,
+    mantis_ticket_key,
+    require_mantis_base_url,
 )
 from app.steps.requirement_text import synthetic_text_key
 from app.steps.validation_runner import correctable_failures
@@ -121,12 +127,23 @@ class LocalRepoSupport(BaseModel):
     allow_non_git_folders: bool
 
 
+class MantisSupport(BaseModel):
+    """Whether the job form offers the Mantis source, and where issue links
+    point. Non-secret: the token never leaves the server."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    base_url: str | None = None
+
+
 class RepoList(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     repos: list[RepoChoice]
     allowed_hosts: list[str]
     local_repo_support: LocalRepoSupport
+    mantis: MantisSupport
 
 
 class JobSummary(BaseModel):
@@ -272,6 +289,7 @@ async def create_job(
     requirement_title: str | None = Form(default=None, max_length=2000),
     requirement_text: str | None = Form(default=None, max_length=100_000),
     text_ticket_key: str | None = Form(default=None, max_length=2000),
+    mantis_issue: str | None = Form(default=None, max_length=2000),
 ) -> JobCreated:
     user = require_current_user(request)
     settings: Settings = get_settings()
@@ -279,10 +297,16 @@ async def create_job(
     reject_unknown_form_fields(set(form.keys()), JOB_CREATE_FORM_FIELDS)
     check_spend_limit(_store(request), user.id if user else None, settings)
     requirement_text_normalized = normalize_requirement_text(requirement_text)
+    mantis_issue_id: int | None = None
+    mantis_base_url: str | None = None
+    if mantis_issue and mantis_issue.strip():
+        mantis_base_url = require_mantis_base_url(settings)
+        mantis_issue_id = normalize_mantis_issue(mantis_issue, mantis_base_url)
     require_exactly_one_requirement_source(
         ticket,
         requirement_document is not None,
         has_text=requirement_text_normalized is not None,
+        has_mantis=mantis_issue_id is not None,
     )
     repo_url = normalize_repo(repo, settings)
     base_branch_normalized = normalize_base_branch(base_branch)
@@ -290,7 +314,13 @@ async def create_job(
 
     document_content: bytes | None = None
     requirement_title_normalized: str | None = None
-    if requirement_text_normalized is not None:
+    requirement_url: str | None = None
+    if mantis_issue_id is not None and mantis_base_url is not None:
+        ticket_key = mantis_ticket_key(settings, mantis_issue_id)
+        requirement_source = RequirementSource.MANTIS
+        requirement_document_name = None
+        requirement_url = mantis_issue_url(mantis_base_url, mantis_issue_id)
+    elif requirement_text_normalized is not None:
         requirement_title_normalized = normalize_requirement_title(requirement_title)
         # Same priority as a PDF minus auto-detection: a typed key (any
         # PROJ-123 shape, e.g. MANTIS-1234), else a deterministic hash.
@@ -324,6 +354,7 @@ async def create_job(
         base_branch=base_branch_normalized,
         requirement_title=requirement_title_normalized,
         requirement_text=requirement_text_normalized,
+        requirement_url=requirement_url,
     )
 
     if document_content is not None:
@@ -630,7 +661,17 @@ async def list_repos(request: Request) -> RepoList:
             require_ticket_branch_match=settings.require_local_branch_ticket_match,
             allow_non_git_folders=settings.allow_local_non_git_folders,
         ),
+        mantis=_mantis_support(settings),
     )
+
+
+def _mantis_support(settings: Settings) -> MantisSupport:
+    try:
+        base_url = require_mantis_base_url(settings)
+    except AppError:
+        # Off, or misconfigured (no https base URL): don't offer the choice.
+        return MantisSupport(enabled=False)
+    return MantisSupport(enabled=True, base_url=base_url)
 
 
 @router.get("/admin/cost-summary", response_model=CostSummaryResponse)

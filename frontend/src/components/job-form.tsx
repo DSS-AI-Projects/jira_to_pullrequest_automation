@@ -22,7 +22,7 @@ import { consumeRetryDraft } from "@/lib/retry-draft";
 
 const SAMPLE_TICKET = "PROJ-123";
 type RepoMode = "remote" | "local";
-type RequirementMode = "jira" | "document" | "text";
+type RequirementMode = "jira" | "mantis" | "document" | "text";
 // Mirrors REQUIREMENT_TEXT_MAX_CHARS in backend/app/schemas/inputs.py.
 const REQUIREMENT_TEXT_MAX_CHARS = 20_000;
 type ConnectedRepoProvider = "github" | "gitlab" | "bitbucket";
@@ -67,6 +67,8 @@ export function JobForm() {
   const [localRepoSupport, setLocalRepoSupport] = useState<
     RepoList["local_repo_support"] | null
   >(null);
+  const [mantisSupport, setMantisSupport] = useState<RepoList["mantis"]>();
+  const [mantisIssue, setMantisIssue] = useState("");
   const [loadingRepos, setLoadingRepos] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +95,10 @@ export function JobForm() {
         setRequirementText(draft.requirementText ?? "");
         setTextTicketKey(draft.textTicketKey ?? "");
       }
+      if (draft.requirementSource === "MANTIS") {
+        setRequirementMode("mantis");
+        setMantisIssue(draft.mantisIssue ?? "");
+      }
     }
   }, []);
 
@@ -107,6 +113,7 @@ export function JobForm() {
           setRepos(response.repos);
           setAllowedHosts(response.allowed_hosts);
           setLocalRepoSupport(response.local_repo_support);
+          setMantisSupport(response.mantis);
         }
         try {
           const githubResponse = await fetchGitHubRepositories(
@@ -281,6 +288,7 @@ export function JobForm() {
             requirementMode === "text" && textTicketKey.trim()
               ? textTicketKey
               : undefined,
+          mantis_issue: requirementMode === "mantis" ? mantisIssue : undefined,
         });
         savePendingClarifications(result.job_id, retriedClarifications);
         router.push(`/jobs/${result.job_id}`);
@@ -348,6 +356,28 @@ export function JobForm() {
               >
                 Jira ticket
               </button>
+              {/* Only when the server has Mantis configured — or when a
+                  retry brought a Mantis job back, so its field still shows. */}
+              {mantisSupport?.enabled || requirementMode === "mantis" ? (
+                <button
+                  aria-selected={requirementMode === "mantis"}
+                  className={[
+                    "pill-button",
+                    requirementMode === "mantis" ? "is-selected" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onClick={() => {
+                    setRequirementMode("mantis");
+                    setTicket("");
+                    setRequirementDocument(null);
+                    setDocumentTicketKey("");
+                  }}
+                  type="button"
+                >
+                  Mantis issue
+                </button>
+              ) : null}
               <button
                 aria-selected={requirementMode === "document"}
                 className={[
@@ -398,6 +428,25 @@ export function JobForm() {
                 value={ticket}
               />
               <small>Example: {SAMPLE_TICKET} or your Jira ticket URL.</small>
+            </label>
+          ) : requirementMode === "mantis" ? (
+            <label className="field" key="mantis-issue-field">
+              <span>Mantis issue number or link</span>
+              <input
+                autoComplete="off"
+                className="text-input"
+                name="mantisIssue"
+                onChange={(event) => setMantisIssue(event.target.value)}
+                placeholder="1234"
+                required
+                value={mantisIssue}
+              />
+              <small>
+                {mantisSupport?.base_url
+                  ? `Example: 1234 or ${mantisSupport.base_url}/view.php?id=1234.`
+                  : "Example: 1234, or the issue's view.php link."}{" "}
+                The issue is read with the server&apos;s shared Mantis account.
+              </small>
             </label>
           ) : requirementMode === "text" ? (
             <>

@@ -51,6 +51,7 @@ class RequirementSource(StrEnum):
     JIRA = "JIRA"
     DOCUMENT = "DOCUMENT"  # uploaded PDF — see document_fetch.py
     TEXT = "TEXT"  # pasted into the form — see requirement_text.py
+    MANTIS = "MANTIS"  # a Mantis issue — see mantis_fetch.py
 
 
 class RepoSourceKind(StrEnum):
@@ -146,6 +147,9 @@ class Job(BaseModel):
     # which lives in var/uploads) so Retry can bring it back to the form.
     requirement_title: str | None = None
     requirement_text: str | None = None
+    # A link to the requirement in its own tracker (a MANTIS job's issue page),
+    # shown on the job page. Built from server config, never from user input.
+    requirement_url: str | None = None
     repo_url: str
     # An existing branch to clone from instead of the repo's default branch
     # (e.g. "develop", or an in-progress ticket branch) — None means "use the
@@ -250,6 +254,7 @@ class Job(BaseModel):
         base_branch: str | None = None,
         requirement_title: str | None = None,
         requirement_text: str | None = None,
+        requirement_url: str | None = None,
     ) -> Job:
         now = datetime.now(UTC)
         return cls(
@@ -260,6 +265,7 @@ class Job(BaseModel):
             requirement_document_name=requirement_document_name,
             requirement_title=requirement_title,
             requirement_text=requirement_text,
+            requirement_url=requirement_url,
             repo_url=repo_url,
             base_branch=base_branch,
             planning_notes=planning_notes,

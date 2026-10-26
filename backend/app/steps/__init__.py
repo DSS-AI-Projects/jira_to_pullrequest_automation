@@ -10,6 +10,7 @@ from app.steps.branch_prep import create_branch, push_branch
 from app.steps.document_fetch import fetch_requirement_document
 from app.steps.implement_agent import implement_plan
 from app.steps.jira_fetch import fetch_ticket as fetch_jira_ticket
+from app.steps.mantis_fetch import fetch_mantis_issue
 from app.steps.plan_agent import generate_plan
 from app.steps.repo_clone import clone_repo
 from app.steps.repo_map import build_repo_map
@@ -26,6 +27,8 @@ async def fetch_requirement(job: Job, store: JobStore) -> TicketData:
         return await fetch_requirement_document(job, store)
     if job.requirement_source == RequirementSource.TEXT:
         return await fetch_requirement_text(job, store)
+    if job.requirement_source == RequirementSource.MANTIS:
+        return await fetch_mantis_issue(job, store)
     return await fetch_jira_ticket(job, store)
 
 

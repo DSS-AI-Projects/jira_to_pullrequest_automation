@@ -331,7 +331,8 @@ export function JobStatusView(props: { jobId: string }) {
       // ticket field below already carries it in that case.
       ticket:
         job.requirement_source === "DOCUMENT" ||
-        job.requirement_source === "TEXT"
+        job.requirement_source === "TEXT" ||
+        job.requirement_source === "MANTIS"
           ? ""
           : job.ticket_key,
       repo: job.repo_url,
@@ -352,6 +353,11 @@ export function JobStatusView(props: { jobId: string }) {
       textTicketKey:
         job.requirement_source === "TEXT" && !isSyntheticDocumentKey
           ? job.ticket_key
+          : "",
+      // MANTIS-1234 -> "1234": the form asks for the issue number.
+      mantisIssue:
+        job.requirement_source === "MANTIS"
+          ? (job.ticket_key.split("-").pop() ?? "")
           : "",
       implementationClarifications: job.implementation_clarifications ?? "",
     });
@@ -568,7 +574,15 @@ export function JobStatusView(props: { jobId: string }) {
         <section className="panel summary-grid">
           <div className="summary-card">
             <span className="meta-label">Ticket</span>
-            <strong>{job.ticket_key}</strong>
+            <strong>
+              {job.requirement_url ? (
+                <a href={job.requirement_url} rel="noreferrer" target="_blank">
+                  {job.ticket_key}
+                </a>
+              ) : (
+                job.ticket_key
+              )}
+            </strong>
           </div>
           <div className="summary-card">
             <span className="meta-label">Repository</span>

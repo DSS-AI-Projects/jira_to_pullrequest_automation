@@ -112,6 +112,12 @@ def get_bitbucket_oauth_encryption_key() -> str | None:
     return _read("BITBUCKET_OAUTH_ENCRYPTION_KEY")
 
 
+def get_mantis_api_token() -> str | None:
+    """Read the shared read-only Mantis account's API token. Call only inside
+    the Mantis fetch step."""
+    return _read("MANTIS_API_TOKEN")
+
+
 def get_anthropic_api_key() -> str | None:
     """Read the Anthropic API key. Call only inside the planning agent step."""
     return _read("ANTHROPIC_API_KEY")
@@ -138,5 +144,6 @@ _SECRET_READERS = (
     get_gitlab_oauth_encryption_key,
     get_bitbucket_oauth_client_secret,
     get_bitbucket_oauth_encryption_key,
+    get_mantis_api_token,
     get_anthropic_api_key,
 )

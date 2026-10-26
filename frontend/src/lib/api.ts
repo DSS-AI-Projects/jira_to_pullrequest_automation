@@ -229,7 +229,7 @@ export type ValidationResult = {
   output_excerpt: string | null;
 };
 
-export type RequirementSource = "JIRA" | "DOCUMENT" | "TEXT";
+export type RequirementSource = "JIRA" | "DOCUMENT" | "TEXT" | "MANTIS";
 
 export type Job = {
   id: string;
@@ -239,6 +239,8 @@ export type Job = {
   // A TEXT job's pasted requirement; null for Jira and document jobs.
   requirement_title?: string | null;
   requirement_text?: string | null;
+  // A MANTIS job's issue page, built by the server from its own config.
+  requirement_url?: string | null;
   repo_url: string;
   base_branch: string | null;
   planning_notes: string | null;
@@ -297,6 +299,12 @@ export type RepoList = {
     allow_dirty: boolean;
     require_ticket_branch_match: boolean;
     allow_non_git_folders: boolean;
+  };
+  // Whether the job form offers a Mantis issue as the requirement source.
+  // Optional: an older backend doesn't send it.
+  mantis?: {
+    enabled: boolean;
+    base_url: string | null;
   };
 };
 
@@ -517,6 +525,9 @@ export async function createJob(
     requirement_title?: string;
     requirement_text?: string;
     text_ticket_key?: string;
+    // The MANTIS source: an issue number or its view.php link on the
+    // server's configured Mantis.
+    mantis_issue?: string;
   },
   signal?: AbortSignal,
 ): Promise<JobCreated> {
@@ -548,6 +559,9 @@ export async function createJob(
   }
   if (payload.text_ticket_key !== undefined) {
     formData.append("text_ticket_key", payload.text_ticket_key);
+  }
+  if (payload.mantis_issue !== undefined) {
+    formData.append("mantis_issue", payload.mantis_issue);
   }
   const response = await apiFetch("/api/jobs", {
     method: "POST",

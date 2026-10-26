@@ -127,8 +127,14 @@ JOB_CREATE_FORM_FIELDS = frozenset(
         "requirement_title",
         "requirement_text",
         "text_ticket_key",
+        "mantis_issue",
     }
 )
+
+_MANTIS_ISSUE_NUMBER_RE = re.compile(r"#?\s*0*(\d{1,10})")
+# view.php?id=N, and the older bug_view_page.php / bug_view_advanced_page.php
+# links, which use bug_id=N.
+_MANTIS_ISSUE_QUERY_RE = re.compile(r"(?:^|&)(?:id|bug_id)=0*(\d{1,10})(?:&|$)")
 
 # A pasted requirement: long enough for a detailed issue with acceptance
 # criteria, short enough not to blow the planning budget (the PDF source caps
@@ -153,18 +159,22 @@ def reject_unknown_form_fields(field_names: set[str], allowed: frozenset[str]) -
 
 
 def require_exactly_one_requirement_source(
-    ticket: str | None, has_document: bool, *, has_text: bool = False
+    ticket: str | None,
+    has_document: bool,
+    *,
+    has_text: bool = False,
+    has_mantis: bool = False,
 ) -> None:
-    """Exactly one of a Jira ticket, an uploaded document, or pasted
-    requirement text must be provided."""
+    """Exactly one of a Jira ticket, an uploaded document, pasted requirement
+    text, or a Mantis issue must be provided."""
     ticket_provided = bool(ticket and ticket.strip())
-    provided = sum((ticket_provided, has_document, has_text))
+    provided = sum((ticket_provided, has_document, has_text, has_mantis))
     if provided > 1:
         raise AppError(
             ErrorCode.INPUT_INVALID,
             user_message=(
-                "Provide only one requirement: a Jira ticket, a requirement document, "
-                "or pasted text."
+                "Provide only one requirement: a Jira ticket, a Mantis issue, a "
+                "requirement document, or pasted text."
             ),
         )
     if provided == 0:
@@ -175,6 +185,40 @@ def require_exactly_one_requirement_source(
                 "or paste the requirement text."
             ),
         )
+
+
+def normalize_mantis_issue(raw: str | None, base_url: str) -> int | None:
+    """A Mantis issue id from `1234`, `#1234`, `0001234`, or a link on the
+    configured Mantis host (`…/view.php?id=1234`). Blank means "not
+    provided". A link to any other host is refused, so a user can't point
+    the shared Mantis account's request somewhere else."""
+    if raw is None or not raw.strip():
+        return None
+    value = raw.strip()
+    _reject_credential_shaped(value, "Mantis issue")
+
+    number = _MANTIS_ISSUE_NUMBER_RE.fullmatch(value)
+    issue_id: int | None = int(number.group(1)) if number else None
+
+    if issue_id is None:
+        parsed = urlparse(value)
+        if parsed.scheme in ("http", "https") and parsed.hostname:
+            configured_host = urlparse(base_url).hostname or ""
+            if parsed.hostname.lower() != configured_host.lower():
+                raise AppError(
+                    ErrorCode.INPUT_INVALID,
+                    user_message="That link is not from the Mantis server configured here.",
+                )
+            query = _MANTIS_ISSUE_QUERY_RE.search(parsed.query or "")
+            if query:
+                issue_id = int(query.group(1))
+
+    if not issue_id:
+        raise AppError(
+            ErrorCode.INPUT_INVALID,
+            user_message="Enter a Mantis issue number like 1234, or the issue's view.php link.",
+        )
+    return issue_id
 
 
 def normalize_document_ticket_key(raw: str | None, settings: Settings) -> str | None:

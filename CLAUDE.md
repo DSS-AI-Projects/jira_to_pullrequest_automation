@@ -27,8 +27,8 @@ are green.
 The web form collects **only non-secret identifiers** (ticket key/URL, repo
 identifier) — or, as an alternative to a Jira ticket, an uploaded PDF requirement
 document or pasted requirement text, either of which is treated as untrusted DATA
-exactly like ticket content (see **Requirement source: Jira ticket, uploaded
-document, or pasted text** below). No
+exactly like ticket content (see **Requirement source: Jira ticket, Mantis
+issue, uploaded document, or pasted text** below). No
 credential field exists or will be added. Credentials reach the server only through
 env config or an OAuth redirect the user completes with the provider — never by
 typing a secret into this app's forms. Sources:
@@ -77,6 +77,10 @@ typing a secret into this app's forms. Sources:
   with no default at all, so a future provider forgetting to pass it is an
   immediate `TypeError` (caught by pyright/the first test run) instead of a
   silent wrong-key bug discovered only when decryption fails, weeks later.
+- **Mantis — one shared, read-only account** (owner-approved): `MANTIS_BASE_URL`
+  (https only) and `MANTIS_API_TOKEN` from env, the token read lazily inside the
+  Mantis fetch step only. No per-user mode: Mantis has no OAuth. See
+  **Requirement source** below.
 - **Anthropic:** `ANTHROPIC_API_KEY` from env, consumed only by the Agent SDK steps.
 
 Security-architecture changes require the owner's sign-off — propose, don't implement.
@@ -681,7 +685,8 @@ Every step fails with a typed, user-safe error the status screen can display. Th
 catalog (`backend/app/core/errors.py`) currently covers, among others: `INPUT_INVALID`;
 auth — `UNAUTHENTICATED`, `FORBIDDEN`, `AUTH_NOT_AVAILABLE`; Jira — `JIRA_CONFIG_MISSING`,
 `JIRA_AUTH_FAILED`, `JIRA_UNREACHABLE`, `JIRA_OAUTH_*`, `JIRA_SITE_NOT_ACCESSIBLE`,
-`TICKET_NOT_FOUND`, `TICKET_EMPTY`; requirement document — `DOCUMENT_NOT_PDF`,
+`TICKET_NOT_FOUND`, `TICKET_EMPTY`; Mantis — `MANTIS_CONFIG_MISSING`,
+`MANTIS_AUTH_FAILED`, `MANTIS_UNREACHABLE`; requirement document — `DOCUMENT_NOT_PDF`,
 `DOCUMENT_TOO_LARGE`, `DOCUMENT_UNREADABLE`, `DOCUMENT_EMPTY`; repo providers —
 `REPO_PROVIDER_*`; repo/clone —
 `REPO_HOST_NOT_ALLOWED`, `LOCAL_REPO_*` (not-allowed / not-found / not-directory /
@@ -727,17 +732,19 @@ recovered the same way, with one exception: a correction that never got its
 slot (`implementation_correction_started_at` unset) doesn't use up the job's
 one correction attempt.
 
-## Requirement source: Jira ticket, uploaded document, or pasted text
+## Requirement source: Jira ticket, Mantis issue, uploaded document, or pasted text
 
-`POST /api/jobs` accepts **exactly one** of `ticket` (a Jira key/URL), an uploaded
+`POST /api/jobs` accepts **exactly one** of `ticket` (a Jira key/URL),
+`mantis_issue` (a Mantis issue number or link), an uploaded
 `requirement_document` (PDF), or pasted `requirement_text` — enforced server-side
 (`INPUT_INVALID` if more than one or none is present; blank text counts as none),
-mirrored client-side by a three-way toggle on the job form.
+mirrored client-side by a toggle on the job form (the Mantis choice appears only
+when the server has Mantis configured).
 
 **Pasted text (`RequirementSource.TEXT`)** is for teams whose tracker the app
-doesn't integrate with — Mantis, Azure DevOps, email, Word — built first as the
-cheap, credential-free option from the Mantis design review (a real Mantis
-integration needs a shared read-only account, pending sign-off). The form takes
+doesn't integrate with — Azure DevOps, email, Word, or Mantis where the Mantis
+source isn't set up — built first as the cheap, credential-free option from the
+Mantis design review. The form takes
 an optional `requirement_title`, the `requirement_text` (≤
 `REQUIREMENT_TEXT_MAX_CHARS` = 20,000 after trimming; `normalize_requirement_text`
 gives a user-safe "too long" message, and the `Form` limit is a looser 100,000
@@ -760,8 +767,53 @@ content (invariant 5). `default_branch_name` appends the plan-summary slug for
 TEXT jobs as for DOCUMENT ones (`jira2pullreq/txt-…-<slug>`). Tests:
 `test_requirement_text.py`, plus the TEXT cases in `test_inputs.py`,
 `test_jobs_api.py`, `test_branch_prep.py`, `test_repo_clone.py`,
-`job-form.test.tsx` and `job-status-view.test.tsx`. This is a
-multipart request, not JSON, so the endpoint declares individual `Form()`/`File()`
+`job-form.test.tsx` and `job-status-view.test.tsx`.
+
+**A Mantis issue (`RequirementSource.MANTIS`)** — owner-approved: read through
+MantisBT's REST API as **one shared, read-only Mantis account** whose API token
+lives only in server config (`MANTIS_API_TOKEN`, read lazily inside
+`steps/mantis_fetch.py`, registered with the redactor, in `_SECRET_READERS`,
+and excluded by name from both agents' `scrubbed_env`). Mantis has no OAuth
+and the app never takes a pasted token (hard security principle), so per-user
+Mantis access isn't possible: every signed-in user can fetch whatever that
+account can see — the deployment limits its projects in Mantis (viewer level).
+Settings: `MANTIS_ENABLED`, `MANTIS_BASE_URL` (**https only** — the token is
+sent as the bare `Authorization` header value; trailing slash stripped),
+`MANTIS_KEY_PREFIX` (default `MANTIS`, upper-cased, validated at startup to
+make a `PROJ-123`-shaped key), `MANTIS_ATTACHMENT_FETCH_ENABLED` (PDFs only,
+reusing the `JIRA_ATTACHMENT_*` caps, magic-byte check and best-effort rule).
+`require_mantis_base_url()` refuses a disabled, unset or non-https config with
+`MANTIS_CONFIG_MISSING` (400 at submit; also checked again in the fetch step,
+plus a missing token) — and `GET /api/repos` reports
+`mantis: {enabled, base_url}` from the same check, so the form only offers
+**Mantis issue** when it would work. Input (`normalize_mantis_issue`):
+`1234`, `#1234`, `0001234`, or a `view.php?id=` / `bug_view_page.php?bug_id=`
+link **on the configured host only** (another host is `INPUT_INVALID`, so the
+shared account's request can't be pointed elsewhere); credential-shape
+checked. The job key is `<prefix>-<id>` (`MANTIS-1234`), which already fits
+`TICKET_KEY_RE`, so branch names (`jira2pullreq/MANTIS-1234`), commit messages
+and the local-branch-match check need no special case; the id is parsed back
+out of the key (`issue_id_from_key`). `Job.requirement_url`
+(`<base>/view.php?id=<id>`, built from config, never from the submitted link)
+makes the key a link on the job page; Retry carries the issue number
+(`RetryDraft.mantisIssue`). Fetch: `GET <base>/api/rest/issues/<id>` →
+`issues[0]`: `summary`; `description` + "Steps to reproduce:" +
+`steps_to_reproduce`; `additional_information` → acceptance criteria; non-blank
+`notes[].text` → comments as "<real_name or name>: text"; PDF attachments via
+`GET …/issues/<id>/files/<file_id>` (base64 `files[0].content`). Errors:
+401/403 → `MANTIS_AUTH_FAILED`; 404 or an empty `issues` list →
+`TICKET_NOT_FOUND` with a Mantis wording; no summary and no description →
+`TICKET_EMPTY`; other statuses, network errors and unexpected bodies →
+`MANTIS_UNREACHABLE`. **Not yet verified against a live Mantis server** — the
+endpoint, header form and field names follow MantisBT 2.x's REST API; check
+them against the team's version before relying on it. Tests:
+`test_mantis_fetch.py` (mapping, every error path, config refusals made before
+any request, attachments on/off/failing, the token absent from logs and
+results, settings validation), plus Mantis cases in `test_inputs.py`,
+`test_jobs_api.py`, the two agents' `scrubbed_env` tests, `job-form.test.tsx`
+and `job-status-view.test.tsx`.
+
+The request is multipart, not JSON, so the endpoint declares individual `Form()`/`File()`
 parameters rather than a single Pydantic body model (mixing a Pydantic `Form()`
 model with a sibling `File()` field does not bind correctly in this FastAPI
 version — verified empirically, not assumed); the smuggled-extra-field protection
@@ -1630,8 +1682,9 @@ a shared deployment. Tests: `test_agent_limits.py`.
 
 ## Scope
 
-**In:** non-secret form; a Jira ticket, an uploaded PDF requirement document, or
-pasted requirement text as alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
+**In:** non-secret form; a Jira ticket, a Mantis issue (one shared read-only
+Mantis account), an uploaded PDF requirement document, or pasted requirement
+text as alternative plan inputs; optional multi-user auth (dev login + trusted proxy);
 delegated Jira/GitHub/GitLab/Bitbucket Cloud OAuth with encrypted-at-rest
 tokens (used for repository discovery, `git clone` as the job owner, and —
 `PUSH_AUTH_MODE=delegated` — `git push` as the clicking user; see below); async

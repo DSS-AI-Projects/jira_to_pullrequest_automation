@@ -10,6 +10,7 @@ from app.core.errors import AppError, ErrorCode
 from app.schemas.inputs import (
     JOB_CREATE_FORM_FIELDS,
     normalize_document_ticket_key,
+    normalize_mantis_issue,
     normalize_planning_notes,
     normalize_repo,
     normalize_requirement_text,
@@ -292,6 +293,66 @@ def test_text_with_any_other_source_is_rejected(ticket: str | None, has_document
     with pytest.raises(AppError) as excinfo:
         require_exactly_one_requirement_source(ticket, has_document, has_text=True)
     assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+def test_mantis_with_any_other_source_is_rejected() -> None:
+    with pytest.raises(AppError) as excinfo:
+        require_exactly_one_requirement_source("PROJ-1", False, has_mantis=True)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    require_exactly_one_requirement_source(None, False, has_mantis=True)  # alone is fine
+
+
+# --- Mantis issue numbers and links ---
+
+MANTIS = "https://mantis.example.com"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1234", 1234),
+        ("#1234", 1234),
+        ("0001234", 1234),
+        (" 1234 ", 1234),
+        (f"{MANTIS}/view.php?id=1234", 1234),
+        (f"{MANTIS}/view.php?id=0001234", 1234),
+        (f"{MANTIS.upper()}/view.php?id=1234", 1234),
+        (f"{MANTIS}/bug_view_page.php?bug_id=1234", 1234),
+        (f"{MANTIS}/view.php?foo=1&id=1234", 1234),
+    ],
+)
+def test_mantis_issue_accepts_numbers_and_links(raw: str, expected: int) -> None:
+    assert normalize_mantis_issue(raw, MANTIS) == expected
+
+
+def test_mantis_issue_blank_is_not_provided() -> None:
+    assert normalize_mantis_issue(None, MANTIS) is None
+    assert normalize_mantis_issue("  ", MANTIS) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["abc", "PROJ-12", "0", "12.5", f"{MANTIS}/view.php", f"{MANTIS}/view.php?id=abc"],
+)
+def test_mantis_issue_garbage_is_rejected(raw: str) -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_mantis_issue(raw, MANTIS)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+
+
+def test_mantis_link_to_another_host_is_rejected() -> None:
+    """The shared account's request must never be pointed somewhere else."""
+    with pytest.raises(AppError) as excinfo:
+        normalize_mantis_issue("https://mantis.evil.example/view.php?id=1234", MANTIS)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    assert "configured" in excinfo.value.user_message
+
+
+def test_mantis_issue_token_shaped_is_rejected_without_echoing_it() -> None:
+    with pytest.raises(AppError) as excinfo:
+        normalize_mantis_issue(FAKE_TOKEN, MANTIS)
+    assert excinfo.value.code == ErrorCode.INPUT_INVALID
+    assert FAKE_TOKEN not in excinfo.value.user_message
 
 
 # --- pasted requirement text ---

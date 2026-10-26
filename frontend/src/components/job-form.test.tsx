@@ -759,6 +759,121 @@ describe("JobForm", () => {
     expect(push).toHaveBeenCalledWith("/jobs/job-doc-with-key");
   });
 
+  it("offers Mantis only when the server has it configured", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+      mantis: { enabled: false, base_url: null },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+
+    render(<JobForm />);
+
+    await screen.findByText("github.com");
+    expect(
+      screen.queryByRole("button", { name: "Mantis issue" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("submits a Mantis issue", async () => {
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+      mantis: { enabled: true, base_url: "https://mantis.example.com" },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+    createJob.mockResolvedValue({ job_id: "job-mantis" });
+
+    render(<JobForm />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Mantis issue" }),
+    );
+    expect(
+      screen.getByText(/https:\/\/mantis\.example\.com\/view\.php\?id=1234/),
+    ).toBeInTheDocument();
+    fireEvent.change(
+      screen.getByLabelText(/Repository URL or pre-configured name/i),
+      { target: { value: "hello-world-sample" } },
+    );
+    fireEvent.change(screen.getByLabelText(/Mantis issue number or link/i), {
+      target: { value: "1234" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Generate implementation plan/i }),
+    );
+
+    await waitFor(() =>
+      expect(createJob).toHaveBeenCalledWith({
+        ticket: undefined,
+        repo: "hello-world-sample",
+        planning_notes: "",
+        mantis_issue: "1234",
+      }),
+    );
+    expect(push).toHaveBeenCalledWith("/jobs/job-mantis");
+  });
+
+  it("prefills the Mantis issue from a retry draft", async () => {
+    sessionStorage.setItem(
+      "jira2pullreq:retry-draft",
+      JSON.stringify({
+        ticket: "",
+        repo: "https://github.com/acme/repo.git",
+        repoMode: "remote",
+        planningNotes: "",
+        requirementSource: "MANTIS",
+        requirementDocumentName: null,
+        documentTicketKey: "",
+        mantisIssue: "1234",
+        implementationClarifications: "",
+      }),
+    );
+    fetchRepos.mockResolvedValue({
+      repos: [],
+      allowed_hosts: ["github.com"],
+      local_repo_support: {
+        enabled: false,
+        allowed_roots: [],
+        allow_dirty: false,
+        require_ticket_branch_match: false,
+        allow_non_git_folders: false,
+      },
+      mantis: { enabled: true, base_url: "https://mantis.example.com" },
+    });
+    fetchGitHubRepositories.mockRejectedValue(
+      new Error("Connect your GitHub account before loading repositories."),
+    );
+
+    render(<JobForm />);
+
+    await screen.findByText("github.com");
+    expect(
+      screen.getByRole("button", { name: "Mantis issue" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByLabelText(/Mantis issue number or link/i)).toHaveValue(
+      "1234",
+    );
+  });
+
   it("submits a pasted requirement with its title and ticket key", async () => {
     fetchRepos.mockResolvedValue({
       repos: [],

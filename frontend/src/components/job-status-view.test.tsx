@@ -582,6 +582,7 @@ describe("JobStatusView", () => {
       requirementTitle: "",
       requirementText: "",
       textTicketKey: "",
+      mantisIssue: "",
       implementationClarifications: "",
     });
     expect(push).toHaveBeenCalledWith("/");
@@ -726,6 +727,7 @@ describe("JobStatusView", () => {
       requirementTitle: "",
       requirementText: "",
       textTicketKey: "",
+      mantisIssue: "",
       implementationClarifications:
         "Stuff Type will be form based field i.e. F=factory, D=dock.",
     });
@@ -1593,6 +1595,7 @@ describe("JobStatusView", () => {
       requirementTitle: "",
       requirementText: "",
       textTicketKey: "",
+      mantisIssue: "",
       implementationClarifications: "",
     });
   });
@@ -1654,6 +1657,7 @@ describe("JobStatusView", () => {
       requirementTitle: "",
       requirementText: "",
       textTicketKey: "",
+      mantisIssue: "",
       implementationClarifications: "",
     });
   });
@@ -1710,6 +1714,54 @@ describe("JobStatusView", () => {
     ) as RetryDraft;
     expect(draft.documentTicketKey).toBe("KAN-31");
     expect(draft.ticket).toBe(""); // still not treated as a Jira-sourced job
+  });
+
+  it("links a Mantis job's key to its issue and carries the issue number into a retry", async () => {
+    sessionStorage.clear();
+    fetchJob.mockResolvedValue({
+      id: "job-mantis-failed",
+      ticket_key: "MANTIS-1234",
+      requirement_source: "MANTIS",
+      requirement_document_name: null,
+      requirement_url: "https://mantis.example.com/view.php?id=1234",
+      repo_url: "https://github.com/acme/repo.git",
+      planning_notes: null,
+      state: "FAILED",
+      error: {
+        code: "MANTIS_AUTH_FAILED",
+        message: "Mantis rejected the server's Mantis account.",
+        stage: "FETCHING_TICKET",
+      },
+      repo_info: null,
+      workspace_path: null,
+      plan: null,
+      usage: null,
+      implementation_usage: null,
+      implementation_result: null,
+      implementation_diff: null,
+      validation_results: [],
+      implementation_clarifications: null,
+      implementation_approved_at: null,
+      implementation_started_at: null,
+      implementation_finished_at: null,
+      created_at: "2026-10-23T10:00:00Z",
+      updated_at: "2026-10-23T10:05:00Z",
+    });
+
+    render(<JobStatusView jobId="job-mantis-failed" />);
+
+    expect(
+      await screen.findByRole("link", { name: "MANTIS-1234" }),
+    ).toHaveAttribute("href", "https://mantis.example.com/view.php?id=1234");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    const draft = JSON.parse(
+      sessionStorage.getItem("jira2pullreq:retry-draft")!,
+    ) as RetryDraft;
+    expect(draft.requirementSource).toBe("MANTIS");
+    expect(draft.ticket).toBe(""); // never treated as a Jira ticket
+    expect(draft.mantisIssue).toBe("1234");
   });
 
   it.each([

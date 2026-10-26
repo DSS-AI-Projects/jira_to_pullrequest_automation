@@ -32,7 +32,14 @@ from app.steps.workspace_guard import workspace_guard_hooks
 
 logger = get_logger(__name__)
 
-_SECRET_ENV_VARS = ("JIRA_API_TOKEN", "JIRA_EMAIL", "GITHUB_TOKEN", "GH_TOKEN", "GITLAB_TOKEN")
+_SECRET_ENV_VARS = (
+    "JIRA_API_TOKEN",
+    "JIRA_EMAIL",
+    "MANTIS_API_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITLAB_TOKEN",
+)
 
 # AGENT_CONFIG_MISSING / AGENT_REQUEST_FAILED / BUDGET_EXCEEDED default to
 # "planning agent" wording (they're shared with plan_agent.py) — override with

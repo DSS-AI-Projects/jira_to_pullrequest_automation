@@ -8,6 +8,7 @@ app-wide object ever holds them (security invariant 5).
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -33,6 +34,39 @@ class Settings(BaseSettings):
     jira_oauth_callback_url: str | None = None
     jira_oauth_scopes: list[str] = ["read:jira-work", "offline_access"]
     jira_oauth_state_ttl_minutes: int = 10
+
+    # Mantis (MantisBT) as a requirement source, read through its REST API as
+    # ONE shared, read-only Mantis user (owner-approved: Mantis has no OAuth,
+    # and users never paste tokens into this app). The token lives in env
+    # only: MANTIS_API_TOKEN. The base URL must be https, since the token
+    # travels in a header to it.
+    mantis_enabled: bool = False
+    mantis_base_url: str | None = None
+    # Jobs are keyed "<prefix>-<issue id>", e.g. MANTIS-1234 — the same shape
+    # as a Jira key, so branch names and commit messages need no special case.
+    mantis_key_prefix: str = "MANTIS"
+    # PDF attachments on the issue, extracted like Jira attachments (and with
+    # the same JIRA_ATTACHMENT_* caps). Best-effort, off by default.
+    mantis_attachment_fetch_enabled: bool = False
+
+    @field_validator("mantis_base_url")
+    @classmethod
+    def _strip_mantis_base_url_trailing_slash(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip().rstrip("/") or None
+
+    @field_validator("mantis_key_prefix")
+    @classmethod
+    def _validate_mantis_key_prefix(cls, value: str) -> str:
+        prefix = value.strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{1,63}", prefix):
+            raise ValueError(
+                "MANTIS_KEY_PREFIX must be 2-64 letters, digits or underscores, "
+                "starting with a letter (e.g. MANTIS)"
+            )
+        return prefix
+
     github_oauth_enabled: bool = False
     github_oauth_client_id: str | None = None
     github_oauth_callback_url: str | None = None

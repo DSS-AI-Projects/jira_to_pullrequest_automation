@@ -24,6 +24,9 @@ class ErrorCode(StrEnum):
     JIRA_OAUTH_STATE_INVALID = "JIRA_OAUTH_STATE_INVALID"
     JIRA_OAUTH_CALLBACK_FAILED = "JIRA_OAUTH_CALLBACK_FAILED"
     JIRA_SITE_NOT_ACCESSIBLE = "JIRA_SITE_NOT_ACCESSIBLE"
+    MANTIS_CONFIG_MISSING = "MANTIS_CONFIG_MISSING"
+    MANTIS_AUTH_FAILED = "MANTIS_AUTH_FAILED"
+    MANTIS_UNREACHABLE = "MANTIS_UNREACHABLE"
     REPO_PROVIDER_NOT_AVAILABLE = "REPO_PROVIDER_NOT_AVAILABLE"
     REPO_PROVIDER_STATE_INVALID = "REPO_PROVIDER_STATE_INVALID"
     REPO_PROVIDER_CALLBACK_FAILED = "REPO_PROVIDER_CALLBACK_FAILED"
@@ -92,6 +95,17 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ),
     ErrorCode.JIRA_SITE_NOT_ACCESSIBLE: (
         "Your Jira account cannot access the Jira site configured on this server."
+    ),
+    ErrorCode.MANTIS_CONFIG_MISSING: (
+        "Mantis is not configured on the server. Set MANTIS_ENABLED, an https "
+        "MANTIS_BASE_URL and MANTIS_API_TOKEN in backend/.env."
+    ),
+    ErrorCode.MANTIS_AUTH_FAILED: (
+        "Mantis rejected the server's Mantis account. Check MANTIS_API_TOKEN, and "
+        "that the account can see this issue's project."
+    ),
+    ErrorCode.MANTIS_UNREACHABLE: (
+        "Could not reach Mantis. Check MANTIS_BASE_URL and your network."
     ),
     ErrorCode.REPO_PROVIDER_NOT_AVAILABLE: (
         "That repository provider sign-in is not configured on this server."
@@ -207,6 +221,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.JIRA_OAUTH_STATE_INVALID: 400,
     ErrorCode.JIRA_OAUTH_CALLBACK_FAILED: 400,
     ErrorCode.JIRA_SITE_NOT_ACCESSIBLE: 400,
+    ErrorCode.MANTIS_CONFIG_MISSING: 400,
     ErrorCode.REPO_PROVIDER_NOT_AVAILABLE: 400,
     ErrorCode.REPO_PROVIDER_STATE_INVALID: 400,
     ErrorCode.REPO_PROVIDER_CALLBACK_FAILED: 400,

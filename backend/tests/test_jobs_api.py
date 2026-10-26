@@ -999,6 +999,104 @@ def test_reuploading_the_same_pdf_yields_the_same_synthetic_key(
     assert first_key != third_key
 
 
+# --- Mantis issues (the MANTIS source) ---
+
+_MANTIS = "https://mantis.example.com"
+
+
+def _mantis_settings(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> None:
+    values: dict[str, Any] = {"mantis_enabled": True, "mantis_base_url": _MANTIS, **overrides}
+    monkeypatch.setattr(
+        "app.api.routes.get_settings",
+        lambda: Settings(_env_file=None, **values),  # type: ignore[call-arg]
+    )
+
+
+@pytest.mark.parametrize("issue", ["1234", "#0001234", f"{_MANTIS}/view.php?id=1234"])
+def test_submit_with_a_mantis_issue_reaches_plan_ready(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, issue: str
+) -> None:
+    _mantis_settings(monkeypatch)
+    response = client.post(
+        "/api/jobs", data={"repo": "git@github.com:acme/repo.git", "mantis_issue": issue}
+    )
+    assert response.status_code == 202
+    body = poll_until_terminal(client, response.json()["job_id"])
+
+    assert body["state"] == "PLAN_READY"
+    assert body["requirement_source"] == "MANTIS"
+    assert body["ticket_key"] == "MANTIS-1234"
+    # Built from server config, never from the submitted link.
+    assert body["requirement_url"] == f"{_MANTIS}/view.php?id=1234"
+
+
+def test_a_mantis_key_prefix_names_the_job(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mantis_settings(monkeypatch, mantis_key_prefix="bugs")
+    response = client.post(
+        "/api/jobs", data={"repo": "git@github.com:acme/repo.git", "mantis_issue": "77"}
+    )
+    assert response.status_code == 202
+    assert poll_until_terminal(client, response.json()["job_id"])["ticket_key"] == "BUGS-77"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"mantis_enabled": False}, {"mantis_base_url": None}, {"mantis_base_url": "http://m.local"}],
+)
+def test_a_mantis_issue_without_safe_config_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any]
+) -> None:
+    _mantis_settings(monkeypatch, **overrides)
+    response = client.post(
+        "/api/jobs", data={"repo": "git@github.com:acme/repo.git", "mantis_issue": "1234"}
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "MANTIS_CONFIG_MISSING"
+
+
+def test_a_mantis_link_to_another_host_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mantis_settings(monkeypatch)
+    response = client.post(
+        "/api/jobs",
+        data={
+            "repo": "git@github.com:acme/repo.git",
+            "mantis_issue": "https://evil.example/view.php?id=1234",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+
+
+def test_a_mantis_issue_with_a_jira_ticket_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mantis_settings(monkeypatch)
+    response = client.post(
+        "/api/jobs",
+        data={"ticket": "PROJ-1", "repo": "git@github.com:acme/repo.git", "mantis_issue": "1234"},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INPUT_INVALID"
+
+
+def test_repos_reports_whether_the_form_offers_mantis(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mantis_settings(monkeypatch, mantis_enabled=False)
+    assert client.get("/api/repos").json()["mantis"] == {"enabled": False, "base_url": None}
+
+    _mantis_settings(monkeypatch)
+    assert client.get("/api/repos").json()["mantis"] == {"enabled": True, "base_url": _MANTIS}
+
+    # Misconfigured (not https): not offered rather than offered and failing.
+    _mantis_settings(monkeypatch, mantis_base_url="http://m.local")
+    assert client.get("/api/repos").json()["mantis"]["enabled"] is False
+
+
 # --- pasted requirement text (the TEXT source) ---
 
 _PASTED = "Users can export the monthly report as CSV.\nOnly admins see the button."
