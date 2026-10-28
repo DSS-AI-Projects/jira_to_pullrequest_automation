@@ -282,7 +282,12 @@ container); older log lines are dropped.
   `MANTIS_BASE_URL=https://<your mantis>` (https is required: the token
   travels in a header), `MANTIS_API_TOKEN=<that token>`, and optionally
   `MANTIS_KEY_PREFIX` (jobs are named `MANTIS-1234` by default) and
-  `MANTIS_ATTACHMENT_FETCH_ENABLED=true` for PDF attachments. Restart the
+  `MANTIS_ATTACHMENT_FETCH_ENABLED=true` for PDF attachments. If your Mantis
+  rejects every API token (`403 API token not found`, seen on a customized
+  2.25.2), use its SOAP API instead: set `MANTIS_API=soap`,
+  `MANTIS_USERNAME=<that account>` and `MANTIS_PASSWORD=<its password>` in
+  place of `MANTIS_API_TOKEN`. Use a dedicated *local* Mantis account for
+  this, never a person's or an SSO/LDAP one. Restart the
   backend; the job form then shows **Mantis issue**. Every signed-in user can
   fetch any issue that account can see, so keep its project list tight. The
   VM must reach the Mantis server; an internal certificate works if the CA is

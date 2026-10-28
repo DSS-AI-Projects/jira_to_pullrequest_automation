@@ -78,8 +78,9 @@ typing a secret into this app's forms. Sources:
   immediate `TypeError` (caught by pyright/the first test run) instead of a
   silent wrong-key bug discovered only when decryption fails, weeks later.
 - **Mantis — one shared, read-only account** (owner-approved): `MANTIS_BASE_URL`
-  (https only) and `MANTIS_API_TOKEN` from env, the token read lazily inside the
-  Mantis fetch step only. No per-user mode: Mantis has no OAuth. See
+  (https only) and `MANTIS_API_TOKEN` from env — or, with `MANTIS_API=soap`,
+  `MANTIS_USERNAME` (non-secret) and `MANTIS_PASSWORD` — the secret read lazily
+  inside the Mantis fetch step only. No per-user mode: Mantis has no OAuth. See
   **Requirement source** below.
 - **Anthropic:** `ANTHROPIC_API_KEY` from env, consumed only by the Agent SDK steps.
 
@@ -804,12 +805,44 @@ makes the key a link on the job page; Retry carries the issue number
 401/403 → `MANTIS_AUTH_FAILED`; 404 or an empty `issues` list →
 `TICKET_NOT_FOUND` with a Mantis wording; no summary and no description →
 `TICKET_EMPTY`; other statuses, network errors and unexpected bodies →
-`MANTIS_UNREACHABLE`. **Not yet verified against a live Mantis server** — the
-endpoint, header form and field names follow MantisBT 2.x's REST API; check
-them against the team's version before relying on it. Tests:
-`test_mantis_fetch.py` (mapping, every error path, config refusals made before
-any request, attachments on/off/failing, the token absent from logs and
-results, settings validation), plus Mantis cases in `test_inputs.py`,
+`MANTIS_UNREACHABLE`. The REST transport is **not yet verified against a live
+Mantis server** — and on the team's own (customized) MantisBT 2.25.2 it
+fails: every token, even a freshly created one, gets `403 API token not
+found`. Hence the second transport:
+
+**SOAP mode (`MANTIS_API=soap`, owner-approved).** MantisConnect at
+`<base>/api/soap/mantisconnect.php`, verified working on that server (a manual
+`mc_issue_get` returned the issue). It signs in with `MANTIS_USERNAME` and
+`MANTIS_PASSWORD` — a stored password rather than a token, approved by the
+owner for a **dedicated local Mantis account** (viewer level, limited
+projects; never a person's or an SSO/LDAP account). The password follows the
+token's rules: env only, read lazily in the fetch step
+(`secrets.get_mantis_password`, in `_SECRET_READERS`, so registered with the
+redactor), excluded by name from both agents' `scrubbed_env`. It travels in
+the request *body*, so https is still required and request bodies are never
+logged. `require_mantis_base_url()` also refuses SOAP mode without a username
+(so the form doesn't offer Mantis), and the fetch step refuses a missing
+password, both before any request. `steps/mantis_fetch.py` has two transports
+behind one small protocol (`get_issue` → the REST JSON shape,
+`get_attachment` → bytes or `None`), so mapping, attachment caps and error
+rules are shared. `_SoapTransport` builds the envelope by hand with every
+value XML-escaped (`xml.sax.saxutils.escape`), calls `mc_issue_get`
+(IssueData → the REST shape: `notes/item(text, reporter(name, real_name))`,
+`attachments/item(id, filename, size, content_type)`) and
+`mc_issue_attachment_get` (base64 in `<return>`), and parses replies with the
+stdlib `ElementTree`, matching elements by local name. **Any reply with a DTD
+(`<!DOCTYPE`/`<!ENTITY`) is refused before parsing** — SOAP forbids them, and
+they're what entity-expansion/XXE attacks need — so no `defusedxml`
+dependency was added. Faults (`<faultstring>`, usually with HTTP 500): "access
+denied"/"not authorized" → `MANTIS_AUTH_FAILED`; "not found"/"does not exist"
+→ `TICKET_NOT_FOUND`; others → `MANTIS_UNREACHABLE` (fault text redacted into
+`internal_detail`, in case a server echoes the password); HTTP 401/403 →
+`MANTIS_AUTH_FAILED`; unparseable or result-less replies →
+`MANTIS_UNREACHABLE`. Tests:
+`test_mantis_fetch.py` (both transports: mapping, every error path, config
+refusals made before any request, attachments on/off/failing, the SOAP
+envelope's escaping, DTD refusal, the token and password absent from logs,
+errors and results, settings validation), plus Mantis cases in `test_inputs.py`,
 `test_jobs_api.py`, the two agents' `scrubbed_env` tests, `job-form.test.tsx`
 and `job-status-view.test.tsx`.
 

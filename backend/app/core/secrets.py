@@ -118,6 +118,12 @@ def get_mantis_api_token() -> str | None:
     return _read("MANTIS_API_TOKEN")
 
 
+def get_mantis_password() -> str | None:
+    """Read the shared read-only Mantis account's password (MANTIS_API=soap).
+    Call only inside the Mantis fetch step."""
+    return _read("MANTIS_PASSWORD")
+
+
 def get_anthropic_api_key() -> str | None:
     """Read the Anthropic API key. Call only inside the planning agent step."""
     return _read("ANTHROPIC_API_KEY")
@@ -145,5 +151,6 @@ _SECRET_READERS = (
     get_bitbucket_oauth_client_secret,
     get_bitbucket_oauth_encryption_key,
     get_mantis_api_token,
+    get_mantis_password,
     get_anthropic_api_key,
 )

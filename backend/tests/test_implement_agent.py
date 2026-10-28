@@ -157,11 +157,14 @@ async def test_execute_agent_reports_tool_use_as_progress(
     assert received == ["Reading src/cli.py", "Editing src/cli.py"]
 
 
-def test_scrubbed_env_excludes_the_mantis_token_by_name(
+def test_scrubbed_env_excludes_the_mantis_credentials_by_name(
     agent_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("MANTIS_API_TOKEN", "mantis-token-not-yet-registered")
-    assert "MANTIS_API_TOKEN" not in scrubbed_env(FAKE_ANTHROPIC_KEY)
+    monkeypatch.setenv("MANTIS_PASSWORD", "mantis-password-not-yet-registered")
+    env = scrubbed_env(FAKE_ANTHROPIC_KEY)
+    assert "MANTIS_API_TOKEN" not in env
+    assert "MANTIS_PASSWORD" not in env
 
 
 def test_scrubbed_env_excludes_all_secrets(agent_env: None) -> None:

@@ -98,11 +98,13 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ),
     ErrorCode.MANTIS_CONFIG_MISSING: (
         "Mantis is not configured on the server. Set MANTIS_ENABLED, an https "
-        "MANTIS_BASE_URL and MANTIS_API_TOKEN in backend/.env."
+        "MANTIS_BASE_URL and MANTIS_API_TOKEN (or, with MANTIS_API=soap, "
+        "MANTIS_USERNAME and MANTIS_PASSWORD) in backend/.env."
     ),
     ErrorCode.MANTIS_AUTH_FAILED: (
-        "Mantis rejected the server's Mantis account. Check MANTIS_API_TOKEN, and "
-        "that the account can see this issue's project."
+        "Mantis rejected the server's Mantis account. Check MANTIS_API_TOKEN (or "
+        "MANTIS_USERNAME and MANTIS_PASSWORD with MANTIS_API=soap), and that the "
+        "account can see this issue's project."
     ),
     ErrorCode.MANTIS_UNREACHABLE: (
         "Could not reach Mantis. Check MANTIS_BASE_URL and your network."

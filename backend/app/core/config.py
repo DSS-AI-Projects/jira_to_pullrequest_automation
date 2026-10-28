@@ -35,13 +35,18 @@ class Settings(BaseSettings):
     jira_oauth_scopes: list[str] = ["read:jira-work", "offline_access"]
     jira_oauth_state_ttl_minutes: int = 10
 
-    # Mantis (MantisBT) as a requirement source, read through its REST API as
-    # ONE shared, read-only Mantis user (owner-approved: Mantis has no OAuth,
-    # and users never paste tokens into this app). The token lives in env
-    # only: MANTIS_API_TOKEN. The base URL must be https, since the token
-    # travels in a header to it.
+    # Mantis (MantisBT) as a requirement source, read as ONE shared, read-only
+    # Mantis user (owner-approved: Mantis has no OAuth, and users never paste
+    # credentials into this app). The base URL must be https, since the
+    # credentials travel to it.
     mantis_enabled: bool = False
     mantis_base_url: str | None = None
+    # "rest": the REST API with an API token (env only: MANTIS_API_TOKEN).
+    # "soap": MantisConnect SOAP with a username (here) and password (env
+    # only: MANTIS_PASSWORD) — for a Mantis whose REST API won't accept
+    # tokens (owner-approved; use a dedicated local account).
+    mantis_api: Literal["rest", "soap"] = "rest"
+    mantis_username: str | None = None
     # Jobs are keyed "<prefix>-<issue id>", e.g. MANTIS-1234 — the same shape
     # as a Jira key, so branch names and commit messages need no special case.
     mantis_key_prefix: str = "MANTIS"
