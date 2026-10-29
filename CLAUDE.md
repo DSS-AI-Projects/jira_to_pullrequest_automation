@@ -1774,6 +1774,18 @@ workflow engine; a network-locked sandbox; an embeddings/vector index.
   in as any email, including an admin's. Users are matched by email, so
   switching a VM to Entra ID keeps each user's jobs and connections when their
   Entra email matches the one they used before.
+- VM local repositories (optional): `deploy/vm/docker-compose.local-repos.yml`
+  is an override that mounts `LOCAL_REPOS_HOST_DIR` read-only at `/repos` in
+  the backend, with `ALLOWED_LOCAL_REPO_ROOTS=["/repos"]` in the backend env
+  and container paths (`/repos/<name>`) typed on the form. It also mounts
+  `deploy/vm/gitconfig-local-repos` as `/etc/gitconfig`
+  (`safe.directory = /repos/*`). Without it, git in the container refuses the
+  mount with "detected dubious ownership": the files belong to another uid
+  than appuser's 1000 (root, for a Windows folder under Docker Desktop).
+  Verified in the backend image: `GIT_CONFIG_COUNT`/`KEY`/`VALUE` variables
+  fixed `rev-parse` but not `git clone` from the mount, because git strips
+  them from the local-clone helper process; the system config file fixed
+  both.
 - VM backups: a `backup` sidecar (`deploy/vm/backup/sqlite_backup.py`,
   stdlib-only, on `python:3.12-slim`; no network, no capabilities, read-only
   rootfs, the data volume mounted **read-only**, uid 1000 = the backend's

@@ -1,0 +1,5 @@
+# Mounted as the backend container's /etc/gitconfig by
+# docker-compose.local-repos.yml. Trusts only repositories under the read-only
+# /repos mount, whose files are owned by another uid than the backend's.
+[safe]
+	directory = /repos/*

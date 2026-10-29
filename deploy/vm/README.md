@@ -292,6 +292,39 @@ container); older log lines are dropped.
   fetch any issue that account can see, so keep its project list tight. The
   VM must reach the Mantis server; an internal certificate works if the CA is
   in the backend image (see `backend/certs/`).
+- **Local repositories** (optional): jobs can use a repository in a folder on
+  the host instead of a remote URL. The backend is a Linux container, so it
+  sees only folders mounted into it, and the job form takes the path *inside*
+  the container. `docker-compose.local-repos.yml` mounts
+  `LOCAL_REPOS_HOST_DIR` (set it in `vm.env.local`, e.g. `/srv/repos`, or
+  `D:/repos` under Docker Desktop) read-only at `/repos`, plus
+  `gitconfig-local-repos` as the container's `/etc/gitconfig`. Without that
+  file git refuses the repositories ("detected dubious ownership"): their
+  files belong to another uid than the backend's uid 1000 (root, for a
+  Windows folder). In `backend/.env` set:
+
+  ```
+  ALLOW_LOCAL_REPOS=true
+  ALLOWED_LOCAL_REPO_ROOTS=["/repos"]
+  ```
+
+  Then start the stack with both compose files, and pass both on every later
+  command (an `up` without the override recreates the backend without the
+  mount):
+
+  ```bash
+  docker compose --env-file deploy/vm/vm.env.local \
+    -f deploy/vm/docker-compose.yml -f deploy/vm/docker-compose.local-repos.yml up -d
+  ```
+
+  On the job form, a repository at `<LOCAL_REPOS_HOST_DIR>/my-service` is
+  `/repos/my-service`; a host path such as `D:\repos\my-service` fails.
+  Every signed-in user can use any repository under the folder, so mount only
+  what all of them may see. Pushing goes to the repository's own `origin`,
+  which for delegated push must be a GitHub, GitLab or Bitbucket remote (an
+  SSH origin is pushed over https). `ALLOW_DIRTY_LOCAL_REPOS`,
+  `REQUIRE_LOCAL_BRANCH_TICKET_MATCH` and `ALLOW_LOCAL_NON_GIT_FOLDERS` work
+  as in local development.
 - **Rollback**: `down` this stack and start the previous one; the data volume
   is untouched either way.
 - **Multiple team instances on one VM**: give each its own

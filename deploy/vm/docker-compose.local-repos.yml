@@ -1,0 +1,26 @@
+# Optional override: let the backend plan and implement against repositories
+# in a folder on the host. See deploy/vm/README.md, "Local repositories".
+#
+#   docker compose --env-file deploy/vm/vm.env.local \
+#     -f deploy/vm/docker-compose.yml -f deploy/vm/docker-compose.local-repos.yml up -d
+#
+# Pass both -f files on every compose command for this stack; an `up` without
+# this one recreates the backend without the mount.
+#
+# The backend also needs, in its BACKEND_ENV_FILE:
+#   ALLOW_LOCAL_REPOS=true
+#   ALLOWED_LOCAL_REPO_ROOTS=["/repos"]
+# and the job form takes the path inside the container: /repos/<name>.
+
+services:
+  backend:
+    volumes:
+      # Read-only: the backend only inspects and clones the source; all work
+      # happens in its own per-job workspace.
+      - ${LOCAL_REPOS_HOST_DIR:?set LOCAL_REPOS_HOST_DIR in vm.env.local}:/repos:ro
+      # The mounted files belong to another uid than the backend's appuser
+      # (root, for a Windows folder under Docker Desktop), so git refuses them
+      # as "dubious ownership". A system config is used rather than GIT_CONFIG_*
+      # variables because git drops those for the helper process of a local
+      # clone.
+      - ./gitconfig-local-repos:/etc/gitconfig:ro
