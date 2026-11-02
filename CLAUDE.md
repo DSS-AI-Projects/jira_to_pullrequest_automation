@@ -1021,7 +1021,8 @@ for a separately-provisioned, admin-managed clone credential (SSH deploy key,
   prompts disabled"), the failure looked identical to a missing-scope or
   not-deployed problem, and it took testing both header forms against the
   live endpoint to tell them apart. Usernames (`git_auth._BASIC_USERNAMES`):
-  GitLab `oauth2` and Bitbucket `x-token-auth` (both verified live for read),
+  GitLab `oauth2` (verified live for read and push) and Bitbucket
+  `x-token-auth` (verified live for read),
   GitHub `x-access-token` (GitHub ignores the username for token auth; not
   yet verified live — no GitHub connection existed at implementation time).
   `git_auth_header()` registers the encoded value with the log redactor too,
@@ -1430,7 +1431,16 @@ repository permissions, and its audit log names them.
   GitHub App would give expiring, installation-scoped tokens); disconnect
   deletes the stored token but doesn't call the provider's revoke endpoint.
   The GitHub Basic username (`x-access-token`) is not yet verified live, and
-  write access has not yet been verified live for any provider.
+  write access is verified live only for GitLab (below).
+- **Verified live on GitLab (2026-11-02), through the app on the local Entra
+  stack:** a pasted-text job on `gitlab.dsslp.com` went through plan,
+  implement, create-branch and push with `PUSH_AUTH_MODE=delegated`. The
+  push used the clicking user's own GitLab connection (scopes `read_api`,
+  `read_user`, `read_repository`, `write_repository`) with Basic
+  `oauth2:<token>`; the job recorded `branch_push_provider=GITLAB` and that
+  user as `branch_push_account`; the commit was authored as the signed-in
+  user; and `ls-remote` showed the remote branch at the job's
+  `branch_commit_sha`. GitHub and Bitbucket push remain unverified.
 
 - **Targets `Job.repo_info.origin_url`, never the workspace clone's own "origin"
   remote.** For a `LOCAL` job those are different things: `origin_url` was
