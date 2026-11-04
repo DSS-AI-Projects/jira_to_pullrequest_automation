@@ -925,6 +925,76 @@ async def test_implementation_diff_captures_new_untracked_files(tmp_path: Path) 
     assert "+def greet" in new_file.patch
 
 
+async def test_summary_only_result_gets_its_changed_files_from_the_diff(
+    tmp_path: Path,
+) -> None:
+    """Seen live: the agent made its edits, then sent five results with only a
+    summary. Each was rejected for the missing changed_files list, and the job
+    failed IMPLEMENTATION_INVALID with the edits already in the workspace.
+    `changed_files` is optional now, and the runner fills it from the diff."""
+    store, settings, job = make_env(tmp_path)
+
+    async def local_clone(
+        job_id: str,
+        ticket_key: str,
+        repo_url: str,
+        workdir: Path,
+        base_branch: str | None = None,
+        owner_user_id: str | None = None,
+        store: JobStore | None = None,
+    ) -> CloneResult:
+        del base_branch, owner_user_id, store
+        clone_path = workdir / job_id
+        init_git_workspace(clone_path)
+        return CloneResult(
+            clone_path=clone_path,
+            repo_info=RepoInfo(
+                source_kind=RepoSourceKind.LOCAL,
+                branch=ticket_key,
+                commit_sha="j" * 40,
+                origin_url=repo_url,
+                is_dirty=False,
+                local_path="D:\\repos\\repo",
+            ),
+        )
+
+    async def implement_with_summary_only(
+        job: Job,
+        workspace_path: Path,
+        validation_failures: list[ValidationResult] | None = None,
+    ) -> ImplementationStepResult:
+        del job, validation_failures
+        (workspace_path / "README.md").write_text("Hello again\n", encoding="utf-8")
+        (workspace_path / "greeting.py").write_text("GREETING = 'hi'\n", encoding="utf-8")
+        return ImplementationStepResult(
+            result=ImplementationResult.model_validate({"summary": "Updated the greeting."}),
+            usage=AgentUsage(duration_seconds=0.2),
+        )
+
+    steps = dataclasses.replace(
+        make_fake_steps(),
+        clone_repo=local_clone,
+        implement_plan=implement_with_summary_only,
+    )
+    await run_job(job.id, store, settings, steps)
+
+    planned = store.get(job.id)
+    assert planned is not None
+    planned.state = JobState.IMPLEMENTATION_QUEUED
+    planned.implementation_approved_at = planned.updated_at
+    store.save(planned)
+    await run_implementation(job.id, store, settings, steps)
+
+    final = store.get(job.id)
+    assert final is not None
+    assert final.state == JobState.IMPLEMENTATION_READY
+    assert final.implementation_result is not None
+    actions = {c.path: c.action for c in final.implementation_result.changed_files}
+    assert actions == {"README.md": "modified", "greeting.py": "added"}
+    assert any("taken from the diff" in w for w in final.implementation_result.warnings)
+    assert final.implementation_result.summary == "Updated the greeting."
+
+
 async def test_claimed_changes_with_no_actual_diff_is_implementation_invalid(
     tmp_path: Path,
 ) -> None:

@@ -879,7 +879,7 @@ export function JobStatusView(props: { jobId: string }) {
                       <code>{change.path}</code>
                       <span className="pill cap">{change.action}</span>
                     </div>
-                    <p>{change.rationale}</p>
+                    {change.rationale ? <p>{change.rationale}</p> : null}
                   </li>
                 ))}
               </ul>

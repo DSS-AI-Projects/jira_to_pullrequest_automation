@@ -678,6 +678,35 @@ they are, they're usually far more diagnostic than the summary alone. Check
 the backend log for the job in question rather than guessing at a cause from
 the generic user-facing message.
 
+**The CLI's own rejection reasons are logged too.** Both agents end by calling
+the CLI's `StructuredOutput` tool; a result that fails the schema gets an
+error tool result naming the problem, and the model retries. The SDK's final
+message drops those reasons. `StructuredOutputRejections`
+(`steps/structured_output_rejections.py`) watches the message stream in both
+`execute_agent()`s and keeps the last five (500 chars each) as
+`AgentRunOutcome.structured_output_errors`, which
+`_describe_structured_output_failure()` adds as `rejections=[…]`. Before this
+the reason survived only in the CLI's transcript inside the container
+(`~/.claude/projects/<workspace>/*.jsonl` of the backend user).
+
+**A summary-only implementation result no longer fails the job.** Seen live
+(2026-11-04, KAN-46): the agent made its edits, then sent five results with
+only `summary`; each was rejected for the missing `changed_files`, the model
+shortened the summary instead of adding the list, and the job ended
+`IMPLEMENTATION_INVALID` with the edits already in the workspace. Three
+changes: `ImplementationResult.changed_files` defaults to `[]`; after the main
+implementation pass, an empty list with a non-empty diff is rebuilt from the
+diff (`_changes_from_diff` in `runner.py`: path, `added`/`deleted`/`modified`
+from the patch's file-mode lines, no rationale) plus a warning saying so —
+not after a correction pass, whose cumulative diff includes the original
+change; and the system prompt and the request now spell out the result's
+fields and say to add what a rejection names. The job page hides an empty
+rationale. Tests: `test_summary_only_result_gets_its_changed_files_from_the_diff`
+(`test_runner.py`, verified to fail with the fill disabled),
+`test_structured_output_rejections.py`, and in `test_implement_agent.py`
+`test_structured_output_failure_logs_why_each_attempt_was_rejected`,
+`test_a_summary_only_result_is_accepted`, `test_prompt_names_the_result_fields`.
+
 ## The plan schema is a versioned contract
 
 Defined ONCE as a Pydantic model (`backend/app/schemas/plan.py`) with `schema_version`

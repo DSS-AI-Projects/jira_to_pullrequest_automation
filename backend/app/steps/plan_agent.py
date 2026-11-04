@@ -45,6 +45,7 @@ from app.steps.agent_progress import report, summarize_tool_use
 from app.steps.plan_cache import PlanCache, plan_cache_key
 from app.steps.plan_stub import build_stub_plan
 from app.steps.repo_digest import RepoDigestCache, build_repo_digest, repo_digest_key
+from app.steps.structured_output_rejections import StructuredOutputRejections
 from app.steps.workspace_guard import workspace_guard_hooks
 
 logger = get_logger(__name__)
@@ -274,6 +275,9 @@ class AgentRunOutcome:
     # words about it, and `structured_output` sometimes still holds its
     # last (invalid) attempt — see _describe_structured_output_failure().
     result: str | None = None
+    # The CLI's reason for each rejected result attempt (the last few) —
+    # see structured_output_rejections.py.
+    structured_output_errors: list[str] | None = None
 
 
 async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOutcome:
@@ -285,8 +289,10 @@ async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOut
     # real async generator at runtime; the SDK just types it as the
     # narrower AsyncIterator.
     stream = cast(AsyncGenerator[Message, None], query(prompt=prompt, options=options))
+    rejections = StructuredOutputRejections()
     async with contextlib.aclosing(stream) as messages:
         async for message in messages:
+            rejections.observe(message)
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
@@ -304,6 +310,7 @@ async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOut
                     api_error_status=message.api_error_status,
                     errors=message.errors or ([message.result] if message.result else None),
                     result=message.result,
+                    structured_output_errors=rejections.errors or None,
                 )
     raise AppError(ErrorCode.INTERNAL, internal_detail="agent run produced no result message")
 
@@ -352,6 +359,8 @@ def _describe_structured_output_failure(outcome: AgentRunOutcome) -> str:
     capped independently so one huge field can't crowd the others out of the
     log line."""
     parts = [f"errors={outcome.errors}"]
+    if outcome.structured_output_errors:
+        parts.append(f"rejections={outcome.structured_output_errors}")
     if outcome.result:
         parts.append(f"result={outcome.result[:_FAILURE_DETAIL_MAX_CHARS]!r}")
     if outcome.structured_output is not None:

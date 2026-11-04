@@ -290,6 +290,9 @@ async def test_plan_invalid_detail_includes_the_last_attempts_result_and_output(
         num_turns=3,
         duration_ms=2000,
         errors=["Failed to provide valid structured output after 5 attempts"],
+        structured_output_errors=[
+            "Output does not match required schema: root: must NOT have additional properties"
+        ],
     )
     install_fake_agent(monkeypatch, [bad, bad])
     with pytest.raises(AppError) as excinfo:
@@ -298,6 +301,8 @@ async def test_plan_invalid_detail_includes_the_last_attempts_result_and_output(
     detail = excinfo.value.internal_detail or ""
     assert "I could not produce a schema-valid plan." in detail
     assert "a plan, but missing required fields" in detail
+    # The CLI's reason for rejecting each attempt (structured_output_rejections.py).
+    assert "must NOT have additional properties" in detail
 
 
 async def test_schema_violating_output_is_plan_invalid_after_retry(

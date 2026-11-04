@@ -8,6 +8,7 @@ error. A job can never end outside PLAN_READY or FAILED.
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from app.core.workspace_git import (
 from app.jobs.limits import AgentSlots, agent_slot, check_spend_limit
 from app.jobs.models import (
     AgentUsage,
+    ImplementationChange,
     ImplementationDiff,
     ImplementationDiffFile,
     ImplementationResult,
@@ -244,6 +246,30 @@ def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> Im
     return ImplementationDiff(overall_patch=overall_patch, files=files)
 
 
+_UNLISTED_FILES_WARNING = (
+    "The agent did not list the files it changed; the list was taken from the diff."
+)
+
+
+def _changes_from_diff(diff: ImplementationDiff) -> list[ImplementationChange]:
+    """The changed-files list rebuilt from the workspace diff, for a result
+    that left it out. The diff is the real record of what changed; the
+    agent's list only adds a rationale per file. Before `changed_files` had
+    a default, an agent that sent only a summary failed the whole job
+    (IMPLEMENTATION_INVALID after five rejected attempts) with its edits
+    already in the workspace."""
+    changes: list[ImplementationChange] = []
+    for file in diff.files:
+        if re.search(r"^new file mode", file.patch, re.MULTILINE):
+            action = "added"
+        elif re.search(r"^deleted file mode", file.patch, re.MULTILINE):
+            action = "deleted"
+        else:
+            action = "modified"
+        changes.append(ImplementationChange(path=file.path, action=action, rationale=""))
+    return changes
+
+
 async def _collect_implementation_diff(
     workspace_path: Path, base_ref: str
 ) -> ImplementationDiff | None:
@@ -460,7 +486,15 @@ async def run_implementation(
                     ),
                 )
 
-            job.implementation_result = implementation.result
+            result = implementation.result
+            if not result.changed_files and diff is not None and diff.files:
+                result = result.model_copy(
+                    update={
+                        "changed_files": _changes_from_diff(diff),
+                        "warnings": [*result.warnings, _UNLISTED_FILES_WARNING],
+                    }
+                )
+            job.implementation_result = result
             job.implementation_diff = diff
             store.save(job)
             job = _advance(store, job, JobState.VALIDATING)

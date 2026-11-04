@@ -97,7 +97,10 @@ class ImplementationResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     summary: str
-    changed_files: list[ImplementationChange]
+    # Optional on purpose: an agent that sends only a summary would otherwise
+    # fail the job after five rejected attempts with its edits already made.
+    # The runner fills it from the workspace diff (_changes_from_diff).
+    changed_files: list[ImplementationChange] = []
     warnings: list[str] = []
     follow_up_questions: list[str] = []
 

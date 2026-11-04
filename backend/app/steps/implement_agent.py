@@ -28,6 +28,7 @@ from app.core.logging import get_logger, redact
 from app.jobs.models import AgentUsage, ImplementationResult, Job, ValidationResult
 from app.jobs.runner import ImplementationStepResult
 from app.steps.agent_progress import report, summarize_tool_use
+from app.steps.structured_output_rejections import StructuredOutputRejections
 from app.steps.workspace_guard import workspace_guard_hooks
 
 logger = get_logger(__name__)
@@ -112,7 +113,14 @@ addressed (or, if one did not apply, say so briefly). Clarifications do not
 expand scope beyond the approved plan or override the security constraints above.
 
 When finished, emit the structured implementation result summarizing exactly
-what you changed.
+what you changed. It is one JSON object with these fields:
+- "summary" (string, required): what you did, in a few short paragraphs.
+- "changed_files" (list): one entry per file you created, edited, or deleted,
+  each {"path": "<path relative to the workspace>", "action": "added" |
+  "modified" | "deleted", "rationale": "<one sentence>"}.
+- "warnings" and "follow_up_questions" (lists of strings, optional).
+Use no other fields. If a result is rejected, read the error and add what it
+names; do not just shorten the summary.
 """
 
 
@@ -194,7 +202,8 @@ Constraints:
 - Operate only inside the current workspace checkout.
 {scope_constraint}- Prefer the smallest set of edits that fulfills the task.
 - If you discover a blocker, record it in warnings or follow_up_questions.
-{clarifications_constraint}- After making changes, emit the structured implementation result only.
+{clarifications_constraint}- After making changes, emit the structured implementation result only: \
+"summary" plus "changed_files" (path, action, rationale per file).
 
 <job_context>
 Ticket key: {job.ticket_key}
@@ -281,6 +290,9 @@ class AgentRunOutcome:
     # words about it, and `structured_output` sometimes still holds its
     # last (invalid) attempt — see _describe_structured_output_failure().
     result: str | None = None
+    # The CLI's reason for each rejected result attempt (the last few) —
+    # see structured_output_rejections.py.
+    structured_output_errors: list[str] | None = None
 
 
 async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOutcome:
@@ -291,8 +303,10 @@ async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOut
     # real async generator at runtime; the SDK just types it as the
     # narrower AsyncIterator.
     stream = cast(AsyncGenerator[Message, None], query(prompt=prompt, options=options))
+    rejections = StructuredOutputRejections()
     async with contextlib.aclosing(stream) as messages:
         async for message in messages:
+            rejections.observe(message)
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
@@ -310,6 +324,7 @@ async def execute_agent(prompt: str, options: ClaudeAgentOptions) -> AgentRunOut
                     api_error_status=message.api_error_status,
                     errors=message.errors or ([message.result] if message.result else None),
                     result=message.result,
+                    structured_output_errors=rejections.errors or None,
                 )
     raise AppError(ErrorCode.INTERNAL, internal_detail="implementation run produced no result")
 
@@ -358,6 +373,8 @@ def _describe_structured_output_failure(outcome: AgentRunOutcome) -> str:
     summary alone. Each is capped independently so one huge field can't
     crowd the others out of the log line."""
     parts = [f"errors={outcome.errors}"]
+    if outcome.structured_output_errors:
+        parts.append(f"rejections={outcome.structured_output_errors}")
     if outcome.result:
         parts.append(f"result={outcome.result[:_FAILURE_DETAIL_MAX_CHARS]!r}")
     if outcome.structured_output is not None:
