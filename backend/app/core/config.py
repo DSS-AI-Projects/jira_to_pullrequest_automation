@@ -220,6 +220,11 @@ class Settings(BaseSettings):
     agent_implement_correction_max_turns: int = 10
     agent_implement_correction_max_budget_usd: float | None = 1.0
     agent_timeout_seconds: int = 600
+    # Largest single JSON message the SDK accepts from the CLI (its default is
+    # 1 MiB). An Edit/Write tool result carries the whole original file, so one
+    # large file in a workspace failed the job with AGENT_REQUEST_FAILED
+    # ("JSON message exceeded maximum buffer size").
+    agent_max_buffer_bytes: int = Field(default=32 * 1024 * 1024, ge=1024 * 1024)
     # Load and spend limits (app/jobs/limits.py). At most this many agent
     # runs (plan pipelines, implementations, corrections) execute at once;
     # the rest wait in QUEUED / IMPLEMENTATION_QUEUED / CORRECTING, in order.

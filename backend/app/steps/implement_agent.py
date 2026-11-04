@@ -256,6 +256,9 @@ def build_options(
         hooks=workspace_guard_hooks(workspace_path),
         # No inherited user/project/local settings — see plan_agent.build_options.
         setting_sources=[],
+        # An Edit/Write result carries the whole original file; the SDK's 1 MiB
+        # default failed jobs on repos with one large file.
+        max_buffer_size=settings.agent_max_buffer_bytes,
     )
 
 

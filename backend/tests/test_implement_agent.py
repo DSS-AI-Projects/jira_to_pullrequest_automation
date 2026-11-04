@@ -4,9 +4,10 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.core import secrets
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.jobs.models import Job, RepoInfo, RepoSourceKind, ValidationResult, ValidationStatus
 from app.jobs.runner import ImplementationStepResult
@@ -269,6 +270,31 @@ def test_options_use_tighter_caps_for_corrections(agent_env: None, tmp_path: Pat
     # Same model/tools/effort either way — only the budget shrinks.
     assert correction.model == normal.model
     assert correction.tools == normal.tools
+
+
+def test_options_raise_the_sdk_message_size_limit(
+    agent_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An Edit/Write result carries the whole original file, so the SDK's
+    1 MiB default failed jobs with "JSON message exceeded maximum buffer
+    size" on a repo with one large file."""
+    settings = get_settings()
+    assert settings.agent_max_buffer_bytes > 1024 * 1024
+    for options in (
+        build_options(tmp_path, FAKE_ANTHROPIC_KEY, settings),
+        build_options(tmp_path, FAKE_ANTHROPIC_KEY, settings, is_correction=True),
+    ):
+        assert options.max_buffer_size == settings.agent_max_buffer_bytes
+
+    monkeypatch.setenv("AGENT_MAX_BUFFER_BYTES", str(64 * 1024 * 1024))
+    get_settings.cache_clear()
+    options = build_options(tmp_path, FAKE_ANTHROPIC_KEY, get_settings())
+    assert options.max_buffer_size == 64 * 1024 * 1024
+
+
+def test_message_size_limit_cannot_go_below_the_sdk_default() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, agent_max_buffer_bytes=512 * 1024)  # type: ignore[call-arg]
 
 
 async def test_implement_plan_passes_validation_failures_through_to_the_prompt(

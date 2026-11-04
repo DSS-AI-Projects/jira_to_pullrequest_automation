@@ -174,6 +174,8 @@ def test_budgets_are_configured(agent_env: None, tmp_path: Path) -> None:
     assert options.effort == settings.agent_effort
     assert options.output_format is not None
     assert options.output_format["type"] == "json_schema"
+    # Raised from the SDK's 1 MiB default (see test_implement_agent).
+    assert options.max_buffer_size == settings.agent_max_buffer_bytes
 
 
 def test_prompt_quotes_ticket_as_data(agent_env: None) -> None:

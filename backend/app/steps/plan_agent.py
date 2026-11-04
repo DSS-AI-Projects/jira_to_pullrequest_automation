@@ -250,6 +250,8 @@ def build_options(clone_path: Path, api_key: str, settings: Settings) -> ClaudeA
         # which (workspaces live under this app's own checkout) meant this
         # app's own CLAUDE.md, plus the host user's ~/.claude config.
         setting_sources=[],
+        # Raised from the SDK's 1 MiB default, as in implement_agent.
+        max_buffer_size=settings.agent_max_buffer_bytes,
     )
 
 

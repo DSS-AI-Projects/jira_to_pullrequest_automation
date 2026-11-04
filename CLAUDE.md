@@ -589,6 +589,18 @@ clone. Agent config:
 - Record tokens (incl. cache read/creation), cost, and duration from the SDK
   `ResultMessage` onto the job record (`usage` / `implementation_usage`).
 - Malformed/invalid plan output: retry ONCE, then fail with typed `PLAN_INVALID`.
+- Message size: both agents pass `max_buffer_size=AGENT_MAX_BUFFER_BYTES`
+  (default 32 MiB, at least 1 MiB). The SDK reads the CLI's output one JSON
+  message per line and, by default, refuses any line over 1 MiB. An
+  Edit/Write tool result carries the whole original file, so a workspace with
+  one large file (seen on a non-git folder job on the VM, 2026-11-04) failed
+  `IMPLEMENTING` with `AGENT_REQUEST_FAILED` ("Failed to decode JSON: JSON
+  message exceeded maximum buffer size of 1048576 bytes"). What the agent had
+  already written survived as the "Changes made before the failure" diff.
+  Tests: `test_options_raise_the_sdk_message_size_limit` and
+  `test_message_size_limit_cannot_go_below_the_sdk_default`
+  (`test_implement_agent.py`), plus `test_budgets_are_configured`
+  (`test_plan_agent.py`).
 
 **Token-saving controls (planning step):** all opt-in via env, accuracy-preserving
 first: `AGENT_PLAN_STUB` returns a plan with no API call at all (zero-credit
