@@ -712,6 +712,19 @@ validation correction — `VALIDATION_CORRECTION_NOT_AVAILABLE`; spend —
 `BUDGET_LIMIT_REACHED` (see **Load and spend limits**); and `INTERNAL`. Raw
 stack traces never reach the client.
 
+**A rejected shared Jira token is `JIRA_AUTH_FAILED`, not `TICKET_NOT_FOUND`.**
+Jira Cloud answers an issue request with rejected Basic credentials as it
+would an anonymous visitor: 404, not 401. Seen live (2026-11-04): with an
+expired `JIRA_API_TOKEN`, every ticket read "That Jira ticket could not be
+found", while `/rest/api/3/myself` returned 401. So after a 404 with the
+shared email + token (`JiraAuth.shared`), `fetch_ticket` checks
+`/rest/api/3/myself` once (`_shared_credentials_rejected` in
+`steps/jira_fetch.py`); a 401/403 there becomes `JIRA_AUTH_FAILED`. A network
+error or any other status keeps `TICKET_NOT_FOUND`. A per-user OAuth token
+isn't checked: api.atlassian.com already answers a rejected one with 401.
+Tests in `test_jira_fetch.py`: the 401 and 403 cases (verified to fail with
+the check disabled), a failed check, and a delegated 404 with no check.
+
 Every job ends in a terminal state. Two async pipelines drive it:
 
 - **Plan** (`run_job`): `QUEUED → FETCHING_TICKET → CLONING_REPO → MAPPING_REPO →

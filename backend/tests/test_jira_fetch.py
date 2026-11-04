@@ -26,6 +26,7 @@ from tests.pdf_fixtures import make_pdf_bytes
 BASE = "https://acme.atlassian.net"
 FAKE_TOKEN = "ATATT" + "3xM" + "c" * 27
 ISSUE_URL = f"{BASE}/rest/api/3/issue/PROJ-1"
+MYSELF_URL = f"{BASE}/rest/api/3/myself"
 DELEGATED_BASE = "https://api.atlassian.com/ex/jira/cloud-123"
 DELEGATED_ISSUE_URL = f"{DELEGATED_BASE}/rest/api/3/issue/PROJ-1"
 REFRESHED_TOKEN = "refreshed-access-token"
@@ -116,6 +117,40 @@ async def test_auth_failure_is_typed(jira_env: None, jira_store: JobStore) -> No
 @respx.mock
 async def test_unknown_ticket_is_typed(jira_env: None, jira_store: JobStore) -> None:
     respx.get(ISSUE_URL).mock(return_value=httpx.Response(404))
+    respx.get(MYSELF_URL).mock(return_value=httpx.Response(200, json={"active": True}))
+    with pytest.raises(AppError) as excinfo:
+        await fetch_ticket(
+            Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo"),
+            jira_store,
+        )
+    assert excinfo.value.code == ErrorCode.TICKET_NOT_FOUND
+
+
+@pytest.mark.parametrize("myself_status", [401, 403])
+@respx.mock
+async def test_rejected_shared_credentials_are_not_reported_as_a_missing_ticket(
+    jira_env: None, jira_store: JobStore, myself_status: int
+) -> None:
+    """Jira Cloud answers an issue request with a rejected API token as it
+    would an anonymous visitor (404). Seen live with an expired token: every
+    ticket read as TICKET_NOT_FOUND while /myself returned 401."""
+    respx.get(ISSUE_URL).mock(return_value=httpx.Response(404))
+    myself = respx.get(MYSELF_URL).mock(return_value=httpx.Response(myself_status))
+    with pytest.raises(AppError) as excinfo:
+        await fetch_ticket(
+            Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo"),
+            jira_store,
+        )
+    assert excinfo.value.code == ErrorCode.JIRA_AUTH_FAILED
+    assert myself.call_count == 1
+
+
+@respx.mock
+async def test_login_check_failure_keeps_ticket_not_found(
+    jira_env: None, jira_store: JobStore
+) -> None:
+    respx.get(ISSUE_URL).mock(return_value=httpx.Response(404))
+    respx.get(MYSELF_URL).mock(side_effect=httpx.ConnectError("nope"))
     with pytest.raises(AppError) as excinfo:
         await fetch_ticket(
             Job.new(ticket_key="PROJ-1", repo_url="https://github.com/acme/repo"),
@@ -239,6 +274,49 @@ async def test_fetch_uses_delegated_connection_when_available(
 
     assert ticket.key == "PROJ-1"
     assert route.calls[0].request.headers["Authorization"] == "Bearer delegated-access-token"
+
+
+@respx.mock
+async def test_delegated_404_is_a_missing_ticket_without_a_login_check(
+    jira_store: JobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected OAuth token already gets a 401 from api.atlassian.com, so
+    only the shared login is checked after a 404."""
+    monkeypatch.setenv("JIRA_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("JIRA_OAUTH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("JIRA_OAUTH_CALLBACK_URL", "http://localhost:3000/api/auth/jira/callback")
+    monkeypatch.setenv("JIRA_OAUTH_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("JIRA_OAUTH_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    monkeypatch.setenv("JIRA_BASE_URL", BASE)
+    user = jira_store.upsert_user(
+        email="sam@example.com",
+        display_name="Sam",
+        auth_provider="dev-login",
+        provider_subject="sam@example.com",
+    )
+    jira_store.save_jira_connection(
+        JiraConnection.new(
+            user_id=user.id,
+            site=JiraCloudSite(id="cloud-123", name="Acme", url=BASE),
+            scopes=["read:jira-work", "offline_access"],
+            access_token_encrypted=encrypt_secret("delegated-access-token", provider="jira"),
+            refresh_token_encrypted=encrypt_secret("delegated-refresh-token", provider="jira"),
+            access_token_expires_at=datetime.now(UTC) + timedelta(minutes=30),
+        )
+    )
+    respx.get(DELEGATED_ISSUE_URL).mock(return_value=httpx.Response(404))
+    myself = respx.get(f"{DELEGATED_BASE}/rest/api/3/myself").mock(return_value=httpx.Response(401))
+
+    with pytest.raises(AppError) as excinfo:
+        await fetch_ticket(
+            Job.new(
+                ticket_key="PROJ-1", repo_url="https://github.com/acme/repo", owner_user_id=user.id
+            ),
+            jira_store,
+        )
+
+    assert excinfo.value.code == ErrorCode.TICKET_NOT_FOUND
+    assert myself.call_count == 0
 
 
 @respx.mock

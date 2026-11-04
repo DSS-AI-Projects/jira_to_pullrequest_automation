@@ -173,11 +173,32 @@ async def fetch_attachment_texts(
     return results
 
 
+async def _shared_credentials_rejected(client: httpx.AsyncClient, auth: JiraAuth) -> bool:
+    """Whether Jira rejects the shared email + API token.
+
+    Jira Cloud answers an issue request with rejected Basic credentials as it
+    would an anonymous visitor: 404, not 401. So after a 404 the shared login
+    is checked once, and an expired or revoked token is reported as
+    JIRA_AUTH_FAILED instead of TICKET_NOT_FOUND. Any doubt (network error,
+    another status) keeps the 404's answer.
+    """
+    try:
+        response = await client.get(
+            f"{auth.base_url}/rest/api/3/myself",
+            headers={"Authorization": auth.auth_header, "Accept": "application/json"},
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("could not check the shared Jira login after a 404: %s", exc)
+        return False
+    return response.status_code in (401, 403)
+
+
 async def fetch_ticket(job: Job, store: JobStore) -> TicketData:
     settings = get_settings()
     auth = await get_jira_auth(job, store, settings)
 
     url = f"{auth.base_url}/rest/api/3/issue/{job.ticket_key}"
+    credentials_rejected = False
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
@@ -185,6 +206,8 @@ async def fetch_ticket(job: Job, store: JobStore) -> TicketData:
                 params={"fields": "summary,description,comment,attachment"},
                 headers={"Authorization": auth.auth_header, "Accept": "application/json"},
             )
+            if response.status_code == 404 and auth.shared:
+                credentials_rejected = await _shared_credentials_rejected(client, auth)
     except httpx.HTTPError as exc:
         raise AppError(
             ErrorCode.JIRA_UNREACHABLE, internal_detail=f"{type(exc).__name__}: {exc}"
@@ -193,6 +216,11 @@ async def fetch_ticket(job: Job, store: JobStore) -> TicketData:
     if response.status_code in (401, 403):
         raise AppError(
             ErrorCode.JIRA_AUTH_FAILED, internal_detail=f"jira returned {response.status_code}"
+        )
+    if credentials_rejected:
+        raise AppError(
+            ErrorCode.JIRA_AUTH_FAILED,
+            internal_detail="issue returned 404 and /myself rejected the shared credentials",
         )
     if response.status_code == 404:
         raise AppError(ErrorCode.TICKET_NOT_FOUND)

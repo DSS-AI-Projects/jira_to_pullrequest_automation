@@ -23,6 +23,9 @@ from app.jobs.store import JobStore
 class JiraAuth:
     base_url: str  # no trailing slash
     auth_header: str  # full Authorization header value
+    # Shared email + API token. Jira Cloud treats rejected Basic credentials as
+    # an anonymous visitor, so a bad token shows up as 404s rather than a 401.
+    shared: bool = False
 
 
 def get_shared_jira_auth(settings: Settings) -> JiraAuth:
@@ -34,6 +37,7 @@ def get_shared_jira_auth(settings: Settings) -> JiraAuth:
     return JiraAuth(
         base_url=settings.jira_base_url.rstrip("/"),
         auth_header=f"Basic {encoded}",
+        shared=True,
     )
 
 
