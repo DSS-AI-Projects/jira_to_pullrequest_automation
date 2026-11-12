@@ -583,7 +583,18 @@ clone. Agent config:
 - Planning tools: read/grep/glob only, cwd = the clone dir; no Bash, no network tools.
 - Per-phase config: planning and implementation have independent model, turn, and
   budget settings (`AGENT_PLAN_*` / `AGENT_IMPLEMENT_*`) so planning can run on a
-  cheaper tier; shared `AGENT_EFFORT` controls reasoning depth.
+  cheaper tier; shared `AGENT_EFFORT` controls reasoning depth. Defaults
+  (2026-11-11): `claude-sonnet-5-5` for planning, `claude-opus-5-5` for
+  implementation — same price as Sonnet 5, and ~20% cheaper than the previous
+  `claude-opus-4-8`. **The SDK pins the CLI:** each `claude-agent-sdk` release
+  bundles one Claude Code CLI (`claude_agent_sdk/_cli_version.py`), and a CLI
+  too old for a model refuses it before any API call — `0.2.139` (CLI 2.1.233)
+  answered Opus 5.5 with "API Error: 400 … version 2.1.280 or newer is
+  required" as a zero-cost `success` result with no structured output, which
+  the app reports as `AGENT_REQUEST_FAILED`. Hence `claude-agent-sdk>=0.2.180`
+  (CLI 2.1.321). Before switching a default model, run one small
+  structured-output request on it through the SDK; both defaults were checked
+  that way.
 - Budget: `max_turns` cap, `max_budget_usd` cost cap (native SDK option), and a
   wall-clock timeout via `asyncio.wait_for`. Budget exhaustion is `BUDGET_EXCEEDED`.
 - Record tokens (incl. cache read/creation), cost, and duration from the SDK

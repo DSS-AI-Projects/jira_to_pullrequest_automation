@@ -203,8 +203,11 @@ class Settings(BaseSettings):
 
     # Agent models — per phase so planning can run on a cheaper tier than
     # implementation (token-saving; planning is analysis, not code-writing).
-    agent_plan_model: str = "claude-sonnet-5"
-    agent_implement_model: str = "claude-opus-4-8"
+    # Current generation: Sonnet 5.5 costs the same as Sonnet 5; Opus 5.5 is
+    # ~20% cheaper than Opus 4.8. Opus 5.5 needs the Claude Code CLI 2.1.280+
+    # bundled with claude-agent-sdk 0.2.180 (0.2.139's CLI 2.1.233 rejects it).
+    agent_plan_model: str = "claude-sonnet-5-5"
+    agent_implement_model: str = "claude-opus-5-5"
     # Reasoning depth (low|medium|high|xhigh|max). "medium" is the cost/quality
     # sweet spot for planning; raise for hard tickets.
     agent_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"

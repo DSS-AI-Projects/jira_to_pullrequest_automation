@@ -13,7 +13,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "tree-sitter>=0.26.0",
     "tree-sitter-language-pack>=1.12.5",
-    "claude-agent-sdk>=0.2.115",
+    # 0.2.180 bundles Claude Code CLI 2.1.321; Opus 5.5 needs CLI 2.1.280+.
+    "claude-agent-sdk>=0.2.180",
     "pypdf>=5.0",
     "python-multipart>=0.0.20",
     "truststore>=0.9",
