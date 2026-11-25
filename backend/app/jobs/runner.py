@@ -30,6 +30,7 @@ from app.jobs.models import (
     ImplementationDiff,
     ImplementationDiffFile,
     ImplementationResult,
+    ImplementationRevision,
     Job,
     JobError,
     JobState,
@@ -106,6 +107,9 @@ class JobSteps:
     implement_plan: Callable[
         [Job, Path, list[ValidationResult] | None], Awaitable[ImplementationStepResult]
     ]
+    # One review round: apply the user's feedback (the str) to the finished
+    # implementation in the same workspace.
+    revise_implementation: Callable[[Job, Path, str], Awaitable[ImplementationStepResult]]
     validate_workspace: Callable[[Path], Awaitable[list[ValidationResult]]]
     create_branch: Callable[
         [Job, Path, str | None, str | None, CommitAuthor | None], Awaitable[BranchResult]
@@ -191,29 +195,36 @@ def _parse_numstat(output: str) -> tuple[int | None, int | None, bool]:
     return additions, deletions, is_binary
 
 
-def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> ImplementationDiff:
+def _collect_implementation_diff_sync(
+    workspace_path: Path, base_ref: str, to_ref: str | None = None
+) -> ImplementationDiff:
+    """The diff from `base_ref` to the workspace as it is now, or — with
+    `to_ref` — between two recorded snapshots (a review round's own change)."""
     # Stage everything first: `git diff` never shows untracked files on its
     # own, and the implement agent has no Bash tool to run `git add` itself —
     # without this, newly created files would silently be missing from the
     # diff even though the agent reported creating them.
     prepare_workspace_git(workspace_path)
-    _run_git_command(workspace_path, "add", "-A")
+    if to_ref is None:
+        _run_git_command(workspace_path, "add", "-A")
+        refs: tuple[str, ...] = ("--cached", base_ref)
+    else:
+        refs = (base_ref, to_ref)
 
     overall_patch = _run_git_command(
         workspace_path,
         "diff",
-        "--cached",
+        *refs,
         "--no-ext-diff",
         "--no-textconv",
         "--find-renames",
         "--unified=3",
-        base_ref,
         "--",
     )
     changed_paths = [
         line
         for line in _run_git_command(
-            workspace_path, "diff", "--cached", "--name-only", base_ref, "--"
+            workspace_path, "diff", *refs, "--name-only", "--"
         ).splitlines()
         if line.strip()
     ]
@@ -222,17 +233,16 @@ def _collect_implementation_diff_sync(workspace_path: Path, base_ref: str) -> Im
         patch = _run_git_command(
             workspace_path,
             "diff",
-            "--cached",
+            *refs,
             "--no-ext-diff",
             "--no-textconv",
             "--find-renames",
             "--unified=3",
-            base_ref,
             "--",
             path,
         )
         additions, deletions, is_binary = _parse_numstat(
-            _run_git_command(workspace_path, "diff", "--cached", "--numstat", base_ref, "--", path)
+            _run_git_command(workspace_path, "diff", *refs, "--numstat", "--", path)
         )
         files.append(
             ImplementationDiffFile(
@@ -270,11 +280,35 @@ def _changes_from_diff(diff: ImplementationDiff) -> list[ImplementationChange]:
     return changes
 
 
+def _snapshot_workspace_sync(workspace_path: Path) -> str:
+    """Record the whole working tree as a git tree object and return its id.
+
+    `add -A` + `write-tree` only writes objects and the index — the same
+    index diff collection already stages into — and never moves HEAD or a
+    branch, so create-branch's assumption that HEAD is still the
+    implementation baseline holds."""
+    prepare_workspace_git(workspace_path)
+    _run_git_command(workspace_path, "add", "-A")
+    return _run_git_command(workspace_path, "write-tree").strip()
+
+
+async def _snapshot_workspace(workspace_path: Path) -> str | None:
+    try:
+        return await asyncio.to_thread(_snapshot_workspace_sync, workspace_path) or None
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        logger.warning("could not snapshot workspace %s", workspace_path, exc_info=True)
+    except UnsafeWorkspaceGitError as exc:
+        logger.warning("refusing to snapshot workspace %s: %s", workspace_path, exc)
+    return None
+
+
 async def _collect_implementation_diff(
-    workspace_path: Path, base_ref: str
+    workspace_path: Path, base_ref: str, to_ref: str | None = None
 ) -> ImplementationDiff | None:
     try:
-        return await asyncio.to_thread(_collect_implementation_diff_sync, workspace_path, base_ref)
+        return await asyncio.to_thread(
+            _collect_implementation_diff_sync, workspace_path, base_ref, to_ref
+        )
     except subprocess.CalledProcessError:
         logger.warning(
             "failed to collect implementation diff for %s",
@@ -683,6 +717,153 @@ async def run_validation_correction(
             )
 
 
+async def _record_revision_changes(
+    job: Job, revision: ImplementationRevision, workspace_path: Path, base_ref: str
+) -> None:
+    """Best-effort: re-read the cumulative diff (what create-branch would
+    commit) and this round's own diff, from the before/after snapshots. A
+    failed read keeps whatever was recorded before, never a worse value."""
+    cumulative = await _collect_implementation_diff(workspace_path, base_ref)
+    if cumulative is not None:
+        job.implementation_diff = cumulative
+    revision.snapshot_after = await _snapshot_workspace(workspace_path)
+    if revision.snapshot_before and revision.snapshot_after:
+        revision.diff = await _collect_implementation_diff(
+            workspace_path, revision.snapshot_before, revision.snapshot_after
+        )
+
+
+async def _record_revision_failure(
+    store: JobStore,
+    job: Job,
+    revision: ImplementationRevision,
+    code: ErrorCode,
+    message: str,
+) -> None:
+    """A review round never regresses the job: whatever happened, it returns
+    to IMPLEMENTATION_READY with the round's error recorded and the diffs
+    re-read, so edits the agent made before failing are visible and are what
+    a later create-branch would commit."""
+    revision.error = JobError(code=code, message=message, stage=job.state)
+    if revision.started_at is not None and job.workspace_path:
+        workspace_path = Path(job.workspace_path)
+        base_ref = job.implementation_baseline_commit_sha
+        if base_ref and workspace_path.exists():
+            await _record_revision_changes(job, revision, workspace_path, base_ref)
+    revision.finished_at = datetime.now(UTC)
+    job.state = JobState.IMPLEMENTATION_READY
+    store.save(job)
+
+
+async def run_revision(
+    job_id: str,
+    store: JobStore,
+    settings: Settings,
+    steps: JobSteps,
+    slots: AgentSlots | None = None,
+) -> None:
+    """Run the job's open review round: the agent applies the user's
+    feedback to the finished implementation in the same workspace, then the
+    diffs and validation are re-read. Always ends on IMPLEMENTATION_READY."""
+    job = store.get(job_id)
+    if job is None:  # pragma: no cover - defensive
+        logger.error("run_revision: job %s not found", job_id)
+        return
+    revision = job.open_revision
+    if revision is None:  # pragma: no cover - defensive; the route opens one
+        logger.error("run_revision: job %s has no open review round", job_id)
+        if job.state == JobState.REVISING:
+            job.state = JobState.IMPLEMENTATION_READY
+            store.save(job)
+        return
+    try:
+        async with agent_slot(slots, job.id):
+            # Waits in REVISING; see run_job for the re-check.
+            check_spend_limit(store, job.owner_user_id, settings)
+            if job.state != JobState.REVISING:
+                raise AppError(ErrorCode.IMPLEMENTATION_REVISION_NOT_AVAILABLE)
+            revision.started_at = datetime.now(UTC)
+            store.save(job)
+            if not job.workspace_path:
+                raise AppError(ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING)
+            workspace_path = Path(job.workspace_path)
+            if not workspace_path.exists():
+                raise AppError(
+                    ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING,
+                    internal_detail=f"workspace path missing: {workspace_path}",
+                )
+            base_ref = job.implementation_baseline_commit_sha
+            if not base_ref:
+                # Defensive fallback for a job implemented before this field
+                # existed on Job.
+                base_ref = await asyncio.to_thread(_read_git_head_sync, workspace_path)
+                base_ref = base_ref or "HEAD"
+                job.implementation_baseline_commit_sha = base_ref
+            revision.snapshot_before = await _snapshot_workspace(workspace_path)
+            store.save(job)
+
+            # Deferred imports: app.steps.__init__ imports JobSteps from this
+            # module, so a top-level import here would be circular.
+            from app.steps.agent_progress import report_progress_to
+            from app.steps.line_endings import normalize_to_lf, restore_original_line_endings
+
+            converted_line_endings: frozenset[Path] = frozenset()
+            if settings.workspace_normalize_line_endings:
+                converted_line_endings = await asyncio.to_thread(
+                    normalize_to_lf, workspace_path, settings.workspace_line_ending_max_file_bytes
+                )
+            try:
+                with report_progress_to(_start_activity_log(store, job)):
+                    step = await steps.revise_implementation(job, workspace_path, revision.feedback)
+            finally:
+                if converted_line_endings:
+                    await asyncio.to_thread(
+                        restore_original_line_endings, workspace_path, converted_line_endings
+                    )
+            revision.usage = step.usage
+            store.save(job)
+
+            job = _advance(store, job, JobState.REVALIDATING)
+            await _record_revision_changes(job, revision, workspace_path, base_ref)
+            result = step.result
+            if not result.changed_files and revision.diff is not None and revision.diff.files:
+                result = result.model_copy(
+                    update={
+                        "changed_files": _changes_from_diff(revision.diff),
+                        "warnings": [*result.warnings, _UNLISTED_FILES_WARNING],
+                    }
+                )
+            revision.result = result
+            store.save(job)
+            job.validation_results = await steps.validate_workspace(workspace_path)
+            revision.finished_at = datetime.now(UTC)
+            job.state = JobState.IMPLEMENTATION_READY
+            store.save(job)
+            logger.info("job %s: review round %d complete", job.id, revision.number)
+    except AppError as err:
+        logger.warning(
+            "job %s review round %d failed at %s: %s (%s)",
+            job.id,
+            revision.number,
+            job.state,
+            err.code,
+            err.internal_detail or "no detail",
+        )
+        if err.usage is not None:
+            revision.usage = AgentUsage.model_validate(err.usage)
+        await _record_revision_failure(store, job, revision, err.code, err.user_message)
+    except Exception:
+        logger.exception("job %s review round %d crashed at %s", job.id, revision.number, job.state)
+        await _record_revision_failure(
+            store, job, revision, ErrorCode.INTERNAL, DEFAULT_MESSAGES[ErrorCode.INTERNAL]
+        )
+    finally:
+        final = store.get(job.id)
+        if final is not None and not final.is_terminal:  # pragma: no cover - defensive
+            final.state = JobState.IMPLEMENTATION_READY
+            store.save(final)
+
+
 # Which terminal state an interrupted job lands on, by the state it was in
 # when the process stopped. Mirrors what run_job / run_implementation /
 # run_validation_correction would have done had the step raised; any other
@@ -691,6 +872,8 @@ _IMPLEMENTATION_STATES = frozenset(
     {JobState.IMPLEMENTATION_QUEUED, JobState.IMPLEMENTING, JobState.VALIDATING}
 )
 _CORRECTION_STATES = frozenset({JobState.CORRECTING, JobState.REVALIDATING})
+# REVALIDATING follows a review round too; an open round tells them apart.
+_REVISION_STATES = frozenset({JobState.REVISING, JobState.REVALIDATING})
 
 
 async def recover_interrupted_jobs(store: JobStore) -> int:
@@ -716,7 +899,15 @@ async def recover_interrupted_jobs(store: JobStore) -> int:
     for job in store.list_unfinished_jobs():
         try:
             interrupted_at = job.state
-            if interrupted_at in _CORRECTION_STATES:
+            revision = job.open_revision
+            if interrupted_at in _REVISION_STATES and revision is not None:
+                # A review round (REVISING, or REVALIDATING after one): back
+                # to IMPLEMENTATION_READY, the round's partial work kept. One
+                # still waiting for its slot never started, so isn't counted.
+                await _record_revision_failure(
+                    store, job, revision, ErrorCode.JOB_INTERRUPTED, message
+                )
+            elif interrupted_at in _CORRECTION_STATES:
                 await _refresh_diff_best_effort(job)
                 # A correction still waiting for an agent slot never ran, so
                 # it doesn't use up the job's one attempt.

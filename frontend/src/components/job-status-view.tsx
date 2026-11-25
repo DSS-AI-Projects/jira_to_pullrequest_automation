@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  completeReview,
   correctValidation,
   createBranch,
   fetchJob,
@@ -13,11 +14,13 @@ import {
   isAbortError,
   pushBranch,
   redirectBrowser,
+  reviseImplementation,
   startBitbucketConnect,
   startGitHubConnect,
   startGitLabConnect,
   type Job,
   type ImplementationDiffFile,
+  type ImplementationRevision,
   type PushIdentity,
   type RepoHostingProvider,
   type ValidationResult,
@@ -49,16 +52,46 @@ function currency(value: number | null): string {
   }).format(value);
 }
 
+function sumCosts(values: (number | null | undefined)[]): number | null {
+  const recorded = values.filter(
+    (value): value is number => value !== null && value !== undefined,
+  );
+  if (recorded.length === 0) {
+    return null;
+  }
+  return recorded.reduce((sum, value) => sum + value, 0);
+}
+
+function revisionCost(job: Job): number | null {
+  return sumCosts(
+    (job.implementation_revisions ?? []).map(
+      (revision) => revision.usage?.total_cost_usd,
+    ),
+  );
+}
+
 function totalCost(job: Job): number | null {
-  const values = [
+  return sumCosts([
     job.usage?.total_cost_usd,
     job.implementation_usage?.total_cost_usd,
     job.implementation_correction_usage?.total_cost_usd,
-  ].filter((value): value is number => value !== null && value !== undefined);
-  if (values.length === 0) {
-    return null;
+    revisionCost(job),
+  ]);
+}
+
+function revisionStatus(revision: ImplementationRevision): {
+  label: string;
+  className: string;
+} {
+  if (!revision.finished_at) {
+    return { label: "Running", className: "" };
   }
-  return values.reduce((sum, value) => sum + value, 0);
+  if (revision.error) {
+    return revision.started_at
+      ? { label: "Failed", className: "is-failed" }
+      : { label: "Not started", className: "is-skipped" };
+  }
+  return { label: "Done", className: "is-passed" };
 }
 
 function diffStat(file: ImplementationDiffFile): string {
@@ -104,6 +137,13 @@ export function JobStatusView(props: { jobId: string }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [implementing, setImplementing] = useState(false);
   const [correcting, setCorrecting] = useState(false);
+  // Review rounds: feedback on the finished implementation, applied in the
+  // same workspace until the user marks the review done.
+  const [reviewFeedback, setReviewFeedback] = useState("");
+  const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const [confirmingReviewDone, setConfirmingReviewDone] = useState(false);
+  const [completingReview, setCompletingReview] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [clarifications, setClarifications] = useState("");
   const [branchNameInput, setBranchNameInput] = useState("");
   const [commitMessageInput, setCommitMessageInput] = useState("");
@@ -261,7 +301,8 @@ export function JobStatusView(props: { jobId: string }) {
   const isAgentActive =
     job?.state === "PLANNING" ||
     job?.state === "IMPLEMENTING" ||
-    job?.state === "CORRECTING";
+    job?.state === "CORRECTING" ||
+    job?.state === "REVISING";
   const activityLog = job?.activity_log ?? [];
   const activityLogTitle =
     job?.state === "PLANNING"
@@ -270,7 +311,9 @@ export function JobStatusView(props: { jobId: string }) {
         ? "Applying code changes"
         : job?.state === "CORRECTING"
           ? "Attempting automatic fix"
-          : "Last agent activity";
+          : job?.state === "REVISING"
+            ? "Applying review feedback"
+            : "Last agent activity";
 
   // Cost is recorded whenever an agent call completed, even on a job that
   // ultimately failed (see backend/app/jobs/runner.py's AppError.usage
@@ -282,7 +325,8 @@ export function JobStatusView(props: { jobId: string }) {
     (job.plan ??
       job.usage ??
       job.implementation_usage ??
-      job.implementation_correction_usage),
+      job.implementation_correction_usage ??
+      (job.implementation_revisions ?? []).find((revision) => revision.usage)),
   );
 
   // Implementation runs entirely in the isolated workspace clone regardless
@@ -307,13 +351,28 @@ export function JobStatusView(props: { jobId: string }) {
     : false;
   const correctionInProgress =
     job?.state === "CORRECTING" || job?.state === "REVALIDATING";
+  const reviewDone = Boolean(job?.implementation_review_completed_at);
   const canCorrectValidation =
     job?.state === "IMPLEMENTATION_READY" &&
     hasCorrectableFailure &&
-    !job.implementation_correction_attempted;
+    !job.implementation_correction_attempted &&
+    !reviewDone;
+
+  const revisions = job?.implementation_revisions ?? [];
+  const revisionInProgress = revisions.some(
+    (revision) => !revision.finished_at,
+  );
+  // Review rounds run on a finished implementation, before a branch exists.
+  const canReview =
+    job?.state === "IMPLEMENTATION_READY" &&
+    Boolean(job.implementation_result) &&
+    !reviewDone &&
+    !job.branch_name;
+  const showReviewCard =
+    canReview || revisionInProgress || revisions.length > 0 || reviewDone;
 
   const canCreateBranch =
-    job?.state === "IMPLEMENTATION_READY" && !job.branch_name;
+    job?.state === "IMPLEMENTATION_READY" && !job.branch_name && reviewDone;
 
   const canPushBranch = !!job?.branch_name && !job.branch_pushed_at;
 
@@ -402,6 +461,49 @@ export function JobStatusView(props: { jobId: string }) {
       );
     } finally {
       setCorrecting(false);
+    }
+  }
+
+  async function handleReviseImplementation() {
+    if (!job || !reviewFeedback.trim()) {
+      return;
+    }
+    setSubmittingFeedback(true);
+    setReviewError(null);
+    setConfirmingReviewDone(false);
+    try {
+      await reviseImplementation(job.id, reviewFeedback);
+      setReviewFeedback("");
+      setRefreshKey((value) => value + 1);
+    } catch (reviseError) {
+      setReviewError(
+        reviseError instanceof Error
+          ? reviseError.message
+          : "Could not start the review round.",
+      );
+    } finally {
+      setSubmittingFeedback(false);
+    }
+  }
+
+  async function handleCompleteReview() {
+    if (!job) {
+      return;
+    }
+    setCompletingReview(true);
+    setReviewError(null);
+    try {
+      await completeReview(job.id);
+      setConfirmingReviewDone(false);
+      setRefreshKey((value) => value + 1);
+    } catch (completeError) {
+      setReviewError(
+        completeError instanceof Error
+          ? completeError.message
+          : "Could not mark the review done.",
+      );
+    } finally {
+      setCompletingReview(false);
     }
   }
 
@@ -781,6 +883,12 @@ export function JobStatusView(props: { jobId: string }) {
                 </strong>
               </div>
             ) : null}
+            {revisionCost(job) !== null ? (
+              <div className="summary-card">
+                <span className="meta-label">Review rounds cost</span>
+                <strong>{currency(revisionCost(job))}</strong>
+              </div>
+            ) : null}
             <div className="summary-card">
               <span className="meta-label">Total cost</span>
               <strong>{currency(totalCost(job))}</strong>
@@ -1082,6 +1190,194 @@ export function JobStatusView(props: { jobId: string }) {
                 </>
               ) : null}
             </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {job && showReviewCard ? (
+        <section className="panel" aria-labelledby="review-heading">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">Review</span>
+              <h2 id="review-heading">Review changes</h2>
+              <p>
+                Ask the agent to change the implemented diff in the same
+                workspace, as many rounds as you need. When the changes are
+                right, mark the review done to create a branch.
+              </p>
+            </div>
+          </div>
+
+          {revisions.length > 0 ? (
+            <ol className="content-list">
+              {revisions.map((revision) => {
+                const status = revisionStatus(revision);
+                return (
+                  <li key={revision.number}>
+                    <div className="change-header">
+                      <strong>Round {revision.number}</strong>
+                      <span
+                        className={`pill validation-pill ${status.className}`}
+                      >
+                        {status.label}
+                      </span>
+                    </div>
+                    <span className="meta-label">Your feedback</span>
+                    <p className="output-block preserve-whitespace">
+                      {revision.feedback}
+                    </p>
+                    {revision.error ? (
+                      <p className="banner banner-error">
+                        {revision.error.message}
+                      </p>
+                    ) : null}
+                    {revision.result ? (
+                      <p className="preserve-whitespace">
+                        {revision.result.summary}
+                      </p>
+                    ) : null}
+                    {(revision.result?.changed_files ?? []).length > 0 ? (
+                      <ul className="content-list">
+                        {revision.result!.changed_files.map((change) => (
+                          <li key={`${change.path}-${change.action}`}>
+                            <div className="change-header">
+                              <code>{change.path}</code>
+                              <span className="pill cap">{change.action}</span>
+                            </div>
+                            {change.rationale ? (
+                              <p>{change.rationale}</p>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {revision.diff && revision.diff.files.length > 0 ? (
+                      <details>
+                        <summary className="pill-button">
+                          Show this round&apos;s diff
+                        </summary>
+                        <ul className="content-list">
+                          {revision.diff.files.map((file) => (
+                            <li key={`${file.path}-${file.is_binary}`}>
+                              <div className="change-header">
+                                <code>{file.path}</code>
+                                <span className="pill">{diffStat(file)}</span>
+                              </div>
+                              {file.is_binary ? (
+                                <p className="meta-muted">
+                                  Binary file diff is not shown.
+                                </p>
+                              ) : (
+                                <pre className="output-block">{file.patch}</pre>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : null}
+                    {revision.usage ? (
+                      <p className="meta-muted">
+                        Cost: {currency(revision.usage.total_cost_usd)}
+                      </p>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ol>
+          ) : null}
+
+          {revisionInProgress ? (
+            <p className="banner banner-info">
+              {JOB_STATE_LABELS[job.state]} in progress. This page will keep
+              polling automatically.
+            </p>
+          ) : null}
+
+          {canReview ? (
+            <div className="stack">
+              <label className="field">
+                <span>What should change?</span>
+                <small>
+                  Describe the changes you want in this round. The agent edits
+                  the same workspace; the diff above updates when it finishes.
+                </small>
+                <textarea
+                  className="text-input"
+                  rows={4}
+                  maxLength={4000}
+                  value={reviewFeedback}
+                  disabled={submittingFeedback || completingReview}
+                  onChange={(event) => setReviewFeedback(event.target.value)}
+                  placeholder="e.g. Rename the helper to parseConfig and add a unit test for the empty-file case."
+                />
+              </label>
+              <div className="actions">
+                <button
+                  className="primary-button"
+                  disabled={
+                    submittingFeedback ||
+                    completingReview ||
+                    !reviewFeedback.trim()
+                  }
+                  onClick={() => void handleReviseImplementation()}
+                  type="button"
+                >
+                  {submittingFeedback ? "Starting..." : "Apply feedback"}
+                </button>
+                {confirmingReviewDone ? null : (
+                  <button
+                    className="pill-button"
+                    disabled={submittingFeedback || completingReview}
+                    onClick={() => setConfirmingReviewDone(true)}
+                    type="button"
+                  >
+                    Done reviewing
+                  </button>
+                )}
+              </div>
+              {confirmingReviewDone ? (
+                <div className="banner banner-info" role="alertdialog">
+                  <p>
+                    Mark the review done? No more review rounds or automatic
+                    fixes can run after this; you can then create the branch.
+                  </p>
+                  <div className="actions">
+                    <button
+                      className="primary-button"
+                      disabled={completingReview}
+                      onClick={() => void handleCompleteReview()}
+                      type="button"
+                    >
+                      {completingReview ? "Marking done..." : "Yes, mark done"}
+                    </button>
+                    <button
+                      className="pill-button"
+                      disabled={completingReview}
+                      onClick={() => setConfirmingReviewDone(false)}
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {reviewError ? (
+            <p className="banner banner-error" role="alert">
+              {reviewError}
+            </p>
+          ) : null}
+
+          {job.implementation_review_completed_at ? (
+            <p>
+              Review marked done on{" "}
+              {new Date(
+                job.implementation_review_completed_at,
+              ).toLocaleString()}
+              .
+            </p>
           ) : null}
         </section>
       ) : null}

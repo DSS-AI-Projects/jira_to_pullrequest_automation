@@ -57,6 +57,7 @@ class ErrorCode(StrEnum):
     IMPLEMENTATION_NOT_SUPPORTED = "IMPLEMENTATION_NOT_SUPPORTED"
     IMPLEMENTATION_WORKSPACE_MISSING = "IMPLEMENTATION_WORKSPACE_MISSING"
     VALIDATION_CORRECTION_NOT_AVAILABLE = "VALIDATION_CORRECTION_NOT_AVAILABLE"
+    IMPLEMENTATION_REVISION_NOT_AVAILABLE = "IMPLEMENTATION_REVISION_NOT_AVAILABLE"
     BRANCH_CREATION_NOT_AVAILABLE = "BRANCH_CREATION_NOT_AVAILABLE"
     BRANCH_NAME_INVALID = "BRANCH_NAME_INVALID"
     BRANCH_CREATION_FAILED = "BRANCH_CREATION_FAILED"
@@ -186,6 +187,10 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
         "completed implementation with at least one failed validation check, and only "
         "one correction attempt is allowed per job."
     ),
+    ErrorCode.IMPLEMENTATION_REVISION_NOT_AVAILABLE: (
+        "Review changes are not available for this job right now — they need a "
+        "completed implementation whose review is still open, and no branch yet."
+    ),
     ErrorCode.BRANCH_CREATION_NOT_AVAILABLE: (
         "Creating a branch is only available once implementation is ready, and there "
         "must be changes to commit."
@@ -244,6 +249,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.IMPLEMENTATION_NOT_SUPPORTED: 400,
     ErrorCode.IMPLEMENTATION_WORKSPACE_MISSING: 400,
     ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE: 400,
+    ErrorCode.IMPLEMENTATION_REVISION_NOT_AVAILABLE: 400,
     ErrorCode.BRANCH_CREATION_NOT_AVAILABLE: 400,
     ErrorCode.BRANCH_NAME_INVALID: 400,
     ErrorCode.BRANCH_PUSH_NOT_AVAILABLE: 400,

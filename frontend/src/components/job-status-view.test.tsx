@@ -5,6 +5,7 @@ import { JobStatusView } from "@/components/job-status-view";
 import type { RetryDraft } from "@/lib/retry-draft";
 
 const {
+  completeReview,
   correctValidation,
   createBranch,
   fetchJob,
@@ -13,8 +14,11 @@ const {
   push,
   pushBranch,
   redirectBrowser,
+  reviseImplementation,
   startBitbucketConnect,
 } = vi.hoisted(() => ({
+  completeReview: vi.fn(),
+  reviseImplementation: vi.fn(),
   correctValidation: vi.fn(),
   createBranch: vi.fn(),
   fetchJob: vi.fn(),
@@ -42,6 +46,8 @@ vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
   return {
     ...actual,
+    completeReview,
+    reviseImplementation,
     correctValidation,
     createBranch,
     fetchJob,
@@ -55,6 +61,8 @@ vi.mock("@/lib/api", async () => {
 
 describe("JobStatusView", () => {
   beforeEach(() => {
+    completeReview.mockReset();
+    reviseImplementation.mockReset();
     correctValidation.mockReset();
     createBranch.mockReset();
     fetchJob.mockReset();
@@ -1317,7 +1325,10 @@ describe("JobStatusView", () => {
 
   it("creates a branch with the submitted name and message", async () => {
     fetchJob.mockResolvedValue(
-      readyJobWithValidation({ validation_results: [] }),
+      readyJobWithValidation({
+        validation_results: [],
+        implementation_review_completed_at: "2026-08-20T09:02:30Z",
+      }),
     );
     createBranch.mockResolvedValue({
       branch_name: "custom/my-branch",
@@ -1362,6 +1373,173 @@ describe("JobStatusView", () => {
     expect(
       screen.queryByRole("button", { name: "Create branch" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("applies review feedback and holds back Create branch until the review is done", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({ validation_results: [] }),
+    );
+    reviseImplementation.mockResolvedValue({ job_id: "job-correction" });
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    const apply = await screen.findByRole("button", { name: "Apply feedback" });
+    expect(
+      screen.queryByRole("button", { name: "Create branch" }),
+    ).not.toBeInTheDocument();
+    expect(apply).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/What should change\?/), {
+      target: { value: "Rename the helper to parseConfig." },
+    });
+    expect(apply).toBeEnabled();
+    fireEvent.click(apply);
+
+    await waitFor(() =>
+      expect(reviseImplementation).toHaveBeenCalledWith(
+        "job-correction",
+        "Rename the helper to parseConfig.",
+      ),
+    );
+  });
+
+  it("lists review rounds with their outcome, own diff and cost", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        validation_results: [],
+        implementation_revisions: [
+          {
+            number: 1,
+            feedback: "Add a unit test.",
+            requested_by_user_id: null,
+            requested_at: "2026-08-20T09:03:00Z",
+            started_at: "2026-08-20T09:03:01Z",
+            finished_at: "2026-08-20T09:04:00Z",
+            result: {
+              summary: "Added test_filter.py.",
+              changed_files: [
+                { path: "test_filter.py", action: "added", rationale: "" },
+              ],
+              warnings: [],
+              follow_up_questions: [],
+            },
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              total_cost_usd: 0.12,
+              num_turns: 2,
+              duration_seconds: 30,
+            },
+            error: null,
+            diff: {
+              overall_patch: "+def test_filter(): ...\n",
+              files: [
+                {
+                  path: "test_filter.py",
+                  patch: "+def test_filter(): ...\n",
+                  additions: 1,
+                  deletions: 0,
+                  is_binary: false,
+                },
+              ],
+            },
+          },
+          {
+            number: 2,
+            feedback: "Rewrite everything.",
+            requested_by_user_id: null,
+            requested_at: "2026-08-20T09:05:00Z",
+            started_at: "2026-08-20T09:05:01Z",
+            finished_at: "2026-08-20T09:06:00Z",
+            result: null,
+            usage: null,
+            error: {
+              code: "BUDGET_EXCEEDED",
+              message: "The agent ran out of its budget for this review round.",
+              stage: "REVISING",
+            },
+            diff: null,
+          },
+        ],
+      }),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByText("Round 1");
+    expect(screen.getByText("Add a unit test.")).toBeInTheDocument();
+    expect(screen.getByText("Added test_filter.py.")).toBeInTheDocument();
+    expect(screen.getByText("Show this round's diff")).toBeInTheDocument();
+    expect(screen.getByText("Cost: $0.12")).toBeInTheDocument();
+    expect(screen.getByText("Round 2")).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The agent ran out of its budget for this review round.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Review rounds cost")).toBeInTheDocument();
+  });
+
+  it("marks the review done only after confirming", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({ validation_results: [] }),
+    );
+    completeReview.mockResolvedValue({ completed_at: "2026-08-20T09:10:00Z" });
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Done reviewing" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(completeReview).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Done reviewing" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, mark done" }));
+
+    await waitFor(() =>
+      expect(completeReview).toHaveBeenCalledWith("job-correction"),
+    );
+  });
+
+  it("offers Create branch, and no more review or automatic fix, once the review is done", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({
+        implementation_review_completed_at: "2026-08-20T09:10:00Z",
+      }),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    await screen.findByRole("button", { name: "Create branch" });
+    expect(screen.getByText(/Review marked done on/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Apply feedback" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Attempt automatic fix" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a refused review round inline", async () => {
+    fetchJob.mockResolvedValue(
+      readyJobWithValidation({ validation_results: [] }),
+    );
+    reviseImplementation.mockRejectedValue(
+      new Error("This job has used all 5 review rounds."),
+    );
+
+    render(<JobStatusView jobId="job-correction" />);
+
+    fireEvent.change(await screen.findByLabelText(/What should change\?/), {
+      target: { value: "One more change." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply feedback" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This job has used all 5 review rounds.",
+    );
   });
 
   it("shows a push button once a branch exists and pushes the submitted name", async () => {

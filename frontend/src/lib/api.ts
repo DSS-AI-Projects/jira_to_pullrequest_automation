@@ -16,6 +16,7 @@ export type JobState =
   | "IMPLEMENTING"
   | "VALIDATING"
   | "CORRECTING"
+  | "REVISING"
   | "REVALIDATING"
   | "IMPLEMENTATION_READY"
   | "IMPLEMENTATION_FAILED"
@@ -229,6 +230,24 @@ export type ValidationResult = {
   output_excerpt: string | null;
 };
 
+// One review round: the user's feedback on the finished implementation and
+// what the agent did with it, in the same workspace.
+export type ImplementationRevision = {
+  number: number;
+  feedback: string;
+  requested_by_user_id: string | null;
+  requested_at: string;
+  // Unset when the round was refused before the agent ran (it then doesn't
+  // count toward the round limit).
+  started_at: string | null;
+  finished_at: string | null;
+  result: ImplementationResult | null;
+  usage: AgentUsage | null;
+  error: JobError | null;
+  // This round's own change; the job's implementation_diff is cumulative.
+  diff: ImplementationDiff | null;
+};
+
 export type RequirementSource = "JIRA" | "DOCUMENT" | "TEXT" | "MANTIS";
 
 export type Job = {
@@ -267,6 +286,10 @@ export type Job = {
   implementation_correction_result: ImplementationResult | null;
   implementation_correction_error: JobError | null;
   implementation_correction_usage: AgentUsage | null;
+  // Review rounds, oldest first; creating a branch needs the review done.
+  implementation_revisions: ImplementationRevision[];
+  implementation_review_completed_at: string | null;
+  implementation_review_completed_by_user_id?: string | null;
   branch_name: string | null;
   branch_commit_sha: string | null;
   branch_created_at: string | null;
@@ -336,6 +359,9 @@ export type OwnerCostSummary = {
   implementation_cost_usd: number;
   // The optional "Attempt automatic fix" pass; included in total_cost_usd.
   correction_cost_usd: number;
+  // Review rounds after implementation; included in total_cost_usd.
+  // Optional: an older backend doesn't send it.
+  revision_cost_usd?: number;
   total_cost_usd: number;
 };
 
@@ -438,64 +464,72 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   return response;
 }
 
+function normalizeResult(
+  result: ImplementationResult | null | undefined,
+): ImplementationResult | null {
+  if (!result) {
+    return null;
+  }
+  return {
+    ...result,
+    changed_files: Array.isArray(result.changed_files)
+      ? result.changed_files
+      : [],
+    warnings: Array.isArray(result.warnings) ? result.warnings : [],
+    follow_up_questions: Array.isArray(result.follow_up_questions)
+      ? result.follow_up_questions
+      : [],
+  };
+}
+
+function normalizeDiff(
+  diff: ImplementationDiff | null | undefined,
+): ImplementationDiff | null {
+  if (!diff) {
+    return null;
+  }
+  return {
+    ...diff,
+    files: Array.isArray(diff.files)
+      ? diff.files.map((file) => ({
+          ...file,
+          additions: file.additions ?? null,
+          deletions: file.deletions ?? null,
+          is_binary: file.is_binary ?? false,
+        }))
+      : [],
+  };
+}
+
 function normalizeJob(job: Job): Job {
   return {
     ...job,
+    implementation_revisions: Array.isArray(job.implementation_revisions)
+      ? job.implementation_revisions.map((revision) => ({
+          ...revision,
+          started_at: revision.started_at ?? null,
+          finished_at: revision.finished_at ?? null,
+          usage: revision.usage ?? null,
+          error: revision.error ?? null,
+          result: normalizeResult(revision.result),
+          diff: normalizeDiff(revision.diff),
+        }))
+      : [],
+    implementation_review_completed_at:
+      job.implementation_review_completed_at ?? null,
     activity_log: Array.isArray(job.activity_log) ? job.activity_log : [],
     validation_results: Array.isArray(job.validation_results)
       ? job.validation_results
       : [],
-    implementation_diff: job.implementation_diff
-      ? {
-          ...job.implementation_diff,
-          files: Array.isArray(job.implementation_diff.files)
-            ? job.implementation_diff.files.map((file) => ({
-                ...file,
-                additions: file.additions ?? null,
-                deletions: file.deletions ?? null,
-                is_binary: file.is_binary ?? false,
-              }))
-            : [],
-        }
-      : null,
+    implementation_diff: normalizeDiff(job.implementation_diff),
     usage: job.usage ?? null,
     implementation_usage: job.implementation_usage ?? null,
     implementation_correction_usage:
       job.implementation_correction_usage ?? null,
-    implementation_result: job.implementation_result
-      ? {
-          ...job.implementation_result,
-          changed_files: Array.isArray(job.implementation_result.changed_files)
-            ? job.implementation_result.changed_files
-            : [],
-          warnings: Array.isArray(job.implementation_result.warnings)
-            ? job.implementation_result.warnings
-            : [],
-          follow_up_questions: Array.isArray(
-            job.implementation_result.follow_up_questions,
-          )
-            ? job.implementation_result.follow_up_questions
-            : [],
-        }
-      : null,
-    implementation_correction_result: job.implementation_correction_result
-      ? {
-          ...job.implementation_correction_result,
-          changed_files: Array.isArray(
-            job.implementation_correction_result.changed_files,
-          )
-            ? job.implementation_correction_result.changed_files
-            : [],
-          warnings: Array.isArray(job.implementation_correction_result.warnings)
-            ? job.implementation_correction_result.warnings
-            : [],
-          follow_up_questions: Array.isArray(
-            job.implementation_correction_result.follow_up_questions,
-          )
-            ? job.implementation_correction_result.follow_up_questions
-            : [],
-        }
-      : null,
+    implementation_result: normalizeResult(job.implementation_result),
+    implementation_correction_result: normalizeResult(
+      job.implementation_correction_result,
+    ),
   };
 }
 
@@ -639,6 +673,35 @@ export async function correctValidation(
     signal,
   });
   return parseJson<JobCreated>(response);
+}
+
+export async function reviseImplementation(
+  jobId: string,
+  feedback: string,
+  signal?: AbortSignal,
+): Promise<JobCreated> {
+  const response = await apiFetch(`/api/jobs/${jobId}/revise`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ feedback: feedback.trim() }),
+    signal,
+  });
+  return parseJson<JobCreated>(response);
+}
+
+export type ReviewCompleted = {
+  completed_at: string;
+};
+
+export async function completeReview(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<ReviewCompleted> {
+  const response = await apiFetch(`/api/jobs/${jobId}/complete-review`, {
+    method: "POST",
+    signal,
+  });
+  return parseJson<ReviewCompleted>(response);
 }
 
 export type BranchCreated = {

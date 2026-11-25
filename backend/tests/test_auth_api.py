@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from app.auth.models import RepoHostingAuthKind, RepoHostingConnection, RepoHostingProvider
 from app.core.config import get_settings
 from app.core.crypto import decrypt_secret, encrypt_secret
-from app.jobs.models import AgentUsage, Job
+from app.jobs.models import AgentUsage, ImplementationRevision, Job
 from app.jobs.store import JobStore
 from app.main import create_app
 from tests.fakes import make_fake_steps
@@ -338,6 +338,14 @@ def test_cost_summary_aggregates_and_resolves_user_identity(
     job.usage = AgentUsage(duration_seconds=1.0, total_cost_usd=0.15)
     job.implementation_usage = AgentUsage(duration_seconds=2.0, total_cost_usd=0.35)
     job.implementation_correction_usage = AgentUsage(duration_seconds=1.0, total_cost_usd=0.05)
+    job.implementation_revisions = [
+        ImplementationRevision(
+            number=1,
+            feedback="f",
+            requested_at=job.created_at,
+            usage=AgentUsage(duration_seconds=1.0, total_cost_usd=0.20),
+        )
+    ]
     auth_store.create(job)
 
     auth_client.post("/api/auth/logout")
@@ -356,8 +364,10 @@ def test_cost_summary_aggregates_and_resolves_user_identity(
     # Regression: the automatic-fix pass's cost used to be left out of the
     # per-user and grand totals, under-reporting anyone who ran it.
     assert worker_row["correction_cost_usd"] == pytest.approx(0.05)
-    assert worker_row["total_cost_usd"] == pytest.approx(0.55)
-    assert body["grand_total_usd"] == pytest.approx(0.55)
+    # Review rounds are counted in the totals too.
+    assert worker_row["revision_cost_usd"] == pytest.approx(0.20)
+    assert worker_row["total_cost_usd"] == pytest.approx(0.75)
+    assert body["grand_total_usd"] == pytest.approx(0.75)
 
 
 def test_session_cookie_value_is_never_stored(
@@ -1647,6 +1657,7 @@ def test_create_branch_commits_as_the_signed_in_user(
     job = _pushable_job(
         auth_store, user["id"], tmp_path / "ws", "https://bitbucket.org/ws/repo.git"
     )
+    assert auth_client.post(f"/api/jobs/{job.id}/complete-review").status_code == 200
 
     response = auth_client.post(f"/api/jobs/{job.id}/create-branch")
 

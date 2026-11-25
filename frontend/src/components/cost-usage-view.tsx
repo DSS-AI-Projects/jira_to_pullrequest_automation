@@ -86,8 +86,8 @@ export function CostUsageView() {
           <span className="eyebrow">Admin</span>
           <h1>Cost usage by user</h1>
           <p>
-            Planning, implementation, and automatic-fix spend, grouped by job
-            owner.
+            Planning, implementation, automatic-fix and review-round spend,
+            grouped by job owner.
           </p>
         </div>
         <Link className="secondary-link" href="/">
@@ -121,6 +121,10 @@ export function CostUsageView() {
                   <div className="summary-card">
                     <span className="meta-label">Correction cost</span>
                     <strong>{currency(owner.correction_cost_usd)}</strong>
+                  </div>
+                  <div className="summary-card">
+                    <span className="meta-label">Review rounds cost</span>
+                    <strong>{currency(owner.revision_cost_usd ?? 0)}</strong>
                   </div>
                   <div className="summary-card">
                     <span className="meta-label">Total cost</span>

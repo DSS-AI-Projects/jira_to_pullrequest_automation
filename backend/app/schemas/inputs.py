@@ -46,6 +46,16 @@ class ImplementRequest(BaseModel):
     )
 
 
+class ReviseRequest(BaseModel):
+    # Same invariant-1 treatment as every other free-text field.
+    model_config = ConfigDict(extra="forbid")
+
+    feedback: str = Field(
+        max_length=4000,
+        description="What the agent should change in the implemented diff",
+    )
+
+
 class CreateBranchRequest(BaseModel):
     # Same invariant-1 treatment as every other free-text field.
     model_config = ConfigDict(extra="forbid")
@@ -293,6 +303,17 @@ def normalize_requirement_title(raw: str | None) -> str | None:
 def normalize_clarifications(raw: str | None) -> str | None:
     """Trim and validate free-text implementation guidance (post-plan)."""
     return _normalize_free_text(raw, "clarifications")
+
+
+def normalize_review_feedback(raw: str) -> str:
+    """Trim and validate a review round's feedback (required, untrusted data)."""
+    value = _normalize_free_text(raw, "feedback")
+    if value is None:
+        raise AppError(
+            ErrorCode.INPUT_INVALID,
+            user_message="Describe what should change before applying feedback.",
+        )
+    return value
 
 
 def normalize_planning_notes(raw: str | None) -> str | None:

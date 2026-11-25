@@ -14,6 +14,7 @@ from app.jobs.models import (
     ImplementationDiff,
     ImplementationDiffFile,
     ImplementationResult,
+    ImplementationRevision,
     Job,
     JobState,
     RepoInfo,
@@ -192,6 +193,68 @@ async def test_interrupted_correction_never_regresses_the_implementation(
     assert recovered.validation_results == original_validation
     assert recovered.implementation_diff is not None
     assert "+Implemented" in recovered.implementation_diff.overall_patch
+
+
+@pytest.mark.parametrize("state", [JobState.REVISING, JobState.REVALIDATING])
+async def test_interrupted_review_round_keeps_its_edits_and_the_job_ready(
+    tmp_path: Path, state: JobState
+) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    workspace = tmp_path / "workspace"
+    job = add_implemented_job(store, workspace, state)
+    (workspace / "README.md").write_text("Hello\nImplemented\n", encoding="utf-8")
+    snapshot_before = (_git(workspace, "add", "-A") + _git(workspace, "write-tree")).strip()
+    (workspace / "review.md").write_text("Round edit\n", encoding="utf-8")
+    original_result = ImplementationResult(summary="Implemented the change.")
+    job.implementation_result = original_result
+    job.implementation_revisions = [
+        ImplementationRevision(
+            number=1,
+            feedback="Add review.md",
+            requested_at=datetime.now(UTC),
+            started_at=datetime.now(UTC),
+            snapshot_before=snapshot_before,
+        )
+    ]
+    store.save(job)
+
+    assert await recover_interrupted_jobs(store) == 1
+
+    recovered = store.get(job.id)
+    assert recovered is not None
+    assert recovered.state == JobState.IMPLEMENTATION_READY
+    assert recovered.error is None
+    assert recovered.implementation_result == original_result
+    revision = recovered.implementation_revisions[0]
+    assert revision.finished_at is not None
+    assert revision.error is not None
+    assert revision.error.code == ErrorCode.JOB_INTERRUPTED
+    assert revision.error.stage == state
+    assert revision.counts_toward_limit
+    assert revision.diff is not None
+    assert [file.path for file in revision.diff.files] == ["review.md"]
+    assert recovered.implementation_diff is not None
+    assert {file.path for file in recovered.implementation_diff.files} == {
+        "README.md",
+        "review.md",
+    }
+
+
+async def test_review_round_interrupted_while_waiting_does_not_count(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    job = add_implemented_job(store, tmp_path / "workspace", JobState.REVISING)
+    job.implementation_revisions = [
+        ImplementationRevision(number=1, feedback="x", requested_at=datetime.now(UTC))
+    ]
+    store.save(job)
+
+    assert await recover_interrupted_jobs(store) == 1
+
+    recovered = store.get(job.id)
+    assert recovered is not None
+    assert recovered.state == JobState.IMPLEMENTATION_READY
+    assert recovered.implementation_revisions[0].error is not None
+    assert recovered.revisions_used == 0
 
 
 async def test_terminal_jobs_are_left_untouched(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from app.core.errors import AppError, ErrorCode
 from app.jobs.limits import AgentSlots, check_spend_limit, spend_status
 from app.jobs.models import (
     AgentUsage,
+    ImplementationRevision,
     Job,
     JobState,
     RepoInfo,
@@ -28,6 +29,7 @@ from app.jobs.runner import (
     recover_interrupted_jobs,
     run_implementation,
     run_job,
+    run_revision,
     run_validation_correction,
 )
 from app.jobs.store import JobStore
@@ -333,6 +335,55 @@ def test_spend_counts_only_this_owner_and_only_the_last_24_hours(tmp_path: Path)
     store.save(mixed)
 
     assert spend_status(store, OWNER, 2.0, now=now).spent_usd == pytest.approx(1.25)
+
+
+def test_review_rounds_count_toward_the_spend_window(tmp_path: Path) -> None:
+    store = JobStore(":memory:")
+    now = datetime.now(UTC)
+    job = add_job(store, state=JobState.IMPLEMENTATION_READY, created_at=now - timedelta(days=2))
+    job.usage = usage(4.0)  # planned two days ago: out of the window
+    job.implementation_revisions = [
+        # Ran 30 hours ago: out of the window.
+        ImplementationRevision(
+            number=1,
+            feedback="a",
+            requested_at=now - timedelta(hours=30),
+            started_at=now - timedelta(hours=30),
+            usage=usage(5.0),
+        ),
+        ImplementationRevision(
+            number=2,
+            feedback="b",
+            requested_at=now - timedelta(hours=1),
+            started_at=now - timedelta(hours=1),
+            usage=usage(0.75),
+        ),
+    ]
+    store.save(job)
+
+    assert spend_status(store, OWNER, 2.0, now=now).spent_usd == pytest.approx(0.75)
+
+
+async def test_review_round_refused_over_budget_is_not_counted(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    settings = make_settings(tmp_path, user_daily_budget_usd=1.0)
+    job = add_implementable_job(store, tmp_path / "ws", JobState.REVISING)
+    job.usage = usage(2.0)
+    job.implementation_revisions = [
+        ImplementationRevision(number=1, feedback="x", requested_at=datetime.now(UTC))
+    ]
+    store.save(job)
+
+    await run_revision(job.id, store, settings, make_fake_steps(), AgentSlots(1))
+
+    refused = store.get(job.id)
+    assert refused is not None
+    assert refused.state == JobState.IMPLEMENTATION_READY
+    revision = refused.implementation_revisions[0]
+    assert revision.error is not None
+    assert revision.error.code == ErrorCode.BUDGET_LIMIT_REACHED
+    assert revision.usage is None
+    assert refused.revisions_used == 0
 
 
 def test_spend_limit_skips_jobs_without_an_owner(tmp_path: Path) -> None:

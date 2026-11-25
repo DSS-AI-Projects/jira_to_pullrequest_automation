@@ -19,13 +19,20 @@ from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.logging import get_logger
 from app.jobs.limits import AgentSlots, check_spend_limit
-from app.jobs.models import Job, JobState, RepoSourceKind, RequirementSource
+from app.jobs.models import (
+    ImplementationRevision,
+    Job,
+    JobState,
+    RepoSourceKind,
+    RequirementSource,
+)
 from app.jobs.runner import (
     CommitAuthor,
     JobSteps,
     PushCredentials,
     run_implementation,
     run_job,
+    run_revision,
     run_validation_correction,
 )
 from app.jobs.store import JobStore
@@ -35,6 +42,7 @@ from app.schemas.inputs import (
     ImplementRequest,
     PushBranchRequest,
     RepoChoice,
+    ReviseRequest,
     load_preconfigured_repos,
     normalize_base_branch,
     normalize_branch_name,
@@ -46,6 +54,7 @@ from app.schemas.inputs import (
     normalize_repo,
     normalize_requirement_text,
     normalize_requirement_title,
+    normalize_review_feedback,
     normalize_ticket,
     reject_unknown_form_fields,
     require_exactly_one_requirement_source,
@@ -175,6 +184,7 @@ class OwnerCostSummary(BaseModel):
     planning_cost_usd: float
     implementation_cost_usd: float
     correction_cost_usd: float
+    revision_cost_usd: float
     total_cost_usd: float
 
 
@@ -477,6 +487,7 @@ async def correct_validation(job_id: str, request: Request) -> JobCreated:
     if (
         job.state != JobState.IMPLEMENTATION_READY
         or job.implementation_correction_attempted
+        or job.implementation_review_completed_at is not None
         or not correctable_failures(job.validation_results)
     ):
         raise AppError(ErrorCode.VALIDATION_CORRECTION_NOT_AVAILABLE)
@@ -495,6 +506,90 @@ async def correct_validation(job_id: str, request: Request) -> JobCreated:
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return JobCreated(job_id=job.id)
+
+
+@router.post("/jobs/{job_id}/revise", response_model=JobCreated, status_code=202)
+async def revise_job(job_id: str, request: Request, payload: ReviseRequest) -> JobCreated:
+    """Start a review round: the agent applies the user's feedback to the
+    finished implementation in the same workspace. Repeatable, up to
+    IMPLEMENTATION_MAX_REVISIONS rounds, until the review is marked done."""
+    user = require_current_user(request)
+    store = _store(request)
+    job = store.get(job_id)
+    if job is None:
+        raise AppError(ErrorCode.JOB_NOT_FOUND)
+    ensure_job_access(job, user)
+    settings = get_settings()
+    if (
+        job.state != JobState.IMPLEMENTATION_READY
+        or job.plan is None
+        or job.implementation_review_completed_at is not None
+        or job.branch_name is not None
+    ):
+        raise AppError(ErrorCode.IMPLEMENTATION_REVISION_NOT_AVAILABLE)
+    if job.revisions_used >= settings.implementation_max_revisions:
+        raise AppError(
+            ErrorCode.IMPLEMENTATION_REVISION_NOT_AVAILABLE,
+            user_message=(
+                f"This job has used all {settings.implementation_max_revisions} review "
+                "rounds. Mark the review done to create a branch, or start a new job."
+            ),
+        )
+    feedback = normalize_review_feedback(payload.feedback)
+    _require_workspace(job)
+    check_spend_limit(store, job.owner_user_id, settings)
+
+    job.implementation_revisions = [
+        *job.implementation_revisions,
+        ImplementationRevision(
+            number=len(job.implementation_revisions) + 1,
+            feedback=feedback,
+            requested_by_user_id=user.id if user else None,
+            requested_at=datetime.now(UTC),
+        ),
+    ]
+    job.state = JobState.REVISING
+    store.save(job)
+    logger.info("job %s review round %d requested", job.id, len(job.implementation_revisions))
+
+    task = asyncio.create_task(
+        run_revision(job.id, store, settings, _steps(request), _slots(request))
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return JobCreated(job_id=job.id)
+
+
+class ReviewCompleted(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    completed_at: datetime
+
+
+@router.post("/jobs/{job_id}/complete-review", response_model=ReviewCompleted)
+async def complete_review(job_id: str, request: Request) -> ReviewCompleted:
+    """Mark the implementation review done: no more review rounds or
+    corrections, and creating a branch becomes available. Synchronous and
+    idempotent."""
+    user = require_current_user(request)
+    store = _store(request)
+    job = store.get(job_id)
+    if job is None:
+        raise AppError(ErrorCode.JOB_NOT_FOUND)
+    ensure_job_access(job, user)
+    if job.implementation_review_completed_at is not None:
+        return ReviewCompleted(completed_at=job.implementation_review_completed_at)
+    if job.state != JobState.IMPLEMENTATION_READY:
+        raise AppError(
+            ErrorCode.IMPLEMENTATION_REVISION_NOT_AVAILABLE,
+            user_message="The review can be marked done once the implementation is ready.",
+        )
+    now = datetime.now(UTC)
+    job.implementation_review_completed_at = now
+    job.implementation_review_completed_by_user_id = user.id if user else None
+    store.save(job)
+    logger.info("job %s: review marked done", job.id)
+    return ReviewCompleted(completed_at=now)
 
 
 @router.post("/jobs/{job_id}/create-branch", response_model=BranchCreated)
@@ -516,6 +611,11 @@ async def create_branch(
     if job.state != JobState.IMPLEMENTATION_READY or job.branch_name is not None:
         raise AppError(ErrorCode.BRANCH_CREATION_NOT_AVAILABLE)
     workspace = _require_workspace(job)
+    if job.implementation_review_completed_at is None:
+        raise AppError(
+            ErrorCode.BRANCH_CREATION_NOT_AVAILABLE,
+            user_message="Mark the review done before creating a branch.",
+        )
 
     branch_name = normalize_branch_name(payload.branch_name if payload is not None else None)
     commit_message = normalize_commit_message(
@@ -692,8 +792,12 @@ async def get_cost_summary(request: Request) -> CostSummaryResponse:
                 planning_cost_usd=row.planning_cost_usd,
                 implementation_cost_usd=row.implementation_cost_usd,
                 correction_cost_usd=row.correction_cost_usd,
+                revision_cost_usd=row.revision_cost_usd,
                 total_cost_usd=(
-                    row.planning_cost_usd + row.implementation_cost_usd + row.correction_cost_usd
+                    row.planning_cost_usd
+                    + row.implementation_cost_usd
+                    + row.correction_cost_usd
+                    + row.revision_cost_usd
                 ),
             )
         )

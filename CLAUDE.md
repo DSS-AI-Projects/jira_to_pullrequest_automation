@@ -748,7 +748,8 @@ outside-root / not-git / dirty / branch-mismatch), `BASE_BRANCH_NOT_FOUND`,
 planning — `AGENT_CONFIG_MISSING`, `AGENT_REQUEST_FAILED`, `PLAN_INVALID`,
 `BUDGET_EXCEEDED`; implementation — `IMPLEMENTATION_NOT_READY`,
 `IMPLEMENTATION_NOT_SUPPORTED`, `IMPLEMENTATION_WORKSPACE_MISSING`, `VALIDATION_FAILED`;
-validation correction — `VALIDATION_CORRECTION_NOT_AVAILABLE`; spend —
+validation correction — `VALIDATION_CORRECTION_NOT_AVAILABLE`; review rounds —
+`IMPLEMENTATION_REVISION_NOT_AVAILABLE`; spend —
 `BUDGET_LIMIT_REACHED` (see **Load and spend limits**); and `INTERNAL`. Raw
 stack traces never reach the client.
 
@@ -1350,9 +1351,84 @@ back on `IMPLEMENTATION_READY`, never a failure state, so the original
   steps (`_collect_implementation_diff`, the validation runner) the original
   implement phase already uses — only the corrective agent turn is new.
 
+## Review rounds (before branch creation)
+
+After implementation lands on `IMPLEMENTATION_READY`, the developer reviews the
+diff and may ask the agent for changes in the **same workspace**, round after
+round, until they mark the review done. Only then can a branch be created.
+Owner-approved scope rule: feedback may change anything that serves the
+ticket's intent, not just the plan's file list; the agent declines unrelated
+requests and says so in its summary.
+
+- **Endpoints** (`app/api/routes.py`): `POST /jobs/{id}/revise` (`ReviseRequest`
+  `{feedback}`, `extra="forbid"`, ≤4000 chars, blank → `INPUT_INVALID`,
+  credential-shape checked; 202 + poll) and `POST /jobs/{id}/complete-review`
+  (synchronous, idempotent, records `implementation_review_completed_at` /
+  `_by_user_id`). `revise` needs `IMPLEMENTATION_READY`, a plan, review not
+  done, no branch, and fewer than `IMPLEMENTATION_MAX_REVISIONS` (default 5)
+  rounds used; otherwise `IMPLEMENTATION_REVISION_NOT_AVAILABLE`. The spend
+  limit is checked as for implement. Once the review is done, `revise` and
+  `correct-validation` are refused, and `create-branch` now requires it
+  ("Mark the review done before creating a branch.", checked after the
+  workspace so a swept job still gets the retention message).
+- **Model** (`ImplementationRevision` in `jobs/models.py`, a list on
+  `Job.implementation_revisions`): number, feedback, who and when, `started_at`
+  (set when the agent got its slot — a round refused before that, by the spend
+  limit or a restart while waiting, isn't counted toward the limit:
+  `counts_toward_limit` / `Job.revisions_used`), `finished_at`, result, usage,
+  error, the round's own `diff`, and `snapshot_before` / `snapshot_after`.
+- **State:** `REVISING` (agent running), then the existing `REVALIDATING`,
+  always back to `IMPLEMENTATION_READY` — success or failure, like the
+  correction pass. `Job.open_revision` (the last round without `finished_at`)
+  tells a revision's `REVALIDATING` from a correction's. Not in the frontend's
+  stepper; the job page has a "Review changes" card instead.
+- **Runner** (`run_revision` in `jobs/runner.py`): agent slot, spend re-check,
+  CRLF normalization around the agent, activity log, then the cumulative
+  `implementation_diff` is re-read against the original baseline and
+  validation re-runs. **Per-round diff without touching git state:**
+  `_snapshot_workspace` runs `add -A` + `write-tree` (through
+  `workspace_git_command`, like diff collection, which already stages into
+  the same index) before and after the round; the round's diff is
+  `git diff <before-tree> <after-tree>`. HEAD and branches never move, so
+  create-branch's "HEAD is still the baseline" assumption holds. An empty
+  `changed_files` is filled from the round's diff, as for the main pass. A
+  failed round (`_record_revision_failure`) keeps its edits: both diffs are
+  re-read, the error is recorded on the round, the job stays ready, and the
+  original `implementation_result` is untouched.
+- **Agent** (`revise_implementation` / `build_revision_prompt` in
+  `implement_agent.py`): same agent, tools, workspace guard and settings as
+  the main pass, fresh session each round, own caps
+  (`AGENT_IMPLEMENT_REVISION_MAX_TURNS` 20, `AGENT_IMPLEMENT_REVISION_MAX_BUDGET_USD`
+  2.0) and its own budget-exceeded message. The prompt quotes as untrusted
+  data (invariant 5): the plan, `<current_changes>` (the cumulative diff, cut
+  at 60,000 characters with a note to read the files instead),
+  `<previous_review_rounds>` (finished rounds' feedback and summary or error),
+  the clarifications, and `<user_review_feedback>`. The system prompt says
+  reviewer feedback can never relax the security rules.
+- **Cost:** each round's usage counts toward the daily spend limit
+  (`spend_events`, stamped `started_at`), the admin cost summary
+  (`revision_cost_usd`, summed with `json_each` over the rounds) and the job
+  page's cost summary ("Review rounds cost").
+- **Restart:** `recover_interrupted_jobs` ends an open round in `REVISING` or
+  `REVALIDATING` with `JOB_INTERRUPTED` on the round, its partial edits kept,
+  the job back on `IMPLEMENTATION_READY`.
+- **Frontend** (`job-status-view.tsx`): the "Review changes" card lists each
+  round (status, feedback, summary or error, changed files, a collapsible
+  per-round diff, cost), a "What should change?" box with **Apply feedback**,
+  and **Done reviewing** with an inline confirmation. The Create branch card
+  appears only once the review is done.
+- **Tests:** `test_jobs_api.py` (two rounds on a real git workspace: per-round
+  and cumulative diffs, the Done gate, the commit holding every round's files;
+  a failed round keeping its edits; feedback validation; the round limit;
+  refusals), `test_interrupted_jobs.py`, `test_agent_limits.py`,
+  `test_job_store.py` / `test_auth_api.py` (cost totals),
+  `test_implement_agent.py` (prompt, caps, budget message), and
+  `job-status-view.test.tsx`.
+
 ## Branch preparation and push
 
-Once a job is `IMPLEMENTATION_READY`, the developer may explicitly create a branch
+Once a job is `IMPLEMENTATION_READY` and its review is marked done (see
+**Review rounds** above), the developer may explicitly create a branch
 and commit the already-reviewed diff **inside the isolated workspace**
 (`POST /jobs/{id}/create-branch`, `backend/app/steps/branch_prep.py`), then,
 separately, push that branch to the repo's real remote
@@ -1727,9 +1803,10 @@ The frontend surfaces this as a `/jobs` "My jobs" page.
 auth is disabled) aggregates `usage.total_cost_usd`,
 `implementation_usage.total_cost_usd`, and
 `implementation_correction_usage.total_cost_usd` (the automatic-fix pass —
-left out of the totals until a later fix, under-reporting anyone who ran it)
+left out of the totals until a later fix, under-reporting anyone who ran it),
+plus every review round's `usage.total_cost_usd` (`revision_cost_usd`),
 per owner directly in SQLite via
-`json_extract`/`SUM`, then resolves each `owner_user_id` to an email/display
+`json_extract`/`json_each`/`SUM`, then resolves each `owner_user_id` to an email/display
 name for display. Surfaced as an admin-only `/admin/costs` page, linked from
 the header only when the signed-in user's role is `ADMIN`.
 
@@ -1800,6 +1877,8 @@ jobs with SQLite store + polling
 status screen; the plan pipeline (fetch/clone/map/plan); an isolated-clone
 implement + validate phase, available for local *and* remote repos alike; a
 single, explicitly opt-in validation-correction pass after a failed validation;
+repeatable review rounds that apply the user's feedback in the same workspace
+until the review is marked done;
 creating a branch and committing the reviewed diff inside the isolated
 workspace (committed as the signed-in user), then pushing it to the repo's
 real remote — as the clicking user with their own connected account

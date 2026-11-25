@@ -1,10 +1,10 @@
 import type { JobState } from "@/lib/api";
 
-// CORRECTING/REVALIDATING are deliberately not included here: they're a
-// post-hoc "fix the validation failures" addendum a developer can trigger
-// after reaching IMPLEMENTATION_READY, not a continuation of the linear
-// plan -> implement pipeline this timeline stepper represents. See the
-// correction status shown separately in job-status-view.tsx.
+// CORRECTING/REVISING/REVALIDATING are deliberately not included here:
+// they're post-hoc addenda a developer can trigger after reaching
+// IMPLEMENTATION_READY (the automatic fix, and review rounds), not a
+// continuation of the linear plan -> implement pipeline this timeline
+// stepper represents. See the cards shown separately in job-status-view.tsx.
 export const JOB_STATES: JobState[] = [
   "QUEUED",
   "FETCHING_TICKET",
@@ -29,6 +29,7 @@ export const JOB_STATE_LABELS: Record<JobState, string> = {
   IMPLEMENTING: "Applying changes",
   VALIDATING: "Running validation",
   CORRECTING: "Attempting automatic fix",
+  REVISING: "Applying review feedback",
   REVALIDATING: "Re-running validation",
   IMPLEMENTATION_READY: "Implementation ready",
   IMPLEMENTATION_FAILED: "Implementation failed",

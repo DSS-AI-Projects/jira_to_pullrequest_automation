@@ -1575,7 +1575,9 @@ def test_correct_validation_rejects_job_not_implementation_ready(
     assert response.json()["error"]["code"] == "VALIDATION_CORRECTION_NOT_AVAILABLE"
 
 
-def _reach_implementation_ready(client: TestClient) -> str:
+def _reach_implementation_ready(client: TestClient, *, review_done: bool = True) -> str:
+    """A job at IMPLEMENTATION_READY — by default with its review marked
+    done, which creating a branch requires."""
     create = client.post(
         "/api/jobs",
         data={"ticket": "PROJ-123", "repo": "git@github.com:acme/repo.git"},
@@ -1587,6 +1589,8 @@ def _reach_implementation_ready(client: TestClient) -> str:
         client, job_id, terminal_states=("IMPLEMENTATION_READY", "IMPLEMENTATION_FAILED")
     )
     assert ready["state"] == "IMPLEMENTATION_READY"
+    if review_done:
+        assert client.post(f"/api/jobs/{job_id}/complete-review").status_code == 200
     return job_id
 
 
@@ -1652,6 +1656,201 @@ def test_create_branch_rejects_job_not_implementation_ready(
     response = client.post(f"/api/jobs/{job.id}/create-branch")
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "BRANCH_CREATION_NOT_AVAILABLE"
+
+
+def _use_revise_step(client: TestClient, revise: Any) -> None:
+    """Swap the review-round step of a running test app."""
+    state = cast(Any, client.app).state
+    state.job_steps = dataclasses.replace(state.job_steps, revise_implementation=revise)
+
+
+def _poll_until_round_finished(
+    client: TestClient, job_id: str, number: int, timeout: float = 5.0
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/jobs/{job_id}").json()
+        rounds = body["implementation_revisions"]
+        if (
+            body["state"] == "IMPLEMENTATION_READY"
+            and len(rounds) >= number
+            and rounds[number - 1]["finished_at"] is not None
+        ):
+            return body
+        time.sleep(0.02)
+    raise AssertionError(f"review round {number} never finished")
+
+
+def _usage(cost: float) -> AgentUsage:
+    return AgentUsage(total_cost_usd=cost, num_turns=1, duration_seconds=0.5)
+
+
+def test_review_rounds_edit_the_same_workspace_until_done(local_client: TestClient) -> None:
+    job_id = _reach_implementation_ready(local_client, review_done=False)
+    seen_feedback: list[str] = []
+
+    async def revise(job: Job, workspace_path: Path, feedback: str) -> ImplementationStepResult:
+        seen_feedback.append(feedback)
+        if len(seen_feedback) == 1:
+            (workspace_path / "README.md").write_text("Hello Again\n", encoding="utf-8")
+            (workspace_path / "notes.md").write_text("Notes\n", encoding="utf-8")
+        else:
+            (workspace_path / "other.md").write_text("Other\n", encoding="utf-8")
+        return ImplementationStepResult(
+            result=ImplementationResult(summary=f"Round for: {feedback}"), usage=_usage(0.04)
+        )
+
+    _use_revise_step(local_client, revise)
+
+    first = local_client.post(
+        f"/api/jobs/{job_id}/revise", json={"feedback": "  Reword the greeting; add notes.  "}
+    )
+    assert first.status_code == 202
+    job = _poll_until_round_finished(local_client, job_id, 1)
+    round_one = job["implementation_revisions"][0]
+    assert seen_feedback == ["Reword the greeting; add notes."]
+    assert round_one["number"] == 1
+    assert round_one["error"] is None
+    assert round_one["usage"]["total_cost_usd"] == pytest.approx(0.04)
+    assert round_one["result"]["summary"] == "Round for: Reword the greeting; add notes."
+    # The agent listed no files, so they come from this round's own diff.
+    assert {c["path"] for c in round_one["result"]["changed_files"]} == {"README.md", "notes.md"}
+    assert {f["path"] for f in round_one["diff"]["files"]} == {"README.md", "notes.md"}
+    assert {f["path"] for f in job["implementation_diff"]["files"]} == {"README.md", "notes.md"}
+
+    second = local_client.post(f"/api/jobs/{job_id}/revise", json={"feedback": "Add other.md"})
+    assert second.status_code == 202
+    job = _poll_until_round_finished(local_client, job_id, 2)
+    # Round two's own diff holds only its change; the job's diff is cumulative.
+    assert {f["path"] for f in job["implementation_revisions"][1]["diff"]["files"]} == {"other.md"}
+    assert {f["path"] for f in job["implementation_diff"]["files"]} == {
+        "README.md",
+        "notes.md",
+        "other.md",
+    }
+
+    # Not before the review is done.
+    early = local_client.post(f"/api/jobs/{job_id}/create-branch")
+    assert early.status_code == 400
+    assert early.json()["error"]["code"] == "BRANCH_CREATION_NOT_AVAILABLE"
+    assert "review done" in early.json()["error"]["message"]
+
+    done = local_client.post(f"/api/jobs/{job_id}/complete-review")
+    assert done.status_code == 200
+    # Idempotent.
+    assert local_client.post(f"/api/jobs/{job_id}/complete-review").json() == done.json()
+    late = local_client.post(f"/api/jobs/{job_id}/revise", json={"feedback": "One more"})
+    assert late.status_code == 400
+    assert late.json()["error"]["code"] == "IMPLEMENTATION_REVISION_NOT_AVAILABLE"
+
+    created = local_client.post(f"/api/jobs/{job_id}/create-branch")
+    assert created.status_code == 200
+    workspace = Path(local_client.get(f"/api/jobs/{job_id}").json()["workspace_path"])
+    committed = subprocess.run(
+        ["git", "-C", str(workspace), "show", "--name-only", "--format=", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert set(committed) == {"README.md", "notes.md", "other.md"}
+
+
+def test_a_failed_review_round_keeps_its_edits_and_the_job_ready(
+    local_client: TestClient,
+) -> None:
+    from app.core.errors import AppError, ErrorCode
+
+    job_id = _reach_implementation_ready(local_client, review_done=False)
+
+    async def revise(job: Job, workspace_path: Path, feedback: str) -> ImplementationStepResult:
+        del job, feedback
+        (workspace_path / "partial.md").write_text("Half done\n", encoding="utf-8")
+        raise AppError(ErrorCode.BUDGET_EXCEEDED, usage=_usage(0.5).model_dump())
+
+    _use_revise_step(local_client, revise)
+    assert (
+        local_client.post(f"/api/jobs/{job_id}/revise", json={"feedback": "Big change"}).status_code
+        == 202
+    )
+    job = _poll_until_round_finished(local_client, job_id, 1)
+    failed = job["implementation_revisions"][0]
+    assert failed["error"]["code"] == "BUDGET_EXCEEDED"
+    assert failed["error"]["stage"] == "REVISING"
+    assert failed["usage"]["total_cost_usd"] == pytest.approx(0.5)
+    assert {f["path"] for f in failed["diff"]["files"]} == {"partial.md"}
+    assert {f["path"] for f in job["implementation_diff"]["files"]} == {"README.md", "partial.md"}
+    # The original implementation result is untouched.
+    assert job["implementation_result"]["summary"] == "Updated the README greeting."
+
+
+def test_revise_validates_the_feedback(local_client: TestClient) -> None:
+    job_id = _reach_implementation_ready(local_client, review_done=False)
+
+    blank = local_client.post(f"/api/jobs/{job_id}/revise", json={"feedback": "   "})
+    assert blank.status_code == 400
+    assert blank.json()["error"]["code"] == "INPUT_INVALID"
+
+    secret = local_client.post(f"/api/jobs/{job_id}/revise", json={"feedback": f"use {FAKE_TOKEN}"})
+    assert secret.status_code == 400
+    assert secret.json()["error"]["code"] == "INPUT_INVALID"
+    assert FAKE_TOKEN not in secret.text
+
+    smuggled = local_client.post(
+        f"/api/jobs/{job_id}/revise", json={"feedback": "ok", "api_token": "x"}
+    )
+    assert smuggled.status_code in (400, 422)
+
+    job = local_client.get(f"/api/jobs/{job_id}").json()
+    assert job["state"] == "IMPLEMENTATION_READY"
+    assert job["implementation_revisions"] == []
+
+
+def test_revise_stops_at_the_round_limit(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("IMPLEMENTATION_MAX_REVISIONS", "1")
+    get_settings.cache_clear()
+    job_id = _reach_implementation_ready(local_client, review_done=False)
+
+    assert (
+        local_client.post(f"/api/jobs/{job_id}/revise", json={"feedback": "a"}).status_code == 202
+    )
+    _poll_until_round_finished(local_client, job_id, 1)
+
+    over = local_client.post(f"/api/jobs/{job_id}/revise", json={"feedback": "b"})
+    assert over.status_code == 400
+    assert over.json()["error"]["code"] == "IMPLEMENTATION_REVISION_NOT_AVAILABLE"
+    assert "all 1 review rounds" in over.json()["error"]["message"]
+
+
+def test_revise_and_complete_review_need_a_ready_implementation(
+    client: TestClient, store: JobStore
+) -> None:
+    job = Job.new(ticket_key="PROJ-1", repo_url="git@github.com:acme/repo.git")
+    store.create(job)
+
+    revise = client.post(f"/api/jobs/{job.id}/revise", json={"feedback": "x"})
+    assert revise.status_code == 400
+    assert revise.json()["error"]["code"] == "IMPLEMENTATION_REVISION_NOT_AVAILABLE"
+
+    done = client.post(f"/api/jobs/{job.id}/complete-review")
+    assert done.status_code == 400
+    assert done.json()["error"]["code"] == "IMPLEMENTATION_REVISION_NOT_AVAILABLE"
+
+    missing = client.post("/api/jobs/does-not-exist/revise", json={"feedback": "x"})
+    assert missing.status_code == 404
+
+
+def test_correct_validation_is_refused_once_the_review_is_done(
+    local_client_failing_validation: TestClient,
+) -> None:
+    job_id = _reach_implementation_ready(local_client_failing_validation)
+
+    response = local_client_failing_validation.post(f"/api/jobs/{job_id}/correct-validation")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_CORRECTION_NOT_AVAILABLE"
 
 
 def test_push_branch_pushes_to_the_real_remote(

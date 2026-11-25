@@ -23,6 +23,10 @@ class JobState(StrEnum):
     IMPLEMENTING = "IMPLEMENTING"
     VALIDATING = "VALIDATING"
     CORRECTING = "CORRECTING"
+    # A review round: the agent applies the user's feedback to the finished
+    # implementation (see ImplementationRevision). Like CORRECTING, it always
+    # returns to IMPLEMENTATION_READY, through REVALIDATING.
+    REVISING = "REVISING"
     REVALIDATING = "REVALIDATING"
     IMPLEMENTATION_READY = "IMPLEMENTATION_READY"
     IMPLEMENTATION_FAILED = "IMPLEMENTATION_FAILED"
@@ -138,6 +142,39 @@ class ValidationResult(BaseModel):
     output_excerpt: str | None = None
 
 
+class ImplementationRevision(BaseModel):
+    """One review round: feedback the user gave on the finished
+    implementation, and what the agent did with it in the same workspace.
+
+    A round never regresses the job: success or failure, the job returns to
+    IMPLEMENTATION_READY, the cumulative `Job.implementation_diff` is re-read
+    from the workspace, and `diff` holds just this round's own change (the
+    difference between the two workspace snapshots)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    number: int  # 1-based
+    feedback: str  # untrusted data, quoted into the agent prompt as such
+    requested_by_user_id: str | None = None
+    requested_at: datetime
+    # When the agent got its slot and started. A round refused before that
+    # (spend limit, interrupted while waiting) doesn't count toward the limit.
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    result: ImplementationResult | None = None
+    usage: AgentUsage | None = None
+    error: JobError | None = None
+    diff: ImplementationDiff | None = None
+    # Git tree ids of the whole workspace before and after the round (objects
+    # written to the workspace's own object store; HEAD and branches untouched).
+    snapshot_before: str | None = None
+    snapshot_after: str | None = None
+
+    @property
+    def counts_toward_limit(self) -> bool:
+        return self.started_at is not None
+
+
 class Job(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -209,6 +246,12 @@ class Job(BaseModel):
     # the correction's cost for the per-user spend window, and tells startup
     # recovery whether an interrupted correction ever ran (app/jobs/limits.py).
     implementation_correction_started_at: datetime | None = None
+    # Review rounds after implementation, oldest first, until the user marks
+    # the review done (implementation_review_completed_at). Creating a branch
+    # needs the review done; once it is, no more rounds or corrections run.
+    implementation_revisions: list[ImplementationRevision] = []
+    implementation_review_completed_at: datetime | None = None
+    implementation_review_completed_by_user_id: str | None = None
     # Set once a branch has been created and the reviewed diff committed to
     # it inside the isolated workspace (never pushed anywhere — see
     # ErrorCode.BRANCH_CREATION_NOT_AVAILABLE / BRANCH_CREATION_FAILED). The
@@ -279,3 +322,14 @@ class Job(BaseModel):
     @property
     def is_terminal(self) -> bool:
         return self.state in TERMINAL_STATES
+
+    @property
+    def open_revision(self) -> ImplementationRevision | None:
+        """The review round requested but not yet finished, if any."""
+        if self.implementation_revisions and self.implementation_revisions[-1].finished_at is None:
+            return self.implementation_revisions[-1]
+        return None
+
+    @property
+    def revisions_used(self) -> int:
+        return sum(1 for revision in self.implementation_revisions if revision.counts_toward_limit)

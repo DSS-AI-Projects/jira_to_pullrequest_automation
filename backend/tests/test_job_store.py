@@ -15,7 +15,7 @@ from app.auth.models import (
     RepoHostingConnection,
     RepoHostingProvider,
 )
-from app.jobs.models import AgentUsage, Job, JobState
+from app.jobs.models import AgentUsage, ImplementationRevision, Job, JobState
 from app.jobs.store import JobStore
 
 
@@ -374,6 +374,17 @@ def test_cost_summary_by_owner_aggregates_and_handles_missing_costs(tmp_path: Pa
     planned_and_implemented.implementation_correction_usage = AgentUsage(
         duration_seconds=1.5, total_cost_usd=0.07
     )
+    # Review rounds each record their own cost; a round refused before it
+    # ran has none.
+    planned_and_implemented.implementation_revisions = [
+        ImplementationRevision(
+            number=number,
+            feedback="f",
+            requested_at=planned_and_implemented.created_at,
+            usage=None if cost is None else AgentUsage(duration_seconds=1.0, total_cost_usd=cost),
+        )
+        for number, cost in ((1, 0.11), (2, None), (3, 0.04))
+    ]
     store.create(planned_and_implemented)
 
     other_user = make_job("PROJ-3", "user-2")
@@ -393,11 +404,13 @@ def test_cost_summary_by_owner_aggregates_and_handles_missing_costs(tmp_path: Pa
     assert rows["user-1"].planning_cost_usd == pytest.approx(0.30)
     assert rows["user-1"].implementation_cost_usd == pytest.approx(0.50)
     assert rows["user-1"].correction_cost_usd == pytest.approx(0.07)
+    assert rows["user-1"].revision_cost_usd == pytest.approx(0.15)
 
     assert rows["user-2"].job_count == 2
     assert rows["user-2"].planning_cost_usd == pytest.approx(0.05)
     assert rows["user-2"].implementation_cost_usd == pytest.approx(0.0)
     assert rows["user-2"].correction_cost_usd == pytest.approx(0.0)
+    assert rows["user-2"].revision_cost_usd == pytest.approx(0.0)
 
     assert rows[None].job_count == 1
     assert rows[None].planning_cost_usd == pytest.approx(0.01)

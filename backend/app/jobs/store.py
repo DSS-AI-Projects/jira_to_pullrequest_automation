@@ -104,6 +104,8 @@ class OwnerCostRow:
     # The optional "Attempt automatic fix" pass — a separate agent run with
     # its own recorded cost (Job.implementation_correction_usage).
     correction_cost_usd: float = 0.0
+    # Review rounds (Job.implementation_revisions[].usage), summed.
+    revision_cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -305,6 +307,14 @@ class JobStore:
                             json_extract(data, '$.implementation_correction_usage.total_cost_usd'),
                             0
                         )
+                    ),
+                    SUM(
+                        (
+                            SELECT COALESCE(
+                                SUM(json_extract(revision.value, '$.usage.total_cost_usd')), 0
+                            )
+                            FROM json_each(data, '$.implementation_revisions') AS revision
+                        )
                     )
                 FROM jobs
                 GROUP BY owner_user_id
@@ -317,6 +327,7 @@ class JobStore:
                 planning_cost_usd=row[2] or 0.0,
                 implementation_cost_usd=row[3] or 0.0,
                 correction_cost_usd=row[4] or 0.0,
+                revision_cost_usd=row[5] or 0.0,
             )
             for row in rows
         ]

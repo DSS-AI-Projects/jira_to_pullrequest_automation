@@ -222,6 +222,12 @@ class Settings(BaseSettings):
     # than the main implementation phase.
     agent_implement_correction_max_turns: int = 10
     agent_implement_correction_max_budget_usd: float | None = 1.0
+    # One review round ("Apply feedback" after implementation): a targeted
+    # change to the existing diff, so tighter than the main pass.
+    agent_implement_revision_max_turns: int = 20
+    agent_implement_revision_max_budget_usd: float | None = 2.0
+    # How many review rounds a job may run before the user marks it done.
+    implementation_max_revisions: int = Field(default=5, ge=1)
     agent_timeout_seconds: int = 600
     # Largest single JSON message the SDK accepts from the CLI (its default is
     # 1 MiB). An Edit/Write tool result carries the whole original file, so one

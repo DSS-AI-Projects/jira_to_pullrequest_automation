@@ -114,6 +114,24 @@ def make_fake_steps() -> JobSteps:
             ),
         )
 
+    async def revise_implementation(
+        job: Job, workspace_path: Path, feedback: str
+    ) -> ImplementationStepResult:
+        del workspace_path
+        # Like implement_plan above: no real workspace, so no changed_files.
+        return ImplementationStepResult(
+            result=ImplementationResult(
+                summary=f"Applied review feedback for {job.ticket_key}: {feedback}",
+            ),
+            usage=AgentUsage(
+                input_tokens=60,
+                output_tokens=40,
+                total_cost_usd=0.03,
+                num_turns=1,
+                duration_seconds=0.6,
+            ),
+        )
+
     async def validate_workspace(workspace_path: Path) -> list[ValidationResult]:
         return [
             ValidationResult(
@@ -157,6 +175,7 @@ def make_fake_steps() -> JobSteps:
         build_repo_map=build_repo_map,
         generate_plan=generate_plan,
         implement_plan=implement_plan,
+        revise_implementation=revise_implementation,
         validate_workspace=validate_workspace,
         create_branch=create_branch,
         push_branch=push_branch,

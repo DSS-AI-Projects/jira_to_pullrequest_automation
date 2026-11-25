@@ -118,6 +118,12 @@ def spend_events(job: Job) -> list[SpendEvent]:
         cost = _cost(usage)
         if cost > 0:
             events.append(SpendEvent(at=at, cost_usd=cost))
+    for revision in job.implementation_revisions:
+        cost = _cost(revision.usage)
+        if cost > 0:
+            events.append(
+                SpendEvent(at=revision.started_at or revision.requested_at, cost_usd=cost)
+            )
     return events
 
 
