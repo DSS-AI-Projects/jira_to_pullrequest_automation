@@ -252,6 +252,96 @@ To generate plans without spending Anthropic credits (e.g. to smoke-test the
 whole pipeline), set `AGENT_PLAN_STUB=true` — every stub plan carries an
 unmistakable marker so it's never confused with a real, model-generated plan.
 
+## Local setup on Windows (no Docker, your own checkout)
+
+For a developer who wants to run the app on their own Windows machine and
+point it at a repository they already have checked out. Install the
+[prerequisites](#prerequisites) first, and clone jira2pullreq into its own
+folder, separate from the repositories you want to work on.
+
+**1. Install dependencies**
+
+```powershell
+cd D:\work\jira2pullreq\backend
+uv sync
+Copy-Item .env.example .env
+cd ..\frontend
+npm install
+```
+
+**2. Configure `backend\.env`** — the minimum:
+
+```ini
+ANTHROPIC_API_KEY=<your key>
+
+# Jira (shared mode). Not needed if you only use "Paste text" as the source.
+JIRA_BASE_URL=https://yourcompany.atlassian.net
+JIRA_EMAIL=<your Atlassian email>
+JIRA_API_TOKEN=<token from id.atlassian.com>
+
+# Local repositories
+ALLOW_LOCAL_REPOS=true
+ALLOWED_LOCAL_REPO_ROOTS=["D:\\repos"]
+ALLOW_DIRTY_LOCAL_REPOS=true
+REQUIRE_LOCAL_BRANCH_TICKET_MATCH=false
+```
+
+- `ALLOWED_LOCAL_REPO_ROOTS` is a JSON list, so backslashes are doubled. Your
+  checkout must sit under one of these roots (e.g. `D:\repos\my-service`).
+- **Only committed work is used.** The app clones your checkout into its own
+  workspace (`backend\var\workdir\<job>\repo`); a clone carries commits, not
+  uncommitted edits. `ALLOW_DIRTY_LOCAL_REPOS=true` only stops a dirty
+  checkout from being refused — commit first if the agent should see a change.
+- The workspace is built from the branch your checkout has checked out, or
+  from the **Base branch** you type on the job form.
+- Sign-in is off (`AUTH_ENABLED` defaults to false): one local user, no login.
+- Validation runs the repository's own lint/test commands (npm install/lint/
+  test, or ruff/pytest) on your machine. Set `VALIDATION_ENABLED=false` to
+  skip it.
+- `AGENT_PLAN_STUB=true` makes test plans at no cost, to try the flow first.
+
+**3. Start it** — two terminals, from a normal PowerShell or Windows Terminal
+window. A backend started from a tool that sets `GIT_TERMINAL_PROMPT=0` or
+`GCM_INTERACTIVE=never` (a Claude Code shell does) can't show Git Credential
+Manager's sign-in window when you push.
+
+```powershell
+cd D:\work\jira2pullreq\backend
+uv run uvicorn app.main:app --reload
+```
+
+```powershell
+cd D:\work\jira2pullreq\frontend
+npm run dev
+```
+
+Open http://localhost:3000; the frontend finds the backend on port 8000.
+
+**4. Run a job on your checkout**
+
+1. Choose the requirement source (Jira ticket, Mantis if configured, a PDF, or
+   pasted text).
+2. Under **Repository**, choose the local option and type the absolute path,
+   e.g. `D:\repos\my-service`.
+3. Generate the plan, approve it, review and adjust the changes, click **Done
+   reviewing**, then **Create branch**.
+
+Your checkout is never modified. To bring the result into it, either:
+
+- click **Push branch** (default `PUSH_AUTH_MODE=ambient`) — it pushes to your
+  checkout's `origin` remote with your own git credentials — then `git fetch`
+  in your checkout and check out the branch; or
+- click **Download patch** and run `git apply <file>.patch` in your checkout.
+
+**Common problems**
+
+- *"Not under an allowed root"*: check the path and the doubled backslashes in
+  `ALLOWED_LOCAL_REPO_ROOTS`, then restart the backend (it reads `.env` at
+  startup).
+- *"Filename too long"* on a deep repository: `git config --global core.longpaths true`.
+- *Push asks for credentials or fails*: run `git push` once from your checkout
+  so Git Credential Manager stores your login.
+
 ## Quality gates
 
 Everything must pass before merge. One command, cross-platform:
